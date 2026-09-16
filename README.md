@@ -25,7 +25,6 @@ It is built lean on purpose. Most of a coding agent's context budget goes on sca
 the model never needed. Mindweave keeps prompts thin and leaves the room for the model to
 reason about your code.
 
-Questions are welcome at zallinimann@gmail.com.
 
 ## Mindweave 1
 
@@ -136,6 +135,8 @@ Bug reports are genuinely the most useful thing you can send. Mindweave is devel
 running it on real projects and fixing what breaks, and nearly everything in the
 changelog started as a failure someone watched happen. [What to include, and what is
 especially worth reporting.](CONTRIBUTING.md#reporting-a-bug)
+
+Questions are welcome at zallinimann@gmail.com
 
 ## License
 
