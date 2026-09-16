@@ -152,9 +152,9 @@ test("it is centred, and stays inside the terminal", () => {
   const pill = scrollPill({ scrolled: 6, newReplies: 2, overlayOpen: false, width: 60 });
   assert.ok(pill);
   const { rows } = draw(pill);
-  const row = rows.find((r) => r.includes("2 new replies"));
+  const row = rows.find((r) => r.includes("Catch up — 2 new"));
   assert.ok(row, `the counted form never rendered:\n${rows.join("\n")}`);
-  const start = row.indexOf(" 2 new replies");
+  const start = row.indexOf(" Catch up — 2 new");
   assert.ok(start > 0, "the chip is flush against the left edge — justifyContent did not apply");
   assert.ok(row.length <= 60, `the row is ${row.length} columns wide on a 60-column terminal`);
   // Centred within a column of margin either side.
