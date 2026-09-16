@@ -19,7 +19,7 @@ test("pinned to the newest shows nothing", () => {
 test("scrolled back offers the way out, and names the key", () => {
   const pill = scrollPill(base);
   assert.ok(pill);
-  assert.match(pill, /Jump to bottom/);
+  assert.match(pill, /Catch up/);
   assert.match(pill, /ctrl\+End/);
   assert.match(pill, /↓/);
 });
@@ -33,14 +33,13 @@ test("a chip is padded on both sides, so it reads as a chip", () => {
 test("replies that landed while you were reading are counted, not just announced", () => {
   const pill = scrollPill({ ...base, newReplies: 3 });
   assert.ok(pill);
-  assert.match(pill, /3 new replies/);
-  assert.doesNotMatch(pill, /Jump to bottom/, "the count replaces the generic line, it does not join it");
+  assert.match(pill, /Catch up — 3 new/);
 });
 
-test("one reply is a reply, not replies", () => {
+test("one reply still reads as a count, not a plural mismatch", () => {
   const pill = scrollPill({ ...base, newReplies: 1 });
   assert.ok(pill);
-  assert.match(pill, /1 new reply\b/);
+  assert.match(pill, /Catch up — 1 new/);
 });
 
 test("an open overlay hides it — the key it names is switched off there", () => {
@@ -60,10 +59,10 @@ test("a chip always leaves a column of margin on each side", () => {
 });
 
 test("a narrow terminal drops the chord rather than the chip", () => {
-  // Wide enough for " Jump to bottom ↓ " (18) + 2, not for the 29-column full form.
+  // Wide enough for " Catch up ↓ " (12) + 2, not for the full form with the chord.
   const pill = scrollPill({ ...base, width: 24 });
   assert.ok(pill, "the state is still worth saying without the chord");
-  assert.match(pill, /Jump to bottom/);
+  assert.match(pill, /Catch up/);
   assert.doesNotMatch(pill, /ctrl\+End/);
   assert.match(pill, /↓/, "the arrow is what makes it legible as 'more below'");
 });

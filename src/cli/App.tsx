@@ -85,7 +85,7 @@ import { applySelection, ctrlCShouldCopy, isEmpty, selectionText, type Selection
 import { latestScreen, repaintOverlay, setFrameOverlay } from "./framebuffer/overlay.js";
 import { requestFullRepaint } from "./framebuffer/writer.js";
 import { copyToClipboard } from "./clipboard.js";
-import { chatLayout, reflowScroll } from "./chatAnchor.js";
+import { chatLayout, reflowScroll, growScroll } from "./chatAnchor.js";
 import { growFill, INLINE_LIVE_RESERVE, NO_FILL } from "./startupFill.js";
 import { setRowsBelowCaret } from "./exitCursor.js";
 import { caretCell } from "./caretPark.js";
@@ -322,6 +322,9 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
   /** Reading position captured at a width change, pending the first measurement at the
    *  new width. Null except across that one frame. See the width-change block below. */
   const reflowFrom = useRef<{ scrolled: number; maxScroll: number } | null>(null);
+  /** `contentHeight` as of the last measurement, so growth between renders is a delta
+   *  the scroll position can be compensated by. See the growth-compensation block below. */
+  const prevContentHeight = useRef<number | null>(null);
   // Each block's real rendered height, so blocks off screen can be replaced by a
   // spacer of the exact same size instead of being laid out in full — see
   // `virtualWindow.ts` for why that is the whole performance story, and why exact
@@ -1264,7 +1267,14 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
       reflowFrom.current = null;
       const next = reflowScroll(from.scrolled, from.maxScroll, Math.max(0, height - chatRows));
       setScrollUp((s) => (s === next ? s : next));
+    } else if (prevContentHeight.current !== null) {
+      // Ordinary growth, not a resize — see growScroll for why this has to hold the
+      // reader's absolute position rather than leave `scrollUp` where it was.
+      const prev = prevContentHeight.current;
+      const next = growScroll(scrollUp, prev, height);
+      if (next !== scrollUp) setScrollUp(next);
     }
+    prevContentHeight.current = height;
   });
 
   // Measure each block that was rendered without a known height yet, so the next

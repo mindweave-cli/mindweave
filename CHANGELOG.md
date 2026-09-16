@@ -3,6 +3,18 @@
 Notable changes to Mindweave. Dates are release dates.
 
 
+## v2.4.8 (2026-09-16): the transcript stays put while you're reading it
+
+Scrolling back to read while a reply was still streaming in used to drift toward the
+newest line on its own, with no wheel touched. The scroll position was stored as a
+distance from the newest line, and every line a running turn appended moved that point
+further down, so holding the same distance actually slid the view toward the new
+content instead of holding still. It now holds the exact rows you were looking at as
+the transcript grows underneath them, the way it already did across a terminal resize.
+
+The chip that appears when you're scrolled back now says "Catch up" instead of naming
+where it takes you.
+
 ## v2.4.7 (2026-09-16): pasted images reach the model by name again, and file reads count lines correctly
 
 An image you paste or drop in shows up in the input as a short handle like `mwimg5`, so a

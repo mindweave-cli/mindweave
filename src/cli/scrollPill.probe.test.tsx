@@ -108,7 +108,7 @@ test("the chip is on the last row of the viewport, right above the footer's gap"
   const pill = scrollPill({ scrolled: 6, newReplies: 0, overlayOpen: false, width: 60 });
   assert.ok(pill, "the chip should exist at this width — the rest of the test is about it");
   const { rows } = draw(pill);
-  const chip = rowOf(rows, "Jump to bottom");
+  const chip = rowOf(rows, "Catch up");
   const input = rowOf(rows, "INPUTBOX");
 
   assert.ok(chip > 0, `the chip never rendered:\n${rows.join("\n")}`);
@@ -130,7 +130,7 @@ test("the chip PAINTS OVER a row — it never pushes one", () => {
   // Every row but the chip's own is byte-identical. This is the assertion the design
   // rests on: a chip that consumed a row would shift the whole transcript by one, and
   // scrolling would then re-wrap the screen as a side effect of looking at it.
-  const chip = rowOf(withChip.rows, "Jump to bottom");
+  const chip = rowOf(withChip.rows, "Catch up");
   assert.ok(chip > 0, "the chip never rendered, so nothing below means anything");
   for (let i = 0; i < withChip.rows.length; i++) {
     if (i === chip) continue;
@@ -164,7 +164,7 @@ test("it is centred, and stays inside the terminal", () => {
 
 test("pinned to the newest, nothing is drawn at all", () => {
   const { rows } = draw(scrollPill({ scrolled: 0, newReplies: 0, overlayOpen: false, width: 60 }));
-  assert.equal(rowOf(rows, "Jump to bottom"), -1, "the chip rendered while pinned to the bottom");
+  assert.equal(rowOf(rows, "Catch up"), -1, "the chip rendered while pinned to the bottom");
 });
 
 // ── the chord the chip advertises ──────────────────────────────────────────

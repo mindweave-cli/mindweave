@@ -164,7 +164,7 @@ test("reading: the frame is SHORTER than the terminal", () => {
 
 test("reading: the chip is on screen and names the way out", () => {
   const rows = draw(true, 20);
-  const chip = rowOf(rows, "Jump to bottom");
+  const chip = rowOf(rows, "Catch up");
   const input = rowOf(rows, "INPUTBOX");
   assert.ok(chip > 0, "no chip while scrolled back");
   assert.ok(chip < input, "the chip belongs over the transcript, not under the prompt");
@@ -178,7 +178,7 @@ test("NOT reading: the live region is just the tail and the footer", () => {
   const painted = rows.filter((r) => r.trim() !== "");
   assert.ok(rowOf(rows, "live-tail") >= 0, "the live tail is gone");
   assert.ok(rowOf(rows, "INPUTBOX") >= 0, "the prompt is gone");
-  assert.equal(rowOf(rows, "Jump to bottom"), -1, "a chip while pinned to the bottom");
+  assert.equal(rowOf(rows, "Catch up"), -1, "a chip while pinned to the bottom");
   assert.ok(painted.length <= 4, `the idle live region grew to ${painted.length} rows: ${JSON.stringify(painted)}`);
 });
 

@@ -81,6 +81,28 @@ export function chatLayout(contentHeight: number, chatRows: number, scrollUp: nu
 }
 
 /**
+ * Where the reader should sit after the transcript grows without a resize — a reply
+ * streaming in, a tool row landing, anything that appends below the fold.
+ *
+ * `scrollUp` counts lines back from the newest, so it names a DISTANCE from a point
+ * that keeps moving: every line a running turn appends pushes "the newest" further
+ * down, and holding the distance constant slides the window itself toward the new
+ * content. A reader who scrolled back to read something drifts toward the bottom with
+ * no wheel touched, and a long-running turn can carry them all the way down before it
+ * finishes — which is the whole difference between "reading" and "watching it happen
+ * to me". Adding the growth to `scrollUp` holds the same absolute rows on screen,
+ * because growth (unlike a re-wrap) does not change what a line IS — only a resize
+ * needs the proportion `reflowScroll` computes instead.
+ *
+ * Pinned to the newest (`scrollUp === 0`) is left alone: that reader wants the growth,
+ * not to be insulated from it.
+ */
+export function growScroll(scrollUp: number, prevHeight: number, height: number): number {
+  if (scrollUp <= 0 || height <= prevHeight) return scrollUp;
+  return scrollUp + (height - prevHeight);
+}
+
+/**
  * Where the reader should sit after the transcript re-wraps at a new width.
  *
  * `scrollUp` counts LINES back from the newest, and a line is not a stable unit

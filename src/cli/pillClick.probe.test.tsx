@@ -98,7 +98,7 @@ function drawAndMeasure(): { reported: number | null; painted: number; row: stri
   // chip as unmeasured no matter where it was.
   const measured = reported;
   instance.unmount();
-  const painted = rows.findIndex((r) => r.includes("Jump to bottom"));
+  const painted = rows.findIndex((r) => r.includes("Catch up"));
   return { reported: measured, painted, row: rows[painted] ?? "" };
 }
 

@@ -10,8 +10,8 @@
  * So a chip rides the last row of the viewport whenever the view is scrolled back. It
  * says one of two things:
  *
- *   - **Jump to bottom** — you are reading history and nothing new has arrived.
- *   - **N new replies** — the model has answered since you scrolled away.
+ *   - **Catch up** — you are reading history and nothing new has arrived.
+ *   - **Catch up — N new** — the model has answered since you scrolled away.
  *
  * Both name the key, because a chip that reports a state without offering the way out
  * of it is only half an answer.
@@ -63,8 +63,8 @@ export function scrollPill(input: PillInput): string | null {
 
   const label =
     input.newReplies > 0
-      ? `${input.newReplies} new ${input.newReplies === 1 ? "reply" : "replies"}`
-      : "Jump to bottom";
+      ? `Catch up — ${input.newReplies} new`
+      : "Catch up";
 
   // The chord first, since it is the more useful half on a wide terminal.
   const full = ` ${label} (ctrl+End) ↓ `;
