@@ -168,3 +168,40 @@ test("save_memory rejects an invalid type", async () => {
   assert.equal(res.isError, true);
   assert.match(res.output, /type/);
 });
+
+test("an old memory is flagged as old, a recent one is left exactly as it was", async () => {
+  // Models are poor at date arithmetic, so the index does it for them — but only in two
+  // coarse buckets, because this string lands in the CACHED system prefix and an exact
+  // age would break that cache once a day for every memory, forever.
+  const cwd = "/proj/mem-stale";
+  await saveMemory(cwd, input({ name: "Fresh", description: "recent" }));
+  await saveMemory(cwd, input({ name: "Middling", description: "a while back" }));
+  await saveMemory(cwd, input({ name: "Ancient", description: "long ago" }));
+
+  const age = async (file: string, days: number) => {
+    const when = new Date(Date.now() - days * 86_400_000);
+    await fs.utimes(join(memoryDir(cwd), file), when, when);
+  };
+  await age("fresh.md", 3);
+  await age("middling.md", 120);
+  await age("ancient.md", 800);
+
+  const index = await loadMemoryIndex(cwd);
+  const line = (name: string) => index.split(/\r?\n/).find((l) => l.includes(name)) ?? "";
+
+  assert.doesNotMatch(line("Fresh"), /old\)/, "a recent memory carries no marker — no bytes, no cache churn");
+  assert.match(line("Middling"), /\(months old\)$/);
+  assert.match(line("Ancient"), /\(over a year old\)$/);
+});
+
+test("marking is idempotent, so re-rendering cannot stack markers", async () => {
+  const cwd = "/proj/mem-idem";
+  await saveMemory(cwd, input({ name: "Old", description: "ancient" }));
+  const when = new Date(Date.now() - 400 * 86_400_000);
+  await fs.utimes(join(memoryDir(cwd), "old.md"), when, when);
+
+  const once = await loadMemoryIndex(cwd);
+  const twice = await loadMemoryIndex(cwd);
+  assert.equal(once, twice, "a second render must produce the identical string");
+  assert.equal((once.match(/over a year old/g) ?? []).length, 1);
+});

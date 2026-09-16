@@ -103,7 +103,7 @@ test("isContinuation: trivial continuations vs genuine new tasks", () => {
 const shot = { path: "/tmp/proj/shot.png", mediaType: "image/png", width: 1920, height: 1080 };
 const withImage = (text: string): Entry => ({ role: "user", content: text, images: [shot] });
 
-test("an OLD image payload is dropped, leaving the file name as the restoration key", () => {
+test("an OLD image payload is dropped, leaving the full path as the restoration key", () => {
   const entries: Entry[] = [withImage("look at this"), ...Array.from({ length: 8 }, (_, i) => userMsg(`turn ${i}`))];
   const { entries: out, imagesCleared } = microcompact(entries, 2);
 
@@ -112,6 +112,8 @@ test("an OLD image payload is dropped, leaving the file name as the restoration 
   assert.equal(first.images, undefined, "the payload must be gone from the wire");
   assert.ok(first.content.startsWith("look at this"), "the person's own words are never touched");
   assert.match(first.content, /shot\.png/, "the name stays — it is how the model asks for it again");
+  assert.ok(first.content.includes(shot.path), "the full path stays, so the image can be opened again, not guessed at");
+  assert.match(first.content, /view_image/, "the stub says how to get it back");
   assert.match(first.content, /no longer in context/);
 });
 

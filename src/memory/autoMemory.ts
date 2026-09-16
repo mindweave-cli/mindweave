@@ -72,7 +72,49 @@ export async function loadMemoryIndex(projectCwd: string): Promise<string> {
   } catch {
     return "";
   }
-  return truncateIndex((await reconcileIndex(dir, raw)).trim());
+  return truncateIndex(await markStale(dir, (await reconcileIndex(dir, raw)).trim()));
+}
+
+/** Old enough that acting on it without checking is a real risk. Two months is past any
+ *  normal "we were just doing that" window without flagging this week's notes. */
+const STALE_AFTER_DAYS = 60;
+const DAY_MS = 86_400_000;
+
+/**
+ * Append an age marker to index lines whose topic file is old (impure — stats the files).
+ *
+ * WHY A MARKER AND NOT A DATE. Models are poor at date arithmetic: a raw
+ * `2026-03-02T…` timestamp does not make a model hesitate the way being told the thing
+ * is old does. The arithmetic has to be done for it, or it may as well not be there.
+ *
+ * WHY COARSE, AND ONLY WHEN OLD. This index is rendered into the system prompt, which is
+ * the CACHED prefix of every request. An exact age ("47 days ago") changes daily, so each
+ * memory would silently break the cache once a day for the rest of its life, and with a
+ * hundred memories that is a break most days — paying a full prefix rewrite for a
+ * cosmetic difference. Two buckets change at most twice in a memory's whole existence,
+ * and recent memories get no marker at all, so the common line is byte-identical to what
+ * it was before this existed.
+ *
+ * Failure is silent by design: an unreadable file just goes unmarked. The index being
+ * loadable matters more than any one line carrying its age.
+ */
+async function markStale(dir: string, index: string, now = Date.now()): Promise<string> {
+  const lines = index.split("\n");
+  const marked = await Promise.all(
+    lines.map(async (line) => {
+      const file = /\]\(([^)]+\.md)\)/.exec(line)?.[1];
+      if (!file || line.includes(" — older]") || /\(months old\)|\(over a year old\)/.test(line)) return line;
+      let days: number;
+      try {
+        days = (now - (await fs.stat(join(dir, file))).mtimeMs) / DAY_MS;
+      } catch {
+        return line;
+      }
+      if (days < STALE_AFTER_DAYS) return line;
+      return `${line} (${days >= 365 ? "over a year old" : "months old"})`;
+    }),
+  );
+  return marked.join("\n");
 }
 
 /**

@@ -25,7 +25,8 @@ import { isAbsolute, resolve } from "node:path";
 import { Box, Static, Text, measureElement, useApp, useInput, useStdout, type DOMElement } from "ink";
 import { compactNow, contextUsed, respond } from "../dynamo/engine.js";
 import type { SteeredMessage } from "../dynamo/engine.js";
-import { contextPressure, sharpContextWindow } from "../dynamo/contextWindow.js";
+import { contextPressure, sharpContextWindow, autoCompactThreshold } from "../dynamo/contextWindow.js";
+import { contextBudget, formatBudget } from "../dynamo/contextBudget.js";
 import { createSession, resumeSession, reloadProjectMemory } from "../memory/session.js";
 import { saveSession, listSessions } from "../memory/store.js";
 import { stopChassis } from "../alternator/lane.js";
@@ -52,6 +53,7 @@ import { accessRefusal } from "../drivers/providerError.js";
 import { resolveAttachments, stripAttachments } from "./attachments.js";
 import { collapsePastes, wrapPastedText } from "../memory/pastedText.js";
 import { createDropHandles, expandHandles } from "./dropHandles.js";
+import { shouldReactToBackground } from "./backgroundWake.js";
 import { TIPS, TipLine, nextTip, randomTipIndex } from "./components/TipLine.js";
 import { completePath } from "./pathComplete.js";
 import { formatHelp } from "./help.js";
@@ -936,11 +938,21 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
   }, []);
 
   // When a background shell finishes and Mindweave is idle, react to it automatically.
+  // `modalOpen` is a dependency on purpose: an open menu holds the wake back, and closing
+  // it has to re-run this check or the finished command waits for some unrelated render.
+  const modalOpen = overlay !== null || mcpOpen || trustOpen || needsKey;
   useEffect(() => {
-    if (!ready || busy || needsKey || reactingRef.current) return;
     const mgr = session.current?.toolContext.backgroundShells;
-    if (mgr && mgr.pendingCount() > 0) void reactToBackground();
-  }, [bgTick, busy, ready, needsKey]);
+    const wake = shouldReactToBackground({
+      ready,
+      busy,
+      needsKey,
+      reacting: reactingRef.current,
+      modalOpen,
+      pending: mgr?.pendingCount() ?? 0,
+    });
+    if (wake) void reactToBackground();
+  }, [bgTick, busy, ready, needsKey, modalOpen]);
 
   // When the turn ends, send what's queued — CONSECUTIVE plain messages together, as
   // one turn (see messageQueue.ts for why), a slash command on its own. Chains: each
@@ -2529,9 +2541,27 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
     }
 
     if (name === "/context") {
-      const text = s.projectContext || "No project context was captured for this directory.";
-      note("project context (what Mindweave sees at startup):");
-      say(text);
+      // The old /context printed the startup project blurb, which answers a question
+      // nobody asks twice. The one people ask every time a compaction fires is what is
+      // filling the window — so that is the default, and the blurb moved to an argument.
+      if (arg.trim() === "project") {
+        const text = s.projectContext || "No project context was captured for this directory.";
+        note("project context (what Mindweave sees at startup):");
+        say(text);
+        return;
+      }
+      // Only a measurement taken against the CURRENT model is passed through; a figure
+      // carried over from another provider's tool serialisation would be the largest
+      // single error in the table, and the table is meant to settle arguments.
+      const measured = s.contextOverhead;
+      const overhead = measured && measured.model === s.modelConfig.model ? measured.tokens : undefined;
+      const budget = contextBudget(s.transcript, overhead);
+      note("context breakdown:");
+      say(
+        `${formatBudget(budget, sharpContextWindow(s.modelConfig.model), autoCompactThreshold(s.modelConfig.model))}
+
+  /context project shows what Mindweave read about this directory at startup.`,
+      );
       return;
     }
 

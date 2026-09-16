@@ -3,6 +3,43 @@
 Notable changes to Mindweave. Dates are release dates.
 
 
+## v2.4.7 (2026-09-16): pasted images reach the model by name again, and file reads count lines correctly
+
+An image you paste or drop in shows up in the input as a short handle like `mwimg5`, so a
+long path does not bury what you are typing. Since v2.4.0 that handle was also what the
+model received as the image's name. It names nothing on disk, so a model asked about the
+picture could end up looking for a file called `mwimg5.png`. The model now gets the real
+file name, plus a line saying where the image lives. Once an old image is cleared from
+context to save room, the note left in its place keeps that full path, so the model can open
+it again with `view_image` instead of asking you to attach it a second time. Your chat still
+shows the handle you saw while typing.
+
+`read_file` counted one line too many in nearly every file. The final newline was treated as
+the start of an extra, empty line, so files showed a blank last line that is not there, line
+totals were off by one, and asking for the line just past the end returned a blank line
+instead of saying the file had ended. An empty file came back looking like a file with one
+blank line in it. It now says the file is empty.
+
+A background command that finished while a menu was open could start a turn underneath it.
+With `/continue` open, picking a session at that moment would swap out the session the turn
+was still running on. A finished command now waits until the menu, `/mcp`, `/key` or any
+other open screen is closed, and is reported as soon as it is.
+
+`/context` now shows what is actually filling the context window: the system prompt and
+tools, tool results, tool call arguments, the model's replies and your messages, with the
+heaviest tools named and how much `/compact` could free without a summary. Figures the
+provider reported are shown as they are, and estimates are marked as estimates. The project
+summary it used to print is still there as `/context project`.
+
+When a command prints more than fits, the start and the end are shown as before, but the
+full output is now kept in a file and the model is told where. Previously the middle was
+thrown away, so the only way back to it was running the command again, which is not always
+possible. The model is also told that older tool results are cleared as a session grows, so
+it writes down the details it will need later rather than expecting them to stay.
+
+Saved memories that are months or more than a year old are now marked that way in the
+memory index, so older facts are treated with more caution. Recent memories are unchanged.
+
 ## v2.4.6 (2026-09-14): a finished background command is announced once, and work can be checked by something that did not do it
 
 A command left running in the background used to be reported to the model again on every

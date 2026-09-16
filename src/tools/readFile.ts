@@ -286,7 +286,7 @@ async function readOne(
     const estimate = estimateTokens(buf.toString("utf8"));
     if (estimate > WHOLE_READ_TOKEN_BUDGET) {
       const shown = relativize(ctx, filePath);
-      const lineTotal = buf.toString("utf8").split(/\r?\n/).length;
+      const lineTotal = fileLines(buf).length;
       const head =
         `${shown} is ${lineTotal} lines (~${Math.round(estimate / 100) / 10}k tokens), too large to read whole — ` +
         `reading it would re-send all of that on every later request this turn.`;
@@ -309,13 +309,11 @@ async function readOne(
     }
   }
 
-  // Split on CRLF or LF so a Windows file doesn't show a trailing \r on every
-  // line — the model can't see it, would omit it from an edit's old_string, and
-  // the edit would then fail to match. The edit tool normalizes line endings too.
-  const allLines = buf.toString("utf8").split(/\r?\n/);
+  const allLines = fileLines(buf);
   const totalLines = allLines.length;
+  const empty = totalLines === 0;
   const start = offset ?? 1;
-  if (start > totalLines) {
+  if (!empty && start > totalLines) {
     return bad(`offset ${start} is past the end of the file (${totalLines} lines).`);
   }
 
@@ -327,7 +325,11 @@ async function readOne(
 
   // Line numbers, right-aligned to the widest number in the slice.
   const width = String(end).length;
-  let body = slice.map((line, i) => `${String(start + i).padStart(width)}\t${line}`).join("\n");
+  // Said outright, because a numbered read of nothing looked exactly like a file holding
+  // one blank line, and the model cannot tell "empty" from "blank" by inference.
+  let body = empty
+    ? "(this file is empty — 0 lines)"
+    : slice.map((line, i) => `${String(start + i).padStart(width)}\t${line}`).join("\n");
 
   // Tell the model when the default cap hid the rest of the file.
   if (limit === undefined && end < totalLines) {
@@ -343,7 +345,7 @@ async function readOne(
   // cap, and recording that as full let a later re-read be answered "unchanged since
   // you last read" for 500 lines the model was never shown. Same for the character
   // cap. The flag is the dedup's whole basis, so it has to mean what it says.
-  const wholeFileSent = full && end >= totalLines && !charTruncated;
+  const wholeFileSent = (full || empty) && end >= totalLines && !charTruncated;
 
   // Record the read so edit / write_file know this file has been seen, so a
   // later identical read can be deduped, and so it enters the working set (recency +
@@ -362,7 +364,7 @@ async function readOne(
   return {
     label: shown,
     body,
-    summary: ranged ? `read ${shown} lines ${start}-${end}` : `read ${shown} (${slice.length} lines)`,
+    summary: empty ? `read ${shown} (empty)` : ranged ? `read ${shown} lines ${start}-${end}` : `read ${shown} (${slice.length} lines)`,
     // Presence, recorded as a FACT at the moment it is true, keyed by the absolute path
     // this call actually resolved to. Re-deriving it later by re-resolving these
     // arguments would be a guess: `cd` moves the working directory mid-session, so the
@@ -372,6 +374,23 @@ async function readOne(
 }
 
 
+
+/**
+ * A file's lines, as a person would count them.
+ *
+ * Split on CRLF or LF so a Windows file doesn't show a trailing \r on every line — the
+ * model can't see it, would omit it from an edit's old_string, and the edit would then
+ * fail to match. A final newline ENDS the last line rather than opening another: counting
+ * the empty piece after it gave nearly every source file a phantom blank last line, one
+ * line too many in every count, and an offset one past the end that slipped the guard.
+ * An empty file has no lines at all.
+ */
+export function fileLines(buf: Buffer): string[] {
+  if (buf.length === 0) return [];
+  const lines = buf.toString("utf8").split(/\r?\n/);
+  if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
+  return lines;
+}
 
 /** A positive integer from an env var, or `fallback`. Lets caps be tuned without
  *  baking any one model's limits into the code. */

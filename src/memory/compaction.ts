@@ -23,7 +23,6 @@
  * owns "when" and the summarizer call), so it stays trivially testable and could
  * run on either side of the future client/server line.
  */
-import { basename } from "node:path";
 import type { Entry } from "./types.js";
 import { fullPathsOf } from "./types.js";
 import { estimateImagesTokens } from "./images.js";
@@ -61,9 +60,10 @@ export const CLEARED_STUB =
 const RECAP_STUB = "[earlier status update condensed — this work is done; focus on the current task]";
 const RECAP_MIN_CHARS = 220;
 
-/** Left behind when an attached image's payload is evicted. Names the file, so asking
- *  for it again is an ordinary request rather than a lost capability. */
-export const IMAGE_CLEARED_STUB = "was attached here but is no longer in context — ask me to re-attach it if you need to look again";
+/** Left behind when an attached image's payload is evicted. Keeps the full PATH, which is
+ *  the restoration key: with only a file name the one way back was asking the user, and a
+ *  model given a name it cannot open will guess a path instead. */
+export const IMAGE_CLEARED_STUB = "was attached here but is no longer in context — open it again with view_image if you need to look at it, or ask me to re-attach it if that path is gone";
 
 /** Edit/write tools whose call INPUT carries bulky content (a whole file, a diff, a
  *  symbol body). Once such an edit is old and its result already cleared, the content
@@ -71,9 +71,9 @@ export const IMAGE_CLEARED_STUB = "was attached here but is no longer in context
  *  we clear the input too. Done here on the transcript, this is provider-AGNOSTIC —
  *  every model, not just DeepSeek, gets the saving, and it stays correct even once a
  *  provider offers an equivalent feature natively. */
-const CONTENT_CARRYING_TOOLS = new Set(["edit", "write_file", "replace_symbol_body"]);
+export const CONTENT_CARRYING_TOOLS = new Set(["edit", "write_file", "replace_symbol_body"]);
 
-const CLEARED_INPUT_NOTE =
+export const CLEARED_INPUT_NOTE =
   "content cleared to save context — the file's current state is in the working set, or re-read it";
 
 /** Shrink a mutation tool-call's arguments to just its identifying fields (which file
@@ -286,7 +286,7 @@ export function microcompact(
     //    here claimed the two windows already matched. They did not.
     if (i < imageBoundary && e.role === "user" && e.images && e.images.length > 0) {
       imagesCleared += e.images.length;
-      const names = e.images.map((img) => basename(img.path)).join(", ");
+      const names = e.images.map((img) => img.path).join(", ");
       const { images: _dropped, ...rest } = e;
       return { ...rest, content: `${e.content}\n\n[${names} ${IMAGE_CLEARED_STUB}]` };
     }

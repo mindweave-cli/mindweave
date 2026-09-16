@@ -269,6 +269,24 @@ export function cacheLikelyCold(
  * 0.35 sits where the break-even (~21 steps) is still optimistic but no longer absurd,
  * and it is deliberately a FRACTION rather than a token count: the thing being paid for
  * is proportional to the prefix, so the threshold has to be too.
+ *
+ * MEASURED against the derivation above (61 real sessions, 2026-09-16), and it is too
+ * pessimistic. Do not tighten this on the strength of the arithmetic:
+ *
+ *   - A clear does not rewrite the whole remaining prefix, only what follows the first
+ *     cleared result. Real clears cost 6-12K extra uncached tokens on a ~45K prompt,
+ *     not the ~43K that `1.25(P-R)` charges.
+ *   - Sessions run far past one turn. Clears were followed by 37-82 more calls on
+ *     average, so savings keep accruing long after the break-even horizon of one turn.
+ *   - The 0.1 / 1.25 ratios are one provider's. DeepSeek reads cache at 2% of input
+ *     with no write premium; GLM Flash at 20%.
+ *
+ * Net of cache rewrites AND the re-reads clearing causes (about 18% of file reads re-read
+ * something that had been cleared), clearing saved 4.3% of spend on DeepSeek V4 Flash and
+ * 10.3% on GLM 5.3 Flash, and 28 of 32 individual clears paid for themselves, including
+ * most below this threshold. The policy is left as is because it is already net positive
+ * and loosening it trades a few percent of saving for more re-reads, which is not yet
+ * measured.
  */
 const CLEAR_WORTH_FRACTION = 0.35;
 

@@ -157,3 +157,45 @@ test("stripAttachments hides the payload but keeps the typed line", () => {
   assert.equal(shown, "look at @foo.ts");
   assert.ok(!shown.includes("secret body"));
 });
+
+// ── what the model is told a dropped file is called ──────────────────────────
+// The input box shows a dropped file as a short handle (`mwimg5`). That handle is a
+// display convenience and names nothing on disk. It used to be sent to the model as the
+// file's name, and a model asked about "mwimg5" went looking for `mwimg5.png`.
+
+test("a dropped image reaches the model by its name and source path, never the input box handle", async () => {
+  await withTmp(async (dir) => {
+    const abs = join(dir, "Screenshot 2026-09-15 112814.png");
+    await fs.writeFile(abs, png(800, 600));
+    const { modelText, displayText, images } = await resolveAttachments(
+      `"${abs}" why is this broken`,
+      dir,
+      true,
+      () => "mwimg5",
+    );
+    assert.equal(images.length, 1);
+    assert.equal(displayText, "mwimg5 why is this broken", "the chat keeps what the user saw");
+    assert.doesNotMatch(modelText, /mwimg5/, "the handle must never reach the model");
+    assert.ok(modelText.startsWith("Screenshot 2026-09-15 112814.png why is this broken"), modelText);
+    assert.ok(
+      modelText.includes("[Image source: Screenshot 2026-09-15 112814.png]"),
+      "the model needs the path to open the image again once it is cleared",
+    );
+  });
+});
+
+test("a dropped text file reaches the model by its name, never the input box handle", async () => {
+  await withTmp(async (dir) => {
+    const abs = join(dir, "notes.txt");
+    await fs.writeFile(abs, "hello\n");
+    const { modelText, displayText } = await resolveAttachments(`read "${abs}"`, dir, false, () => "mwfile1");
+    assert.equal(displayText, "read mwfile1");
+    assert.doesNotMatch(modelText, /mwfile1/);
+    assert.ok(modelText.startsWith("read notes.txt"), modelText);
+  });
+});
+
+test("a resumed chat does not show the image source line the model was given", () => {
+  const stored = "look at shot.png\n\n[Image source: C:\Users\me\Pictures\shot.png]";
+  assert.equal(stripAttachments(stored), "look at shot.png");
+});

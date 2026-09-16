@@ -38,7 +38,7 @@ export const BASE_COMMANDS: CommandInfo[] = [
   { name: "/exclude", description: "remove an added folder: /exclude <label>" },
   { name: "/shells", description: "view or stop background commands (tests, servers)" },
   { name: "/mcp", description: "view MCP servers; /mcp add <name> <command|url> to connect one" },
-  { name: "/context", description: "show what Mindweave sees about this project" },
+  { name: "/context", description: "show what is filling the context window" },
   { name: "/undo", description: "roll back file changes: /undo, /undo list, /undo <n>" },
   { name: "/compact", description: "summarize the conversation to free up context" },
   { name: "/update", description: "update Mindweave and restart into this conversation" },

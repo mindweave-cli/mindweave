@@ -127,8 +127,11 @@ export async function resolveAttachments(
   const blocks: string[] = [];
   const notes: string[] = [];
   const images: ImageRef[] = [];
-  // Spans to collapse in the display line (dropped paths only), applied right-to-left.
-  const collapses: { start: number; end: number; label: string }[] = [];
+  // Spans to collapse (dropped paths only), applied right-to-left. The chat and the model
+  // get DIFFERENT labels for the same span: the chat shows the handle the user saw in the
+  // input box, the model gets the file's name. Sending the model the handle gave it a word
+  // (`mwimg5`) that names nothing on disk, and it went looking for `mwimg5.png`.
+  const collapses: { start: number; end: number; label: string; modelLabel: string }[] = [];
 
   for (const c of candidates) {
     if (!c.raw) continue;
@@ -150,7 +153,7 @@ export async function resolveAttachments(
     // named-but-unseen note when it doesn't. Either way the file name reaches the
     // model, so it can ask about it rather than being unaware anything was shared.
     if (isImage(abs)) {
-      if (c.kind === "path") collapses.push({ start: c.start, end: c.end, label: labelFor?.(abs) ?? basename(abs) });
+      if (c.kind === "path") collapses.push({ start: c.start, end: c.end, label: labelFor?.(abs) ?? basename(abs), modelLabel: basename(abs) });
 
       if (!canSeeImages) {
         notes.push(`attached image ${shown} (this model can't see images — describe it, or switch with /provider)`);
@@ -168,6 +171,9 @@ export async function resolveAttachments(
         continue;
       }
       images.push(verdict);
+      // Where the picture lives, so it can be opened again once its payload has been
+      // cleared from context. The image block itself carries no name at all.
+      blocks.push(imageSourceLine(shown));
       const size = verdict.width && verdict.height ? `${verdict.width}x${verdict.height}` : "attached";
       notes.push(`attached image ${shown} (${size})`);
       continue;
@@ -190,12 +196,13 @@ export async function resolveAttachments(
     notes.push(`attached ${shown} (+${lineCount} lines)`);
     // A dropped/quoted path is long and ugly in the chat — collapse it to the file
     // name. An `@mention` is already short, so leave it visible as typed.
-    if (c.kind === "path") collapses.push({ start: c.start, end: c.end, label: labelFor?.(abs) ?? basename(abs) });
+    if (c.kind === "path") collapses.push({ start: c.start, end: c.end, label: labelFor?.(abs) ?? basename(abs), modelLabel: basename(abs) });
   }
 
   const displayText = applyCollapses(text, collapses);
-  if (blocks.length === 0) return { modelText: displayText, displayText, notes, images };
-  return { modelText: `${displayText}\n\n${blocks.join("\n\n")}`, displayText, notes, images };
+  const typed = applyCollapses(text, collapses.map((c) => ({ ...c, label: c.modelLabel })));
+  if (blocks.length === 0) return { modelText: typed, displayText, notes, images };
+  return { modelText: `${typed}\n\n${blocks.join("\n\n")}`, displayText, notes, images };
 }
 
 /**
@@ -206,8 +213,16 @@ export async function resolveAttachments(
 export function stripAttachments(content: string): string {
   return content
     .replace(/\n*<attached_file path="[^"]*">\n[\s\S]*?\n<\/attached_file>/g, "")
+    .replace(IMAGE_SOURCE_RE, "")
     .trimEnd();
 }
+
+/** The line that tells the model where an attached image lives on disk. */
+export function imageSourceLine(path: string): string {
+  return `[Image source: ${path}]`;
+}
+
+const IMAGE_SOURCE_RE = /\n*\[Image source: [^\]\n]*\]/g;
 
 /** Gather every file-reference token (mentions, quoted paths, bare absolute paths),
  *  sorted by position; quoted/bare ranges never overlap (a quote isn't a path char
