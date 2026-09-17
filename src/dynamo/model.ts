@@ -14,20 +14,86 @@
  */
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
-import { projectDir } from "../memory/store.js";
+import { projectDir, stateRoot } from "../memory/store.js";
 import {
   allModels,
   allProviders,
+  discoveredList,
+  discoveredProviderIds,
   ensureDriver,
   manifestForModel,
   modelsOf,
   normalizeConfig,
-  refreshModels,
+  refreshModels as refreshDiscovered,
+  seedDiscovered,
 } from "../drivers/registry.js";
 import type { Effort, ModelChoice, ModelConfig, ModelId, ThinkLevel } from "../drivers/types.js";
 
 export type { Effort, ModelChoice, ModelConfig, ModelId, ThinkLevel };
-export { refreshModels };
+
+/**
+ * How long a discovered model list is trusted before it is fetched again.
+ *
+ * A router's catalogue is a large download that changes weekly, and asking for it every
+ * time `/model` opens puts a pause in front of a list that almost never changed. Six
+ * hours keeps a new model a same-day arrival without paying for it on every open.
+ */
+export const DISCOVERY_TTL_MS = 6 * 60 * 60 * 1000;
+
+function discoveryCachePath(id: string): string {
+  return join(stateRoot(), "cache", `models-${id}.json`);
+}
+
+/**
+ * Refresh discovered model lists older than `maxAgeMs` (all of them by default), and
+ * keep what arrived on disk so the next launch starts with it.
+ */
+export async function refreshModels(options: { maxAgeMs?: number } = {}): Promise<string[]> {
+  const refreshed = await refreshDiscovered(options);
+  await Promise.all(refreshed.map((id) => persistDiscovered(id)));
+  return refreshed;
+}
+
+async function persistDiscovered(id: string): Promise<void> {
+  const entry = discoveredList(id);
+  if (!entry) return;
+  try {
+    const path = discoveryCachePath(id);
+    await fs.mkdir(join(stateRoot(), "cache"), { recursive: true });
+    // Written beside and renamed over, so a crash mid-write leaves the old list rather
+    // than half a JSON file that would be discarded on the next launch.
+    const tmp = `${path}.${process.pid}.tmp`;
+    await fs.writeFile(tmp, JSON.stringify({ fetchedAt: entry.fetchedAt, models: entry.models }), "utf8");
+    await fs.rename(tmp, path);
+  } catch {
+    /* best-effort: the list is still in memory */
+  }
+}
+
+/** Write one provider's list to disk now. Exported for tests only. */
+export const persistedForTest = persistDiscovered;
+
+/** Install every discovered list saved by an earlier run. A bad file is ignored. */
+export async function loadDiscoveryCache(): Promise<void> {
+  await Promise.all(
+    discoveredProviderIds().map(async (id) => {
+      try {
+        const parsed = JSON.parse(await fs.readFile(discoveryCachePath(id), "utf8")) as {
+          fetchedAt?: unknown;
+          models?: unknown;
+        };
+        if (typeof parsed.fetchedAt !== "number" || !Array.isArray(parsed.models)) return;
+        const models = parsed.models.filter(
+          (m): m is ModelChoice =>
+            !!m && typeof (m as ModelChoice).id === "string" && typeof (m as ModelChoice).label === "string",
+        );
+        seedDiscovered(id, models.map((m) => ({ ...m, description: m.description ?? "" })), parsed.fetchedAt);
+      } catch {
+        /* no cache yet, or unreadable: discovery will fill it */
+      }
+    }),
+  );
+}
 
 /**
  * The models offered by `/model`, across every installed provider.
@@ -164,7 +230,12 @@ function configPath(projectCwd: string): string {
  * config survives to be normalized against a list that arrives later.
  */
 export async function loadModelConfig(projectCwd: string): Promise<ModelConfig> {
-  await refreshModels();
+  // A provider with a saved list starts from it and refreshes in the background once
+  // stale; only a provider with no list at all is waited on, because normalizing a
+  // saved config against nothing is the bug the comment above describes.
+  await loadDiscoveryCache();
+  const refresh = refreshModels({ maxAgeMs: DISCOVERY_TTL_MS });
+  if (discoveredProviderIds().some((id) => !discoveredList(id))) await refresh;
 
   let config: ModelConfig;
   try {

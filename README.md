@@ -70,8 +70,9 @@ else is configured inside a session.
 
 Short version, one line each. The depth is in the linked pages.
 
-- **14 providers, 52 models, one key** — DeepSeek, Anthropic, OpenAI, Gemini, xAI,
-  Mistral, Groq, Cerebras, Qwen, Kimi, GLM, Meta, MiniMax, Tencent. Only the driver you
+- **15 providers, 53 models, one key** — DeepSeek, Anthropic, OpenAI, Gemini, xAI,
+  Mistral, Groq, Cerebras, Qwen, Kimi, GLM, Meta, MiniMax, Tencent, plus every
+  tool-capable model on OpenRouter. Only the driver you
   use is loaded. Switch with `/provider` and `/model`; remembered per project.
   [PROVIDERS.md](src/drivers/PROVIDERS.md)
 - **Real tools** — read and edit files, multi-file edits, ripgrep search, a shell with

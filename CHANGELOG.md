@@ -3,6 +3,39 @@
 Notable changes to Mindweave. Dates are release dates.
 
 
+## v2.4.9 (2026-09-17): OpenRouter is a provider, and any list can be searched by typing
+
+OpenRouter is now the fifteenth provider. One key reaches models from nearly every vendor,
+and Mindweave lists every one of them that can run an agent turn, which today is about 280.
+Nothing about those models is guessed: the price, the context window, whether a model can
+see images and which reasoning levels it accepts all come from OpenRouter's own catalogue.
+A model that always reasons gets no option to switch reasoning off, because OpenRouter
+rejects that request. Free models are listed and marked as free. Batch-only entries,
+OpenRouter's automatic routers and "latest" aliases are left out, because they either fail
+on first use or quietly change which model you are paying for. The catalogue is saved
+between runs and fetched again after six hours, so `/model` opens straight away.
+
+OpenRouter model ids are stored with their own `openrouter:` prefix. Some ids exist on more
+than one provider, and without the prefix picking `openai/gpt-oss-120b` on OpenRouter would
+have run it on Groq instead. By default OpenRouter may send prompts to hosts that store or
+train on them, and Mindweave says so when you switch to it. Set
+`MINDWEAVE_OPENROUTER_DATA=deny` to use only hosts that do not.
+
+Every picker can now be searched. With `/model`, `/continue` or any other list open, type
+and the list narrows to the rows that contain every word you typed, in any order. Backspace
+edits what you typed and closes the list once there is nothing left to delete. `/model` also
+takes words directly: `/model openrouter deepseek flash` switches provider and model in one
+go, and when several models match, the list opens showing just those instead of printing
+every name.
+
+A provider failing on its own side no longer shows up as a red crash like
+`API error 502: ERROR`. Once the retries run out it now reads as a notice naming the model,
+saying the problem is with the provider and not your key or setup, and suggesting you try
+again in a moment or choose another model with `/model`. A failure reported part way
+through a reply, which a provider can send after the response has already started, used to
+be recorded as a finished reply. It is now treated as the failure it is, and any text that
+already arrived is kept and marked incomplete.
+
 ## v2.4.8 (2026-09-16): the transcript stays put while you're reading it
 
 Scrolling back to read while a reply was still streaming in used to drift toward the

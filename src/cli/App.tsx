@@ -46,10 +46,10 @@ import { TrustGate } from "./components/TrustGate.js";
 import { rootBreadth, breadthWarning, trustPersists, isTrusted, rememberTrust } from "./trust.js";
 import { projectDir } from "../memory/store.js";
 import { parseUndoArg, undoNotice } from "../tools/checkpoints.js";
-import { DEFAULT_MODEL_CONFIG, thinkLevels, thinkLabel, modelLabel, modelsOfProvider, providerOf, usableFallback, needsKeySetup, withModel, saveModelConfig, refreshModels, type ModelConfig } from "../dynamo/model.js";
+import { DEFAULT_MODEL_CONFIG, thinkLevels, thinkLabel, modelLabel, modelsOfProvider, providerOf, usableFallback, needsKeySetup, withModel, saveModelConfig, refreshModels, DISCOVERY_TTL_MS, type ModelConfig } from "../dynamo/model.js";
 import { allProviders, manifestForModel, modelsOf } from "../drivers/registry.js";
 import { orderProviders, orderModels } from "./pickerOrder.js";
-import { accessRefusal } from "../drivers/providerError.js";
+import { accessRefusal, providerOutage } from "../drivers/providerError.js";
 import { resolveAttachments, stripAttachments } from "./attachments.js";
 import { collapsePastes, wrapPastedText } from "../memory/pastedText.js";
 import { createDropHandles, expandHandles } from "./dropHandles.js";
@@ -95,7 +95,7 @@ import { perf, perfEnabled } from "./perfLog.js";
 import { isGroupMember, groupSettled, planGroupReveal, planStandaloneReveal, resultQueued, STANDALONE_HOLD_MS } from "./groupReveal.js";
 import { drain as drainQueue, popAll as popAllQueued, queueMessage, takeSteerable, visibleQueue, type Queued } from "./messageQueue.js";
 import { routeCommand, parseCommandLine, unknownCommandMessage } from "./commandRoute.js";
-import { resolveChoice } from "./commandArgs.js";
+import { resolveChoice, splitModelArg } from "./commandArgs.js";
 import { carryAcrossFreshSession } from "./sessionCarry.js";
 import { toolDisplay, isGroupable, KIND_COLOR } from "./toolDisplay.js";
 import { workingVerb } from "./workingVerb.js";
@@ -171,6 +171,13 @@ function orderedModelList(model: string) {
   return orderModels(modelsOfProvider(model));
 }
 
+/** The same order, for a provider named by id rather than by one of its models. */
+function orderedModelsOf(providerId: string) {
+  const provider = allProviders().find((p) => p.id === providerId);
+  return provider ? orderModels(modelsOf(provider)) : [];
+}
+
+
 /**
  * An interactive overlay that temporarily takes over the keyboard (rendered as a
  * Picker below the transcript). `sessions` resumes a past chat; `model`/`think`
@@ -182,7 +189,8 @@ type Overlay =
   | { kind: "sessions"; items: SessionMeta[] }
   | { kind: "resumeMode"; meta: SessionMeta }
   | { kind: "provider" }
-  | { kind: "model" }
+  /** `providerId` absent means the provider in use; `filter` pre-fills the picker's filter. */
+  | { kind: "model"; providerId?: string; filter?: string }
   | { kind: "think" }
   | { kind: "screen" }
   | { kind: "shells"; items: ShellInfo[] }
@@ -2092,7 +2100,11 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
       // the provider's own sentence quoted inside it. Anything else — a malformed
       // request, a bug of ours — stays loud, which is the point of classifying
       // narrowly. See drivers/providerError.ts.
-      const refusal = accessRefusal(error, providerOf(s.modelConfig.model).label, otherProviderHasKey(s.modelConfig.model));
+      // A provider falling over after the retries ran out gets the same calm treatment:
+      // it is not our crash, and the useful news is "wait, or switch model".
+      const refusal =
+        accessRefusal(error, providerOf(s.modelConfig.model).label, otherProviderHasKey(s.modelConfig.model)) ??
+        providerOutage(error, providerOf(s.modelConfig.model).label, modelLabel(s.modelConfig.model));
       if (refusal) enqueueReveal({ type: "notice", title: refusal.title, body: refusal.body });
       else enqueueReveal({ type: "error", text: `⚠ ${errText(error)}` });
     } finally {
@@ -2225,14 +2237,27 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
 
   // Apply a /model pick: switch model (clamping reasoning to a valid level), persist
   // the choice for this project, and confirm.
-  async function applyModel(index: number) {
+  async function applyModel(index: number, providerId?: string) {
     const s = session.current;
-    // Index into the SAME list the picker rendered — the current provider's models in
-    // display order, not every model everywhere. Indexing a differently-ordered list
-    // here would silently select a different model than the one on screen, and would
-    // type-check perfectly.
-    const choice = s ? orderedModelList(s.modelConfig.model)[index] : undefined;
+    // Index into the SAME list the picker rendered — that provider's models in display
+    // order, not every model everywhere. Indexing a differently-ordered list here would
+    // silently select a different model than the one on screen, and would type-check
+    // perfectly.
+    const list = !s ? [] : providerId ? orderedModelsOf(providerId) : orderedModelList(s.modelConfig.model);
+    const choice = list[index];
     if (!s || !choice) return;
+    // A model on another provider is a provider switch, and gets the same key check.
+    const target = manifestForModel(choice.id);
+    if (target.id !== providerOf(s.modelConfig.model).id) {
+      if (missingKeyFor(choice.id)) {
+        pendingSwitch.current = { model: choice.id, apiKeyEnv: target.apiKeyEnv, label: target.label };
+        note(`${target.label} has no key yet — add one and the switch will finish.`);
+        setKeysOpen(true);
+        return;
+      }
+      await switchTo(choice.id, target.label);
+      return;
+    }
     s.modelConfig = withModel(s.modelConfig, choice.id);
     await saveModelConfig(s.cwd, s.modelConfig);
     note(`model → ${modelLabel(s.modelConfig.model)} · ${thinkLabel(s.modelConfig)}`);
@@ -2278,6 +2303,9 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
     s.modelConfig = withModel(s.modelConfig, model);
     await saveModelConfig(s.cwd, s.modelConfig);
     note(`provider → ${providerLabel} · model → ${modelLabel(s.modelConfig.model)} · ${thinkLabel(s.modelConfig)}`);
+    // Where prompts go is worth a sentence at the moment someone moves their work there.
+    const notice = manifestForModel(model).notice;
+    if (notice) note(notice);
   }
 
   // Apply a /think pick for the current model: set thinking + effort, persist, confirm.
@@ -2328,7 +2356,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
       note(`Analytics turned ${index === 0 ? "on" : "off"}.`);
     } else if (o.kind === "resumeMode") void applyResume(o.meta, index);
     else if (o.kind === "provider") void applyProvider(index);
-    else if (o.kind === "model") void applyModel(index);
+    else if (o.kind === "model") void applyModel(index, o.providerId);
     else if (o.kind === "think") void applyThink(index);
     else if (o.kind === "screen") {
       const picked = screenChoices(shell)[index];
@@ -2719,12 +2747,12 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
       return;
     }
 
-    // Both pickers refresh discovered providers first, so a model pulled since the
-    // session started appears without a restart. Awaited rather than fired off: the
+    // Both pickers refresh discovered providers whose list has gone stale, so a newly
+    // served model appears without a restart. Awaited rather than fired off: the
     // picker renders from the list, and opening on a stale one that then changes
     // under the cursor is the exact "two-stage reveal" the UI work removed.
     if (name === "/provider") {
-      await refreshModels();
+      await refreshModels({ maxAgeMs: DISCOVERY_TTL_MS });
       setOverlay({ kind: "provider" });
       return;
     }
@@ -2741,11 +2769,18 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
     // getting the picker anyway — which is what happened before, because the argument
     // was dropped without a word — reads as the app not having heard you.
     if (name === "/model") {
-      await refreshModels();
+      await refreshModels({ maxAgeMs: DISCOVERY_TTL_MS });
       if (arg) {
-        const picked = resolveChoice(arg, orderedModelList(s.modelConfig.model), "model");
+        const current = providerOf(s.modelConfig.model).id;
+        const here = resolveChoice(arg, orderedModelList(s.modelConfig.model), "model");
+        const { providerId, words } = splitModelArg(arg, allProviders(), current, here.kind !== "error");
+        // `/model openrouter` alone: that provider's picker.
+        if (!words) return setOverlay({ kind: "model", providerId });
+        const picked = providerId === current ? here : resolveChoice(words, orderedModelsOf(providerId), "model");
         if (picked.kind === "error") return say(picked.message);
-        await applyModel(picked.index);
+        // Several fit: show exactly those, in the picker, rather than a list to retype from.
+        if (picked.kind === "several") return setOverlay({ kind: "model", providerId, filter: words });
+        await applyModel(picked.index, providerId);
         return;
       }
       setOverlay({ kind: "model" });
@@ -2775,7 +2810,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
     if (name === "/think") {
       if (arg) {
         const picked = resolveChoice(arg, thinkLevels(s.modelConfig.model), "reasoning level");
-        if (picked.kind === "error") return say(picked.message);
+        if (picked.kind !== "match") return say(picked.message);
         await applyThink(picked.index);
         return;
       }
@@ -3303,9 +3338,10 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
     }
     if (overlay.kind === "model") {
       const id = cur?.modelConfig.model ?? DEFAULT_MODEL_CONFIG.model;
-      // Only the current provider's models, in display order (default first, rest A→Z).
-      // Switching provider is /provider's job.
-      const models = orderedModelList(id);
+      // One provider's models, in display order (default first, rest A→Z): the one in use,
+      // unless `/model <provider> …` named another.
+      const models = overlay.providerId ? orderedModelsOf(overlay.providerId) : orderedModelList(id);
+      const pickerProvider = overlay.providerId ? allProviders().find((p) => p.id === overlay.providerId)?.label ?? "" : providerOf(id).label;
       // The two facts that decide the choice and are nowhere else on the screen: how much
       // it can hold, and whether it can see an image you attach. They lead the description
       // because the row truncates from the RIGHT — put behind the prose they would be the
@@ -3321,11 +3357,12 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
       });
       return (
         <Picker
-          title={`Choose a ${providerOf(id).label} model`}
+          title={`Choose a ${pickerProvider} model`}
           items={items}
           width={width}
           maxRows={maxRows}
           initialIndex={Math.max(0, models.findIndex((m) => m.id === id))}
+          initialFilter={overlay.filter}
           onSelect={onOverlaySelect}
           onCancel={onOverlayCancel}
         />

@@ -17,7 +17,7 @@
  * The session picks a driver once, at start, and again when `/model` changes the
  * selection — "compile down to one driver" rather than branching per call.
  */
-import type { Driver, DriverManifest, ModelChoice, ModelConfig, ModelId } from "./types.js";
+import type { Driver, DriverManifest, Effort, ModelChoice, ModelConfig, ModelFacts, ModelId, ThinkLevel } from "./types.js";
 import { deepseekManifest } from "./deepseek/manifest.js";
 import { anthropicManifest } from "./anthropic/manifest.js";
 import { openaiManifest } from "./openai/manifest.js";
@@ -32,6 +32,7 @@ import { geminiManifest } from "./gemini/manifest.js";
 import { metaManifest } from "./meta/manifest.js";
 import { minimaxManifest } from "./minimax/manifest.js";
 import { tencentManifest } from "./tencent/manifest.js";
+import { openrouterManifest } from "./openrouter/manifest.js";
 
 /** Every provider's cheap metadata, in display order. Always loaded. */
 const MANIFESTS: DriverManifest[] = [
@@ -49,6 +50,7 @@ const MANIFESTS: DriverManifest[] = [
   metaManifest,
   minimaxManifest,
   tencentManifest,
+  openrouterManifest,
 ];
 
 /** How to load each provider's wire code, on demand. Keyed by manifest id. */
@@ -67,6 +69,7 @@ const LOADERS: Record<string, () => Promise<Driver>> = {
   meta: async () => (await import("./meta/index.js")).metaDriver,
   minimax: async () => (await import("./minimax/index.js")).minimaxDriver,
   tencent: async () => (await import("./tencent/index.js")).tencentDriver,
+  openrouter: async () => (await import("./openrouter/index.js")).openrouterDriver,
 };
 
 /** The provider used when a model id doesn't match any other. */
@@ -112,11 +115,79 @@ export function modelsOf(manifest: DriverManifest): ModelChoice[] {
  * actually serves.
  */
 export function manifestForModel(model: ModelId): DriverManifest {
-  return (
+  return withFacts(
     MANIFESTS.find((m) => modelsOf(m).some((c) => c.id === model)) ??
-    MANIFESTS.find((m) => m.ownsModel?.(model) === true) ??
-    FALLBACK
+      MANIFESTS.find((m) => m.ownsModel?.(model) === true) ??
+      FALLBACK,
   );
+}
+
+/** The facts a discovered listing reported for one model, if any. */
+function factsOf(manifest: DriverManifest, model: ModelId): ModelFacts | undefined {
+  return discovered.get(manifest.id)?.find((c) => c.id === model)?.facts;
+}
+
+const views = new WeakMap<DriverManifest, DriverManifest>();
+
+/**
+ * A discovered provider's manifest, answering from its listing's facts first.
+ *
+ * Every consumer reads a model's window, price, vision and reasoning ladder through
+ * `manifestForModel`, so wrapping here is what lets a router report real numbers
+ * without a single call site learning that discovered facts exist. Anything the
+ * listing did not report falls through to the manifest's own function.
+ *
+ * A fixed provider is returned untouched: it has no listing to consult.
+ */
+function withFacts(manifest: DriverManifest): DriverManifest {
+  if (!manifest.discoverModels) return manifest;
+  let view = views.get(manifest);
+  if (view) return view;
+  view = {
+    ...manifest,
+    thinkLevels: (model) => factsOf(manifest, model)?.thinkLevels ?? manifest.thinkLevels(model),
+    price: (model) => factsOf(manifest, model)?.price ?? manifest.price(model),
+    contextWindow: (model) => factsOf(manifest, model)?.contextWindow ?? manifest.contextWindow(model),
+    bufferedOutputTokens: (model) =>
+      factsOf(manifest, model)?.bufferedOutputTokens ?? manifest.bufferedOutputTokens?.(model) ?? 0,
+    acceptsImages: (model) => factsOf(manifest, model)?.acceptsImages ?? manifest.acceptsImages?.(model) ?? false,
+    normalize: (config) => {
+      const base = manifest.normalize(config);
+      const levels = factsOf(manifest, base.model)?.thinkLevels;
+      // Snapped from the caller's own selection, not the manifest's fallback answer: the
+      // fallback ladder is coarser, and rounding through it first would lose a rung the
+      // real ladder has.
+      return levels ? snapToLevels({ ...config, model: base.model }, levels) : base;
+    },
+  };
+  views.set(manifest, view);
+  return view;
+}
+
+const EFFORTS: Effort[] = ["low", "medium", "high", "xhigh", "max"];
+
+/**
+ * Move a reasoning selection onto a ladder the model actually offers.
+ *
+ * Thinking is kept on or off when the ladder allows it, and flipped when it does not
+ * (a model that cannot stop reasoning has no off rung). The effort goes to the nearest
+ * offered rung, ties downward, which is the convention every fixed driver follows:
+ * rounding up would quietly spend more than the user chose.
+ */
+export function snapToLevels(config: ModelConfig, levels: ThinkLevel[]): ModelConfig {
+  if (levels.length === 0) return config;
+  const same = levels.filter((l) => l.thinking === config.thinking);
+  const pool = same.length > 0 ? same : levels;
+  const thinking = pool[0]!.thinking;
+  if (pool.some((l) => l.effort === config.effort)) return { ...config, thinking };
+  const want = EFFORTS.indexOf(config.effort);
+  let best = pool[0]!;
+  for (const level of pool) {
+    const d = Math.abs(EFFORTS.indexOf(level.effort) - want);
+    const bestD = Math.abs(EFFORTS.indexOf(best.effort) - want);
+    if (d < bestD || (d === bestD && EFFORTS.indexOf(level.effort) < EFFORTS.indexOf(best.effort))) best = level;
+  }
+  return { ...config, thinking, effort: best.effort };
 }
 
 /** Every model offered across all installed providers. */
@@ -136,8 +207,16 @@ export function allModels(): ModelChoice[] {
  * it (no key, nothing running), not by a picker that quietly loses its contents.
  * Returns the ids that refreshed successfully, so a caller can tell the difference.
  */
-export async function refreshModels(): Promise<string[]> {
-  const dynamic = MANIFESTS.filter((m) => m.discoverModels);
+export async function refreshModels(options: { maxAgeMs?: number } = {}): Promise<string[]> {
+  const maxAge = options.maxAgeMs ?? 0;
+  const now = Date.now();
+  const dynamic = MANIFESTS.filter((m) => m.discoverModels).filter((m) => {
+    // A list younger than the caller's tolerance is left alone. A router's catalogue is
+    // a large download, and asking for it on every picker open costs a visible pause
+    // for a list that changes weekly.
+    const at = refreshedAt.get(m.id);
+    return maxAge <= 0 || at === undefined || now - at >= maxAge;
+  });
   const results = await Promise.all(
     dynamic.map(async (m) => {
       try {
@@ -145,6 +224,7 @@ export async function refreshModels(): Promise<string[]> {
         // An empty result is a real answer — a runtime with nothing pulled — and is
         // stored as such. Failure is the case that must not overwrite.
         discovered.set(m.id, models);
+        refreshedAt.set(m.id, Date.now());
         return m.id;
       } catch {
         return null;
@@ -154,9 +234,40 @@ export async function refreshModels(): Promise<string[]> {
   return results.filter((id): id is string => id !== null);
 }
 
+/** When each discovered list was fetched, in ms. Seeded lists carry their fetch time. */
+const refreshedAt = new Map<string, number>();
+
+/**
+ * A discovered provider's list as last fetched, for persisting. Undefined when it has
+ * never been fetched or seeded, which is different from an empty list.
+ */
+export function discoveredList(id: string): { models: ModelChoice[]; fetchedAt: number } | undefined {
+  const models = discovered.get(id);
+  const fetchedAt = refreshedAt.get(id);
+  return models && fetchedAt !== undefined ? { models, fetchedAt } : undefined;
+}
+
+/**
+ * Install a previously fetched list, so a picker and the first turn have real facts
+ * before the network answers. Never replaces a list fetched in this process: a disk
+ * copy is older by definition.
+ */
+export function seedDiscovered(id: string, models: ModelChoice[], fetchedAt: number): void {
+  if (!MANIFESTS.some((m) => m.id === id && m.discoverModels)) return;
+  if (discovered.has(id)) return;
+  discovered.set(id, models);
+  refreshedAt.set(id, fetchedAt);
+}
+
+/** Ids of every provider that discovers its models. */
+export function discoveredProviderIds(): string[] {
+  return MANIFESTS.filter((m) => m.discoverModels).map((m) => m.id);
+}
+
 /** Drop every discovered list. For tests, and for a full provider reset. */
 export function clearDiscovered(): void {
   discovered.clear();
+  refreshedAt.clear();
 }
 
 /**

@@ -16,7 +16,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { render } from "ink";
 import { BlockView } from "./components/BlockView.js";
-import { accessRefusal } from "../drivers/providerError.js";
+import { accessRefusal, providerOutage } from "../drivers/providerError.js";
 import { ProviderHttpError } from "../drivers/openaiCompat/wire.js";
 import type { Block } from "./transcript.js";
 
@@ -119,4 +119,14 @@ test("every line stays inside the terminal width", () => {
   for (const row of rows) {
     assert.ok(row.length <= 76, `row overflowed at ${row.length} columns: ${row}`);
   }
+});
+
+test("a provider outage renders as a notice that stays inside the width, with no crash marker", () => {
+  const outage = providerOutage(new ProviderHttpError(502, "ERROR", "OpenRouter", ""), "OpenRouter", "Union Alpha")!;
+  const rows = rowsOf({ kind: "notice", id: 1, done: true, title: outage.title, body: outage.body });
+  const text = rows.join("\n");
+  assert.match(text, /Union Alpha isn't responding right now/);
+  assert.match(text, /\/model/);
+  assert.ok(!text.includes("⚠"), "a provider outage must not render as our crash");
+  for (const row of rows) assert.ok(row.length <= 76, `row overflowed at ${row.length} columns: ${row}`);
 });

@@ -13,11 +13,14 @@
  * which reads them from the registry. That is the rule for core code, and it is also
  * what makes this testable without a key.
  *
- * The matching is deliberately forgiving in a bounded way: exact id, then exact label,
- * then a UNIQUE prefix, then a UNIQUE substring. Never a "closest guess" — picking a
- * model or a reasoning budget is a decision with a cost attached, and quietly choosing
- * the nearest thing to a typo is how you end up billed for the wrong one. Ambiguity
- * and misses both come back as a message naming the real options.
+ * The matching is deliberately forgiving in a bounded way: exact id or label, then a
+ * UNIQUE prefix, then every typed WORD appearing somewhere in the id or label, in any
+ * order. Words matter once a provider lists hundreds of models: "deepseek flash" has to
+ * find "DeepSeek V4.1 Flash" although "V4.1" sits between the two words. Never a
+ * "closest guess" — picking a model or a reasoning budget is a decision with a cost
+ * attached, and quietly choosing the nearest thing to a typo is how you end up billed
+ * for the wrong one. Several matches come back as the list of them, so a caller can
+ * offer exactly those; a miss comes back as a message.
  */
 
 export interface Candidate {
@@ -29,7 +32,9 @@ export interface Candidate {
 
 export type Resolution =
   | { kind: "match"; index: number }
-  /** Nothing matched, or too much did. `message` is ready to show. */
+  /** More than one candidate fits. `message` names them, ready to show. */
+  | { kind: "several"; indices: number[]; message: string }
+  /** Nothing matched. `message` is ready to show. */
   | { kind: "error"; message: string };
 
 function norm(s: string): string {
@@ -61,16 +66,65 @@ export function resolveChoice(arg: string, candidates: readonly Candidate[], wha
 
   const starts = matchesFor(candidates, (c) => startsWith(c, wanted));
   if (starts.length === 1) return { kind: "match", index: starts[0]! };
-  if (starts.length > 1) return { kind: "error", message: ambiguous(arg, starts.map((i) => names[i]!)) };
+  if (starts.length > 1) return several(arg, starts, names);
 
-  const contains = matchesFor(candidates, (c) => includes(c, wanted));
-  if (contains.length === 1) return { kind: "match", index: contains[0]! };
-  if (contains.length > 1) return { kind: "error", message: ambiguous(arg, contains.map((i) => names[i]!)) };
+  const words = wordsOf(arg);
+  const all = matchesFor(candidates, (c) => words.every((w) => includes(c, w)));
+  if (all.length === 1) return { kind: "match", index: all[0]! };
+  if (all.length > 1) return several(arg, all, names);
 
-  return {
-    kind: "error",
-    message: `No ${what} called "${arg.trim()}". Available: ${list(names)}.`,
-  };
+  return { kind: "error", message: miss(arg, words, candidates, what) };
+}
+
+/** The words of a typed argument, lowercased. */
+export function wordsOf(text: string): string[] {
+  return norm(text).split(/\s+/).filter(Boolean);
+}
+
+/** True when every word appears in one of the texts. Shared with the picker's filter. */
+export function matchesWords(words: readonly string[], ...texts: (string | undefined)[]): boolean {
+  const hay = texts.filter((t): t is string => !!t).map(norm);
+  return words.every((w) => hay.some((h) => h.includes(w)));
+}
+
+/**
+ * Split `/model <words>` into the provider it names and the words left to match.
+ *
+ * The first word names a provider only when it is exactly one AND the whole phrase
+ * matches nothing on the provider in use. So on a router `/model deepseek flash` finds
+ * the router's DeepSeek Flash, while on a provider serving no DeepSeek model it moves
+ * to DeepSeek. `/model openrouter` alone leaves no words, which means "show me its list".
+ */
+export function splitModelArg(
+  arg: string,
+  providers: readonly { id: string; label: string }[],
+  current: string,
+  matchesHere: boolean,
+): { providerId: string; words: string } {
+  const [first = "", ...rest] = wordsOf(arg);
+  const named = providers.find((p) => norm(p.id) === first || norm(p.label) === first);
+  if (!named || matchesHere) return { providerId: current, words: arg.trim() };
+  return { providerId: named.id, words: rest.join(" ") };
+}
+
+/** A long list is not read by anyone, so beyond this only the nearest names are offered. */
+const LIST_ALL_UP_TO = 12;
+
+function miss(arg: string, words: readonly string[], candidates: readonly Candidate[], what: string): string {
+  const said = `No ${what} called "${arg.trim()}".`;
+  if (candidates.length <= LIST_ALL_UP_TO) return `${said} Available: ${list(candidates.map((c) => c.label))}.`;
+  // Nearest by how many of the typed words each one contains. A suggestion, never a pick.
+  const scored = candidates
+    .map((c) => ({ c, score: words.filter((w) => includes(c, w)).length }))
+    .filter((x) => x.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 3)
+    .map((x) => x.c.label);
+  return scored.length > 0 ? `${said} Closest: ${list(scored)}.` : said;
+}
+
+function several(arg: string, indices: number[], names: readonly string[]): Resolution {
+  return { kind: "several", indices, message: ambiguous(arg, indices.map((i) => names[i]!)) };
 }
 
 function matchesFor(candidates: readonly Candidate[], pred: (c: Candidate) => boolean): number[] {
@@ -90,5 +144,6 @@ function includes(c: Candidate, wanted: string): boolean {
 }
 
 function ambiguous(arg: string, matched: readonly string[]): string {
-  return `"${arg.trim()}" matches ${list(matched)}. Which one?`;
+  const shown = matched.length > LIST_ALL_UP_TO ? [...matched.slice(0, LIST_ALL_UP_TO), `${matched.length - LIST_ALL_UP_TO} more`] : matched;
+  return `"${arg.trim()}" matches ${list(shown)}. Which one?`;
 }

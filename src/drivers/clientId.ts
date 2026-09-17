@@ -3,9 +3,8 @@
  * request.
  *
  * Every provider logs the `User-Agent` (or equivalent) header on inbound
- * requests for its own analytics, rate-limit tiers, and abuse review — the same
- * way Cursor, Cline, Aider and every other terminal coding agent identify
- * themselves rather than looking like a bare SDK call. This is that string, sent
+ * requests for its own analytics, rate-limit tiers, and abuse review, so a client
+ * that names itself reads as an application rather than a bare SDK call. This is that string, sent
  * consistently from every driver so Mindweave's traffic reads as Mindweave's
  * traffic wherever a provider looks.
  *

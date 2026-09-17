@@ -10,8 +10,8 @@ lineup below costs nothing until you pick from it.
 
 ## Available now
 
-14 providers, 52 models. `/provider` moves between them and `/model`
-lists what the one you are on offers, so there is nothing here you need to memorise.
+15 providers, 53 models, plus OpenRouter's catalogue. `/provider` moves between them and
+`/model` lists what the one you are on offers, so there is nothing here you need to memorise.
 
 | Provider | Models | Key |
 | --- | --- | --- |
@@ -29,6 +29,7 @@ lists what the one you are on offers, so there is nothing here you need to memor
 | **MiniMax** | 3 | `MINIMAX_API_KEY` |
 | **Meta** | 4 | `MODEL_API_KEY` |
 | **Tencent** | 2 | `TOKENHUB_API_KEY` |
+| **OpenRouter** | its live catalogue | `OPENROUTER_API_KEY` |
 
 DeepSeek is the default, and DeepSeek V4.1 Flash is what a fresh project opens with.
 
@@ -40,6 +41,16 @@ the model plainly when a picture it was handed cannot be seen rather than preten
 otherwise. **Tencent's Hy** is reached through TokenHub's international endpoint; the
 mainland console serves the same weights under different model ids, so an account there
 sets `MINDWEAVE_TENCENT_URL` and picks the id its own console lists.
+
+**OpenRouter** is one key for models from nearly every vendor. Mindweave lists every model
+in its catalogue that can run an agent turn (text out, tool calls) and reads each one's
+price, context window, image support and reasoning levels from the catalogue itself, so
+nothing about them is guessed. The catalogue is kept for six hours between fetches. Type
+to filter the `/model` list, or name a model in words: `/model openrouter deepseek flash`.
+Free models are listed and marked, but they are rate-limited hard enough that an agent
+task can run out of requests part way through. By default OpenRouter may send your prompts
+to hosts that store or train on them. Set `MINDWEAVE_OPENROUTER_DATA=deny` to use only
+hosts that do not; a few models then have fewer hosts, or none.
 
 ## Picking a model
 

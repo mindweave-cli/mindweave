@@ -21,6 +21,8 @@
  * and cannot be wrong; the precision comes from the provider, which already knows.
  */
 
+import { isRetryable } from "./retryPolicy.js";
+
 /** A refusal, ready for the `notice` transcript block. */
 export interface Refusal {
   /** Names the provider, so a BYOK tool is never mistaken for the one billing you. */
@@ -186,5 +188,59 @@ export function accessRefusal(error: unknown, providerLabel: string, canSwitch: 
   return {
     title: `${providerLabel} isn't accepting requests on this key`,
     body: said ? `${said}\n\n${action}` : action,
+  };
+}
+
+/**
+ * Recognise a failure on the provider's side and shape it for the screen.
+ *
+ * By the time one of these reaches the user, the retry layer has already tried again
+ * and given up, so the useful thing to say is what the user can do: wait, or pick
+ * another model. A red "API error 502: ERROR" says neither, and reads as if Mindweave
+ * crashed. Three shapes count:
+ *   - a 5xx status, the provider or its upstream host falling over;
+ *   - a failure the provider reported inside a successful response (a router whose
+ *     upstream died mid-reply), which carries no status;
+ *   - a request that never got through, after the network retries ran out.
+ *
+ * A 4xx never lands here. 400 and friends are a request we built wrong and stay loud;
+ * 401/402/403/429 are `accessRefusal`'s.
+ *
+ * The provider's own sentence is quoted when it says something. Routers often send a
+ * bare "ERROR" or the status text, and quoting that adds a line that explains nothing.
+ */
+export function providerOutage(error: unknown, providerLabel: string, modelLabel: string): Refusal | null {
+  const status = statusOf(error);
+  const upstream = !!error && typeof error === "object" && (error as { upstream?: unknown }).upstream === true;
+  const serverSide = status !== null && status >= 500 && status < 600;
+  const unreachable = status === null && !upstream && isRetryable(error, null);
+  if (!serverSide && !upstream && !unreachable) return null;
+
+  const NL = String.fromCharCode(10);
+  const advice = "The conversation is saved. Try again in a moment, or pick a different model with /model.";
+
+  if (unreachable) {
+    return {
+      title: `Can't reach ${providerLabel}`,
+      body: `The request didn't get through, even after retrying. Check your connection, or the provider may be down.${NL}${NL}${advice}`,
+    };
+  }
+
+  const reported = serverSide
+    ? providerMessage(detailOf(error))
+    : providerMessage(String((error as Error).message ?? "").replace(/^.*?API error:\s*/, ""));
+  const informative =
+    reported.length > 0 &&
+    !/^(error|internal server error|bad gateway|service unavailable|gateway timeout|the reply ended with an error)\.?$/i.test(reported);
+  const what = serverSide
+    ? `${providerLabel} returned an error (${status}) while running it, even after retrying.`
+    : `${providerLabel} reported an error part way through the reply.`;
+  const lines = [
+    `${what} This is on the provider's side, not your key or your setup. New and preview models fail like this more often.`,
+    ...(informative ? [`${providerLabel} said: "${reported}"`] : []),
+  ];
+  return {
+    title: `${modelLabel} isn't responding right now`,
+    body: `${lines.join(NL)}${NL}${NL}${advice}`,
   };
 }

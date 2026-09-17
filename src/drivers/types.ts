@@ -262,6 +262,30 @@ export interface ModelChoice {
    * headline model counts in the docs do not count it.
    */
   until?: number;
+  /**
+   * What a DISCOVERED provider's listing says about this model, when it says anything.
+   *
+   * A fixed lineup answers these questions from the manifest's functions, because the
+   * driver's author knew every model. A router serving hundreds of models from dozens of
+   * vendors cannot: guessing a context window or a price by substring would be wrong for
+   * most of them. Its catalogue reports the real numbers, so they travel with the choice.
+   *
+   * The registry reads these first and falls back to the manifest function for anything
+   * absent, so a provider can report some facts and not others. Plain data only, because
+   * a discovered list is persisted to disk as JSON.
+   */
+  facts?: ModelFacts;
+}
+
+/** Per-model facts reported by a discovered provider's own listing. See ModelChoice.facts. */
+export interface ModelFacts {
+  contextWindow?: number;
+  price?: ModelPrice;
+  acceptsImages?: boolean;
+  /** Ceiling for a buffered call on this model; see DriverManifest.bufferedOutputTokens. */
+  bufferedOutputTokens?: number;
+  /** The `/think` ladder this model actually accepts. */
+  thinkLevels?: ThinkLevel[];
 }
 
 /** One entry in the `/think` picker, for a given model. */
@@ -321,6 +345,14 @@ export interface DriverManifest {
 
   /** Where a user gets a key, shown on the setup screen. */
   keysUrl: string;
+
+  /**
+   * Optional: something a user should know before their prompts go to this provider,
+   * shown when they switch to it. For a fact about where data goes that the provider's
+   * name does not make obvious (a router may forward prompts to hosts with their own
+   * retention terms). Plain text, one or two sentences.
+   */
+  notice?: string;
 
   /**
    * The models this provider offers, in `/model` order. The first is its default.

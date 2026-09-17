@@ -4,14 +4,19 @@
  * (`/model`, `/think`), and the forbidden-lift approval prompt all render through
  * this, so selection looks and feels identical everywhere.
  *
- * It owns only a highlight index. ↑/↓ move (wrapping), Enter selects, Esc cancels.
+ * It owns a highlight index and a filter. ↑/↓ move (wrapping), Enter selects, Esc
+ * cancels, and typing narrows the list to rows containing every typed word, so one
+ * model among hundreds is a few keystrokes away. `onSelect` always receives the index
+ * into the caller's `items`, filtered or not.
  * Like the input box, it captures keys via `useInput`; the caller gates it with
  * `active` so exactly one input owner is live at a time (the prompt is disabled
  * while a picker is open).
  */
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Box, Text, useInput } from "ink";
 import { clipRows } from "../wrap.js";
+import { matchesWords, wordsOf } from "../commandArgs.js";
+import { stripMouse } from "../mouse.js";
 
 export interface PickerItem {
   /** The main line shown for the row. */
@@ -58,6 +63,8 @@ interface PickerProps {
    *  height so the bordered box never grows past the screen and tears. Falls back
    *  to a small, always-safe count. */
   maxRows?: number;
+  /** Text the filter starts with, e.g. what `/model <words>` matched several of. */
+  initialFilter?: string;
 }
 
 const MAX_VISIBLE = 10;
@@ -93,29 +100,57 @@ export function Picker({
   describeSelection = false,
   rightAlignDescription = false,
   maxRows = MAX_VISIBLE,
+  initialFilter = "",
 }: PickerProps) {
   // Same window size as the command menu (App clamps maxRows to a safe ceiling), so the
   // picker box and the command box are the SAME fixed height.
   const visible = Math.max(1, maxRows);
-  const [sel, setSel] = useState(Math.min(Math.max(0, initialIndex), Math.max(0, items.length - 1)));
+  const [filter, setFilter] = useState(initialFilter);
+  // Rows still showing, as indices into `items`. Label and description both count, so
+  // "vision" or "1M" finds a model by what its row says about it.
+  const matching = useMemo(() => {
+    const words = wordsOf(filter);
+    return items.flatMap((item, i) => (matchesWords(words, item.label, item.description) ? [i] : []));
+  }, [items, filter]);
+  const [sel, setSel] = useState(
+    initialFilter ? 0 : Math.min(Math.max(0, initialIndex), Math.max(0, items.length - 1)),
+  );
+  const count = matching.length;
 
   useInput(
-    (_input, key) => {
-      if (key.upArrow) setSel((s) => (s - 1 + items.length) % items.length);
-      else if (key.downArrow) setSel((s) => (s + 1) % items.length);
-      else if (key.return) onSelect(sel);
-      // Esc closes, and so does Backspace/Delete: the input line above is empty, so a
-      // delete is the natural "take it back" — the same gesture that removes the `/` and
-      // closes the command menu. Without it the only way out was Esc, which is not
-      // discoverable when your instinct is to delete what you just chose.
-      else if (key.escape || key.backspace || key.delete) onCancel();
+    (raw, key) => {
+      // With wheel reporting on, a scroll arrives as bytes like `[<65;43;30M` that Ink
+      // hands over as typed text, and the filter filled up with them. A chunk that was
+      // nothing but mouse reports is not a keystroke at all.
+      const input = stripMouse(raw);
+      if (input === "" && raw !== "") return;
+      if (key.upArrow) setSel((s) => (count === 0 ? 0 : (s - 1 + count) % count));
+      else if (key.downArrow) setSel((s) => (count === 0 ? 0 : (s + 1) % count));
+      else if (key.return) {
+        const picked = matching[sel];
+        if (picked !== undefined) onSelect(picked);
+      } else if (key.escape) onCancel();
+      else if (key.backspace || key.delete) {
+        // Backspace edits the filter while there is one. With none, it closes: the input
+        // line above is empty, so a delete is the natural "take it back" — the same
+        // gesture that removes the `/` and closes the command menu.
+        if (filter) {
+          setFilter((f) => f.slice(0, -1));
+          setSel(0);
+        } else onCancel();
+      } else if (input && !key.ctrl && !key.meta && !key.tab && !/[\u0000-\u001f]/.test(input)) {
+        setFilter((f) => f + input);
+        setSel(0);
+      }
     },
     { isActive: active && items.length > 0 },
   );
+  const shownItems = matching.map((i) => items[i]!);
 
   // A scrolling window so a long list never blows past the visible rows.
-  const start = Math.min(Math.max(0, sel - (visible - 1)), Math.max(0, items.length - visible));
-  const shown = items.slice(start, start + visible);
+  const start = Math.min(Math.max(0, sel - (visible - 1)), Math.max(0, count - visible));
+  const shown = shownItems.slice(start, start + visible);
+  // Measured over every item, not just the matches, so the columns hold still as you type.
   const labelWidth = Math.min(40, Math.max(...items.map((i) => i.label.length), 1));
 
   // Widths subtract the input box's chrome — border (2) + paddingX (2) = 4 — plus the
@@ -127,12 +162,16 @@ export function Picker({
   // no sign that there is more of it, and the rows that used to say so were removed for
   // changing the box's height as you reached the ends. A counter on a row that already
   // exists says the same thing and cannot resize anything.
-  const counter = items.length > visible ? `  ${sel + 1} of ${items.length}` : "";
+  const counter = filter
+    ? `  ${count === 0 ? 0 : sel + 1} of ${count}`
+    : items.length > visible
+      ? `  ${sel + 1} of ${items.length}`
+      : "";
   const titleRows = clipRows(title, Math.max(4, rowWidth - counter.length), maxTitleRows);
   // The note is either the caller's own text, or — with describeSelection — the
   // highlighted item's full description, wrapped. The two never combine: a picker that
   // describes its selection has no separate note to show.
-  const selectionNote = describeSelection ? items[sel]?.description ?? "" : "";
+  const selectionNote = describeSelection ? shownItems[sel]?.description ?? "" : "";
   const noteText = describeSelection ? selectionNote : note ?? "";
   const noteRows = noteText ? clipRows(noteText, rowWidth, maxNoteRows) : [];
 
@@ -216,7 +255,18 @@ export function Picker({
         {/* Backspace goes back as well as Escape, and saying so is the only way that is
             discoverable: the instinct on a screen you opened by mistake is to delete your
             way out of it, and a hint that names only Escape reads as if nothing else works. */}
-        <Text dimColor>{"↑/↓ move · Enter select · Esc or ⌫  back"}</Text>
+        {filter ? (
+          // The filter lives on the hint row, which always exists, so typing never changes
+          // the box's height.
+          <Box width={rowWidth}>
+            <Text wrap="truncate-start">
+              <Text color="cyan">{filter}</Text>
+              <Text dimColor>{count === 0 ? "  · no matches · ⌫ edit · Esc back" : "  · ↑/↓ move · Enter select · ⌫ edit · Esc back"}</Text>
+            </Text>
+          </Box>
+        ) : (
+          <Text dimColor>{items.length > visible ? "type to filter · ↑/↓ move · Enter select · Esc back" : "↑/↓ move · Enter select · Esc or ⌫  back"}</Text>
+        )}
       </Box>
     </>
   );

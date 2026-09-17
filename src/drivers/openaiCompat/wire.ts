@@ -73,7 +73,7 @@ export interface CompatProvider {
    * which is why the fallback treats the whole prompt as fresh rather than
    * inventing a split that would quietly under-report cost.
    */
-  cacheSplit?(usage: Record<string, unknown>): { hit: number; miss: number } | undefined;
+  cacheSplit?(usage: Record<string, unknown>): { hit: number; miss: number; write?: number } | undefined;
 
   /**
    * Output ceiling for a BUFFERED (non-streaming) call — core's small internal
@@ -122,6 +122,17 @@ export interface CompatProvider {
    * clean one way and corrupt the other.
    */
   repairContent?(content: string, toolCalls: ToolCall[]): { content: string; toolCalls: ToolCall[] };
+
+  /** Extra request headers, e.g. a router's app identification. Optional. */
+  headers?: Record<string, string>;
+
+  /**
+   * Last word on the request body before it is sent, for what the shared shape cannot
+   * express: a router's model id differs from the id Mindweave stores, and explicit
+   * cache breakpoints live on message content parts. Receives the finished body and
+   * returns the one to send. Applied on the buffered and streamed paths alike.
+   */
+  finishBody?(body: Record<string, unknown>, req: ModelRequest): Record<string, unknown>;
 }
 
 /**
@@ -303,7 +314,7 @@ export function buildBody(
     body.tools = tools;
     body.tool_choice = "auto";
   }
-  return body;
+  return provider.finishBody ? provider.finishBody(body, req) : body;
 }
 
 /**
@@ -329,6 +340,39 @@ export function toStop(provider: CompatProvider, reason: string | null | undefin
   }
 }
 
+/**
+ * A failure reported INSIDE a successful response.
+ *
+ * Once a stream has started the HTTP status is already 200 and cannot change, so a
+ * router whose upstream dies mid-reply says so in the body: a top-level `error`
+ * object, and often `finish_reason: "error"` on the last choice. A buffered response
+ * can carry the same object with a 200. Read naively, both look like a model that
+ * finished normally, possibly having said nothing.
+ *
+ * Returned as a ProviderHttpError when the body names a numeric code, so an account
+ * refusal (402 out of credits, 429 rate limited) is classified the same whether it
+ * arrived as a status line or inside the body.
+ */
+export function bodyError(provider: CompatProvider, raw: unknown): Error | undefined {
+  const error = (raw as { error?: unknown } | null)?.error;
+  if (!error || typeof error !== "object") return undefined;
+  const { code, message } = error as { code?: unknown; message?: unknown };
+  const text = typeof message === "string" && message ? message : "the provider reported an error";
+  const status = typeof code === "number" ? code : Number(code);
+  if (Number.isInteger(status) && status >= 400 && status < 600) {
+    return new ProviderHttpError(status, text, provider.label, "");
+  }
+  return upstreamError(`${provider.label} API error: ${text}`);
+}
+
+/**
+ * An error the PROVIDER reported with no status to classify it by, marked so the
+ * screen can say "the provider failed" rather than show a bare red error.
+ */
+export function upstreamError(message: string): Error {
+  return Object.assign(new Error(message), { upstream: true });
+}
+
 /** The slice of a streaming chunk we read (OpenAI-compatible SSE shape). */
 interface StreamChunk {
   choices?: {
@@ -349,6 +393,7 @@ interface StreamChunk {
     };
   }[];
   usage?: Record<string, unknown>;
+  error?: unknown;
 }
 
 /**
@@ -386,6 +431,12 @@ export async function consumeStream(
 
     if (chunk.usage) usage = toUsage(provider, chunk.usage);
     finishReason = chunk.choices?.[0]?.finish_reason ?? finishReason;
+    // A failure after the stream began. Thrown into the salvage path below, so text
+    // already shown is kept as an incomplete reply and a stream with nothing in it
+    // surfaces the provider's own sentence instead of an empty "finished" turn.
+    const failed = bodyError(provider, chunk);
+    if (failed) throw failed;
+    if (finishReason === "error") throw upstreamError(`${provider.label} API error: the reply ended with an error`);
 
     const delta = chunk.choices?.[0]?.delta;
     if (!delta) continue;
@@ -461,6 +512,7 @@ export function toUsage(provider: CompatProvider, raw: Record<string, unknown>):
     totalTokens: num("total_tokens") || promptTokens + completionTokens,
     cacheHitTokens: split?.hit ?? 0,
     cacheMissTokens: split?.miss ?? promptTokens,
+    ...(split?.write !== undefined ? { cacheWriteTokens: split.write } : {}),
   };
 }
 
@@ -480,6 +532,11 @@ export function toTurn(provider: CompatProvider, data: unknown): Turn {
     }[];
     usage?: Record<string, unknown>;
   };
+  const failed = bodyError(provider, data);
+  if (failed) throw failed;
+  if (parsed.choices?.[0]?.finish_reason === "error") {
+    throw upstreamError(`${provider.label} API error: the reply ended with an error`);
+  }
   const message = parsed.choices?.[0]?.message;
   const content = typeof message?.content === "string" ? message.content : "";
   const toolCalls = (message?.tool_calls ?? []).map((tc) => ({
@@ -591,7 +648,12 @@ async function send(provider: CompatProvider, body: Record<string, unknown>, sig
     try {
       response = await fetch(`${provider.baseUrl}/chat/completions`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${requireApiKey(provider)}`, "User-Agent": clientId() },
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${requireApiKey(provider)}`,
+          "User-Agent": clientId(),
+          ...provider.headers,
+        },
         body: JSON.stringify(body),
         signal,
       });
@@ -654,7 +716,7 @@ export interface ListedModel {
  */
 export async function listModels(provider: CompatProvider): Promise<ListedModel[]> {
   const response = await fetch(`${provider.baseUrl}/models`, {
-    headers: { Authorization: `Bearer ${requireApiKey(provider)}`, "User-Agent": clientId() },
+    headers: { Authorization: `Bearer ${requireApiKey(provider)}`, "User-Agent": clientId(), ...provider.headers },
   });
   if (!response.ok) {
     const detail = await response.text().catch(() => "");

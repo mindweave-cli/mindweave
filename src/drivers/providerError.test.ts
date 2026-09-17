@@ -9,8 +9,8 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { accessRefusal, detailOf, providerMessage, statusOf } from "./providerError.js";
-import { ProviderHttpError } from "./openaiCompat/wire.js";
+import { accessRefusal, detailOf, providerMessage, providerOutage, statusOf } from "./providerError.js";
+import { ProviderHttpError, upstreamError } from "./openaiCompat/wire.js";
 
 /** What the compat layer throws for a non-2xx response. */
 const httpError = (status: number, body: string) => new ProviderHttpError(status, body, "DeepSeek", "");
@@ -191,4 +191,45 @@ test("switching is only suggested when there is something to switch to", () => {
   assert.doesNotMatch(alone!.body, /\/provider/, "offered a switch with nothing to switch to");
   const spoiled = accessRefusal(httpError(401, "bad"), "DeepSeek", true);
   assert.match(spoiled!.body, /\/provider/, "another usable key exists and is not mentioned");
+});
+
+// ── The provider falling over ────────────────────────────────────────────────
+
+test("a 5xx after the retries becomes a calm notice naming the model", () => {
+  for (const status of [500, 502, 503, 504, 529]) {
+    const outage = providerOutage(new ProviderHttpError(status, "ERROR", "OpenRouter", ""), "OpenRouter", "Union Alpha");
+    assert.ok(outage, `${status} should read as the provider failing`);
+    assert.match(outage!.title, /Union Alpha isn't responding/);
+    assert.match(outage!.body, /provider's side, not your key/);
+    assert.match(outage!.body, /\/model/, "the notice must say what to do");
+  }
+});
+
+test("a bare ERROR from the provider is not quoted back as if it explained anything", () => {
+  const outage = providerOutage(new ProviderHttpError(502, JSON.stringify({ error: { message: "ERROR" } }), "OpenRouter", ""), "OpenRouter", "Union Alpha");
+  assert.doesNotMatch(outage!.body, /said:/);
+});
+
+test("a provider sentence that does explain is quoted", () => {
+  const outage = providerOutage(new ProviderHttpError(503, JSON.stringify({ error: { message: "No endpoints available for this model" } }), "OpenRouter", ""), "OpenRouter", "Union Alpha");
+  assert.match(outage!.body, /OpenRouter said: "No endpoints available for this model"/);
+});
+
+test("a failure reported inside a successful reply is the provider's too", () => {
+  const outage = providerOutage(upstreamError("OpenRouter API error: the reply ended with an error"), "OpenRouter", "Union Alpha");
+  assert.match(outage!.body, /part way through the reply/);
+  assert.doesNotMatch(outage!.body, /said:/);
+});
+
+test("a request that never got through says so", () => {
+  const outage = providerOutage(Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNRESET" } }), "OpenRouter", "Union Alpha");
+  assert.match(outage!.title, /Can't reach OpenRouter/);
+});
+
+test("our own bugs and account refusals never get the outage notice", () => {
+  for (const status of [400, 401, 402, 403, 404, 422, 429]) {
+    assert.equal(providerOutage(new ProviderHttpError(status, "x", "OpenRouter", ""), "OpenRouter", "M"), null, `${status}`);
+  }
+  assert.equal(providerOutage(new Error("Cannot read properties of undefined"), "OpenRouter", "M"), null);
+  assert.equal(providerOutage(Object.assign(new Error("aborted"), { name: "AbortError" }), "OpenRouter", "M"), null);
 });
