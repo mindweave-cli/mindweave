@@ -12,7 +12,7 @@
  * fixed and the fields pre-filled, so building two forms would only be two places for the
  * same bug. Both end at `onSubmit`, which runs the one validator (`parseAddSpec`) every
  * other way of adding a server already goes through — the typed `/mcp add` and the
- * `add_mcp_server` tool — so this cannot accept something they would reject.
+ * `mcp_server` tool — so this cannot accept something they would reject.
  *
  * ANOTHER STEP-THROUGH FORM'S KEYS, and why they differ from the list/manage screens: a
  * text field already owns Left/Right (moving the cursor inside what you're typing) and

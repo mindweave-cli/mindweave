@@ -23,7 +23,7 @@ test("only read-only discovery tools group — edits, writes, runs, tests never 
   }
   // Anything whose row carries output you need to see (a diff, command/test output,
   // fetched content, the meta result) must keep its own row.
-  for (const n of ["edit", "replace_symbol_body", "write_file", "run_command", "create_skill", "use_skill", "web", "spawn_subagent"]) {
+  for (const n of ["edit", "replace_symbol_body", "write_file", "run_command", "skill", "use_skill", "web", "spawn_subagent"]) {
     assert.ok(!isGroupable(n), `${n} must NOT group`);
   }
 });

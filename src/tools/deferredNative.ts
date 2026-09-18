@@ -20,7 +20,7 @@
 import type { Tool } from "./types.js";
 import { screenshot } from "./screenshot.js";
 import { saveMemoryTool } from "./saveMemory.js";
-import { governor, createSkill } from "./governorTools.js";
+import { governor, skillTool } from "./governorTools.js";
 import { sessionsTool } from "./sessionTools.js";
 import { mcpResourceTool } from "./mcpResources.js";
 import { workspaceTool } from "./workspace.js";
@@ -30,7 +30,8 @@ import { outlineTool, definitionTool, referencesTool } from "./codeIntel.js";
 import { web } from "./web.js";
 import { replaceSymbolBody } from "./replaceSymbol.js";
 import { spawnSubagent } from "./subagent.js";
-import { addMcpServer } from "./mcpAdd.js";
+import { mcpServer } from "./mcpAdd.js";
+import { mindweaveStatus } from "./mindweaveStatus.js";
 
 /** The pool, in the order it is named to the model. */
 export const DEFERRED_TOOLS: Tool[] = [
@@ -43,12 +44,13 @@ export const DEFERRED_TOOLS: Tool[] = [
   web,
   replaceSymbolBody,
   governor,
-  createSkill,
+  skillTool,
   saveMemoryTool,
   sessionsTool,
   workspaceTool,
   mcpResourceTool,
-  addMcpServer,
+  mcpServer,
+  mindweaveStatus,
   screenshot,
 ];
 
@@ -113,10 +115,16 @@ export function matchDeferred(query: string): Tool[] {
   const scored = DEFERRED_TOOLS.map((tool) => {
     const name = tool.name.toLowerCase();
     const description = tool.description.toLowerCase();
+    // The words a caller would search for, which are often not in the tool's name:
+    // "rule" for `governor`, "disable" for `mcp_server`, "version" for `mindweave`.
+    // Scored near a name hit, because that is what they stand in for — and only on a
+    // WHOLE term, so "rules" does not quietly match a keyword that merely contains it.
+    const keywords = (tool.keywords ?? []).map((k) => k.toLowerCase());
     let score = 0;
     for (const term of terms) {
       if (name === term) score += 20; // the model named the tool outright
       else if (name.includes(term)) score += 10;
+      if (keywords.includes(term)) score += 8;
       // A description hit is weak on its own: descriptions are long and mention a lot.
       if (description.includes(term)) score += 2;
     }

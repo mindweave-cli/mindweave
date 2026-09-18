@@ -48,9 +48,19 @@ test("todo_write validates status and required fields", async () => {
   const bad = await todoWrite.execute({ todos: [{ content: "x", activeForm: "x", status: "doing" }] }, c);
   assert.equal(bad.isError, true);
   assert.match(bad.output, /status must be one of/);
-  const missing = await todoWrite.execute({ todos: [{ content: "x", status: "pending" }] }, c);
-  assert.equal(missing.isError, true);
-  assert.match(missing.output, /activeForm is required/);
+  const noContent = await todoWrite.execute({ todos: [{ activeForm: "x", status: "pending" }] }, c);
+  assert.equal(noContent.isError, true);
+  assert.match(noContent.output, /content is required/);
+});
+
+test("todo_write accepts a task without activeForm and shows its content instead", async () => {
+  // A real session lost a whole round to "todos[0].activeForm is required". The list is
+  // never drawn on screen, so the wording of the task in progress is not worth a retry.
+  const c = ctx();
+  const r = await todoWrite.execute({ todos: [{ content: "Scaffold the project", status: "in_progress" }] }, c);
+  assert.equal(r.isError, undefined);
+  assert.match(r.output, /Scaffold the project/);
+  assert.equal(c.todos[0]!.activeForm, "Scaffold the project");
 });
 
 test("todo_write notes more than one in_progress", async () => {

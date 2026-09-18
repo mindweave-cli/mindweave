@@ -31,9 +31,10 @@ export const findTools: Tool = {
   // — see the note at the call site for why that one is worse than it sounds.
   description:
     "Search for a tool you cannot see in your list, and load the matches so you can call " +
-    "them. Covers both your own occasional tools (saving a memory, creating a skill, " +
-    "standing rules and forbidding paths/commands, past sessions, workspace folders, " +
-    "screenshots) and this project's external MCP integrations (issue trackers, " +
+    "them. Covers both your own occasional tools (saving a memory, creating or deleting a " +
+    "skill, standing rules and forbidding paths/commands and lifting either, adding or " +
+    "disabling an MCP server, what version and model are running, past sessions, workspace " +
+    "folders, screenshots) and this project's external MCP integrations (issue trackers, " +
     "databases, cloud APIs, docs systems). Use it whenever a task needs a capability " +
     "you cannot already see a tool for, rather than concluding you do not have it. " +
     "Query with a plain capability word ('memory', 'skill', 'rule', 'screenshot'), " +
@@ -63,7 +64,7 @@ export const findTools: Tool = {
 
     // BOTH pools are searched, and the native one does NOT short-circuit. It used to,
     // and the tests caught what that costs: "create issue" name-matches the native
-    // `create_skill` on the word "create", which would swallow a query plainly aimed at
+    // the native `skill` tool on the word "create", which would swallow a query plainly aimed at
     // an MCP issue tracker and report success while never touching the catalog. A weak
     // keyword hit in one pool must never hide a strong hit in the other, so results are
     // gathered from both and reported together.

@@ -136,13 +136,18 @@ export function ToolLine({ name, arg, status, action, summary, detail, detailKin
 
   return (
     <Box marginTop={tightTop ? 0 : 1} flexDirection="column">
-      {/* Bounded and clipped, with nothing here allowed to shrink. Ink's Box defaults to
+      {/* Bounded, with nothing here allowed to shrink. Ink's Box defaults to
           `flexShrink: 1`, so a row that does not fit is resolved by squeezing its
           children — the dot gutter narrows, the verb's own box gives up columns, and the
           text inside reflows onto rows this component never asked for. Pinned at 0 the
-          row keeps its true shape, and `overflow: hidden` clips the one thing that may
-          honestly be lost: the tail of an argument already trimmed on purpose above. */}
-      <Box flexDirection="row" width={columns} overflow="hidden">
+          row keeps its true shape.
+
+          NOT `overflow: hidden`, although the tail of an over-long argument is exactly what
+          that would clip. Ink applies only the innermost clip region instead of intersecting
+          it with the ones around it, so a row that sets its own replaces the transcript
+          viewport's clip: scrolled above the viewport, the row was drawn over the pinned
+          header. The viewport's clip already cuts anything past the right edge. */}
+      <Box flexDirection="row" width={columns}>
         <Box minWidth={2} flexShrink={0}>
           <Text color={dotColor} dimColor={status === "running"}>{DOT}</Text>
         </Box>

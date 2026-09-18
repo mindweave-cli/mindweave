@@ -232,7 +232,13 @@ export async function listSessions(projectCwd: string): Promise<SessionMeta[]> {
     if (!name.endsWith(".meta.json")) continue;
     try {
       const raw = await fs.readFile(join(dir, name), "utf8");
-      metas.push(JSON.parse(raw) as SessionMeta);
+      const meta = JSON.parse(raw) as SessionMeta;
+      // A session with nothing said in it is not something to continue or count. They are
+      // written on purpose (`/include` before the first message, `/update` saving for the
+      // restarted copy to pick up), and a third of one real project's list was these,
+      // each reading "0 msgs" in /continue and each counted as an earlier session.
+      if (meta.entryCount === 0) continue;
+      metas.push(meta);
     } catch {
       // Skip unreadable/corrupt meta files.
     }

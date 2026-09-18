@@ -61,6 +61,7 @@ const ITEMS = [
   { label: "DeepSeek V4.1 Flash", description: "DeepSeek · $0.15 in / $0.6 out per M" },
   { label: "Claude Fable 5.1", description: "Anthropic · $10 in / $50 out per M" },
   { label: "Claude Fable 5", description: "Anthropic · $10 in / $50 out per M" },
+  { label: "Union Alpha", description: "free", keywords: "openrouter:stealth/union-alpha" },
 ];
 
 function mount(initialFilter?: string) {
@@ -180,6 +181,18 @@ test("a pre-filled filter opens on exactly the matches", async () => {
     assert.match(screen, /Claude Fable 5\b/);
     assert.doesNotMatch(screen, /Filler Model|DeepSeek/);
     assert.match(screen, /1 of 2/);
+  } finally {
+    h.done();
+  }
+});
+
+test("the filter also matches an item's keywords, which the row does not show", async () => {
+  // A model is found by its id as well as its name: `/model <words>` matches ids, so a
+  // picker it opens has to match the same things or it shows nothing.
+  const h = mount("stealth");
+  try {
+    await until(h, () => h.stdout.last().includes("Union Alpha"), "the keyword match");
+    assert.doesNotMatch(h.stdout.last(), /openrouter:stealth/, "keywords are for matching, not for display");
   } finally {
     h.done();
   }

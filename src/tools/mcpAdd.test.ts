@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { promises as fs, mkdtempSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { addMcpServer } from "./mcpAdd.js";
+import { mcpServer } from "./mcpAdd.js";
 import { McpManager } from "../mcp/manager.js";
 import { projectConfigPath, parseMcpConfig } from "../mcp/config.js";
 import type { ToolContext } from "./types.js";
@@ -37,7 +37,7 @@ const project = () => mkdtempSync(join(tmpdir(), "mw-mcpadd-"));
 test("it ASKS before writing anything", async () => {
   const cwd = project();
   const ctx = ctxIn(cwd, "yes");
-  const r = await addMcpServer.execute({ name: "github", command: "npx", args: ["-y", "pkg"] }, ctx);
+  const r = await mcpServer.execute({ name: "github", command: "npx", args: ["-y", "pkg"] }, ctx);
   assert.equal(r.isError, undefined);
   assert.equal(ctx.asked.length, 1);
   // The question has to say what will actually happen, not just "add a server?".
@@ -54,10 +54,10 @@ test("replacing an existing server SAYS so before asking, not afterwards", async
   // once the write had happened.
   const cwd = project();
   const ctx = ctxIn(cwd, "yes");
-  await addMcpServer.execute({ name: "github", command: "npx", args: ["-y", "old"] }, ctx);
+  await mcpServer.execute({ name: "github", command: "npx", args: ["-y", "old"] }, ctx);
   assert.doesNotMatch(ctx.asked[0]!, /REPLACE/, "the first add is not a replacement");
 
-  await addMcpServer.execute({ name: "github", command: "npx", args: ["-y", "new"] }, ctx);
+  await mcpServer.execute({ name: "github", command: "npx", args: ["-y", "new"] }, ctx);
   assert.match(ctx.asked[1]!, /REPLACE the existing MCP server 'github'/);
 
   const loaded = parseMcpConfig(await fs.readFile(projectConfigPath(cwd), "utf8"));
@@ -70,7 +70,7 @@ test("the credential PROMPT names the keys and never the values", async () => {
   // only — the same line the rest of the codebase draws between naming and printing.
   const cwd = project();
   const ctx = ctxIn(cwd, "yes");
-  await addMcpServer.execute(
+  await mcpServer.execute(
     { name: "gh", command: "npx", env: { GITHUB_TOKEN: "ghp_supersecret_value" } },
     ctx,
   );
@@ -82,7 +82,7 @@ test("the credential PROMPT names the keys and never the values", async () => {
 test("a server with no credentials does not mention storing any", async () => {
   const cwd = project();
   const ctx = ctxIn(cwd, "yes");
-  await addMcpServer.execute({ name: "plain", command: "npx" }, ctx);
+  await mcpServer.execute({ name: "plain", command: "npx" }, ctx);
   assert.doesNotMatch(ctx.asked[0]!, /plain text/);
 });
 
@@ -92,26 +92,26 @@ test("env values are stored verbatim, and the description says they are not expa
   // "reference an environment variable" and showed "$GITHUB_TOKEN", which reaches the
   // server as those literal characters and fails as a bad credential.
   const cwd = project();
-  await addMcpServer.execute(
+  await mcpServer.execute(
     { name: "gh", command: "npx", env: { TOKEN: "$FROM_SHELL" } },
     ctxIn(cwd, "yes"),
   );
   const raw = JSON.parse(await fs.readFile(projectConfigPath(cwd), "utf8"));
   assert.equal(raw.mcpServers.gh.env.TOKEN, "$FROM_SHELL", "stored verbatim — nothing expands it");
-  assert.match(addMcpServer.description, /NOT expanded/);
-  assert.match(addMcpServer.description, /inherits the user's whole environment/);
+  assert.match(mcpServer.description, /NOT expanded/);
+  assert.match(mcpServer.description, /inherits the user's whole environment/);
 });
 
 test("a flag-shaped name is rejected where the cause is knowable", async () => {
   const cwd = project();
-  const r = await addMcpServer.execute({ name: "--global", command: "npx" }, ctxIn(cwd, "yes"));
+  const r = await mcpServer.execute({ name: "--global", command: "npx" }, ctxIn(cwd, "yes"));
   assert.equal(r.isError, true);
   assert.match(r.output, /starts with a dash/);
 });
 
 test("declining writes NOTHING", async () => {
   const cwd = project();
-  const r = await addMcpServer.execute({ name: "github", command: "npx" }, ctxIn(cwd, "no"));
+  const r = await mcpServer.execute({ name: "github", command: "npx" }, ctxIn(cwd, "no"));
   assert.equal(r.isError, undefined, "a decline is a normal outcome, not an error");
   assert.match(r.output, /Not added/);
   assert.equal(existsSync(projectConfigPath(cwd)), false, "no file should have been created at all");
@@ -121,7 +121,7 @@ test("with no approval channel it refuses and tells the user the command", async
   // Fails closed, like every other governed action — and leaves the user a way forward
   // rather than a dead end.
   const cwd = project();
-  const r = await addMcpServer.execute({ name: "github", command: "npx", args: ["-y", "pkg"] }, ctxIn(cwd));
+  const r = await mcpServer.execute({ name: "github", command: "npx", args: ["-y", "pkg"] }, ctxIn(cwd));
   assert.equal(r.isError, true);
   assert.match(r.output, /\/mcp add github npx -y pkg/);
   assert.equal(existsSync(projectConfigPath(cwd)), false);
@@ -131,7 +131,7 @@ test("bad arguments are refused before the user is bothered", async () => {
   const cwd = project();
   for (const args of [{ name: "x" }, { name: "x", command: "c", url: "https://a" }, { name: "", command: "c" }]) {
     const ctx = ctxIn(cwd, "yes");
-    const r = await addMcpServer.execute(args, ctx);
+    const r = await mcpServer.execute(args, ctx);
     assert.equal(r.isError, true, `${JSON.stringify(args)} should be refused`);
     assert.equal(ctx.asked.length, 0, "no prompt for input we already know is wrong");
   }
@@ -139,7 +139,7 @@ test("bad arguments are refused before the user is bothered", async () => {
 
 test("a URL becomes a remote server", async () => {
   const cwd = project();
-  const r = await addMcpServer.execute(
+  const r = await mcpServer.execute(
     { name: "remote", url: "https://x.dev/mcp", headers: { Authorization: "Bearer t" } },
     ctxIn(cwd, "yes"),
   );
@@ -151,7 +151,7 @@ test("a URL becomes a remote server", async () => {
 
 test("a server's own flags survive, because args go through `--`", async () => {
   const cwd = project();
-  await addMcpServer.execute({ name: "srv", command: "my-cmd", args: ["--global", "--http"] }, ctxIn(cwd, "yes"));
+  await mcpServer.execute({ name: "srv", command: "my-cmd", args: ["--global", "--http"] }, ctxIn(cwd, "yes"));
   const [loaded] = parseMcpConfig(await fs.readFile(projectConfigPath(cwd), "utf8"));
   assert.deepEqual(loaded!.type === "stdio" ? loaded!.args : null, ["--global", "--http"]);
 });
@@ -170,7 +170,7 @@ test("a real server is CONNECTED immediately, not left for a restart", async () 
 
   const mgr = new McpManager();
   try {
-    const r = await addMcpServer.execute(
+    const r = await mcpServer.execute(
       { name: "live", command: process.execPath, args: ["-e", script] },
       ctxIn(cwd, "yes", mgr),
     );
@@ -185,7 +185,7 @@ test("a server that fails to start is saved, and the failure is reported honestl
   const cwd = project();
   const mgr = new McpManager();
   try {
-    const r = await addMcpServer.execute(
+    const r = await mcpServer.execute(
       { name: "broken", command: "definitely-not-a-real-binary-xyz" },
       ctxIn(cwd, "yes", mgr),
     );

@@ -3,6 +3,89 @@
 Notable changes to Mindweave. Dates are release dates.
 
 
+## v2.5.0 (2026-09-18): the 2.4 releases, checked against real sessions and fixed where they were wrong
+
+Nothing in this release is new for its own sake. Every change since 2.4.0 was checked
+against real sessions and by driving the whole app through a fake terminal, and what was
+wrong is fixed here. Three of the bugs below were invisible to the test suite and only
+showed up when the app was actually used.
+
+A build that succeeded could be reported as failed. Programs like cargo, npm and git print
+their progress on stderr, and Windows PowerShell counts that as an error whenever the
+output is redirected with `2>&1`, so a finished build came back as exit code 1. A command
+that deliberately silenced an error, such as stopping a process that may not be running,
+was reported the same way. The exit code now comes from what actually happened. The
+progress lines themselves also reached the model wrapped in PowerShell's error formatting
+("At line:2 char:1", "NativeCommandError"), which made a clean build look full of errors;
+they now arrive as the lines the program printed. An exit code of -1 no longer shows as
+4294967295.
+
+Commands started in the background had their output ignored since 2.4.0. Reading a
+background command showed nothing, every notice said "no output", and the check for a
+command stuck waiting on a question could never see the question. Their output is read
+again. A command that asks a question, like "Proceed? [y/N]", also no longer waits out the
+two-minute timeout for an answer nobody can type: it gets end of input straight away and
+takes its default.
+
+When the agent stopped its own app to restart it, it was then told that you had closed it.
+It is no longer told anything about a stop it made itself. A command Mindweave stops for
+writing without end is reported as that. When an app it launched to check its own work
+fails to start, it is told to fix that as part of the work, rather than stopping to ask
+you. And being told an app is running no longer invites it to describe a window it never
+looked at.
+
+A reply you answered is kept whole. Older long replies were being condensed to a
+placeholder to save space, but almost every one of them was a question or proposal you had
+answered, so "yes" or "go with B" was left pointing at nothing. After a command moves into
+a subfolder, the agent is now told that the next turn starts back at the project root, and
+a turn that starts there says so, instead of commands failing because they ran in the wrong
+place.
+
+The header at the top of the screen could be overwritten by a row from the conversation
+scrolling past it. The cause was in how nested clipping works in the terminal renderer, and
+the row that triggered it no longer asks for its own clipping.
+
+### Asking it to change its own setup
+
+What you could only do through commands, you can now also just ask for. The agent can add
+and remove standing rules, create and delete skills, and add, remove, disable or enable MCP
+servers, in the same plain words you would use for anything else: "forget the rule about
+force-pushing", "stop using the Figma server for now", "turn it back on". Lifting a
+restriction is included, because a ban you cannot lift without hunting for the right
+command is a trap rather than a safeguard. Every one of these still shows you exactly what
+it is about to change and waits for you to agree.
+
+For the things it genuinely cannot do, it now says so and tells you the command that does
+it, instead of guessing or going quiet. It can also answer questions about itself: which
+version is running, which model and provider are in use, which mode it is in, which
+folders it can reach, and which rules, skills and servers are active in this project.
+
+### Sending feedback without an account
+
+`/feedback <what you want to say>` sends a message to the maintainer from inside the app.
+No account, no sign-in, no issue tracker: type a sentence, read back exactly what will be
+sent, and confirm. What leaves the machine is the message, the version and the platform,
+and nothing else. Your conversation, your code, your file paths and your keys stay where
+they are.
+
+The confirm screen shows the message it is about to send and offers one more row where you
+can add a line, so you can put an email address on it for a reply without starting over. A
+message that looks like it contains an API key or token is refused before anything is sent,
+because a feedback box invites pasting the request that just failed, and a key sent to a
+third party cannot be taken back. If sending fails, it says so in the words the other end
+used and points you at the issue tracker, and it never claims a message was sent when it
+was not.
+
+Smaller fixes: taking a screenshot with no window named, at a moment when no window has
+focus, says that instead of claiming several windows matched. A task list is no longer
+refused over a missing optional field. Each model call in a session's usage log carries its
+own time instead of all sharing the time the turn ended. Sessions with nothing in them no
+longer appear in `/continue`. Images opened from a file are no longer described as just
+captured. `/model openrouter` followed by words while already on OpenRouter finds the
+matching models instead of opening an empty list, the list also matches a model's id, and
+it reads "Choose an OpenRouter model". The CHANGELOG entries for 2.4.4 and 2.4.5 are back
+under their own headings.
+
 ## v2.4.9 (2026-09-17): OpenRouter is a provider, and any list can be searched by typing
 
 OpenRouter is now the fifteenth provider. One key reaches models from nearly every vendor,
@@ -108,6 +191,8 @@ to do this, at the moment the work ends rather than as a rule read at the start.
 Also fixed: a retry that backed off before trying a token refresh again could, in the
 right conditions, wait forever instead of resuming.
 
+## v2.4.5 (2026-09-14): sign in to remote MCP servers, and /mcp redesigned as two panes
+
 Mindweave can now connect to hosted MCP servers, not just local ones. A server that answers
 401 leads with "Sign in" instead of a dead end: approve it in your browser, come back
 connected. The whole thing runs inside the `/mcp` box itself. Nothing is printed to the
@@ -129,6 +214,8 @@ command used to get mistaken for a dropped file path and silently rewritten, so 
 ...` from a saved snippet was never actually run. And exiting while a picker or a turn was
 open could leave the terminal's cursor stranded mid-frame, so the next few things you typed
 printed over the conversation instead of below it.
+
+## v2.4.4 (2026-09-12): a long command shows it is working, and the header stops catching stray rows
 
 A running command now counts up beside it, so a build or a test that takes minutes reads
 as working rather than hung, and the same live count rides the background bar for anything

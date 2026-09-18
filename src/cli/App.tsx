@@ -35,7 +35,8 @@ import { appendForbidden, appendForbiddenCommand } from "../governor/write.js";
 import { addRoot, removeRoot } from "../tools/workspace.js";
 import { discoverRelatedRoots } from "../tools/workspaceDiscover.js";
 import { rootLabel, rootsOf, relativize } from "../tools/paths.js";
-import { APPROVAL_DISMISSED, APPROVAL_TEXT } from "../tools/approval.js";
+import { APPROVAL_DISMISSED, APPROVAL_TEXT, readFreeText } from "../tools/approval.js";
+import { buildFeedback, previewOf, refuseReason, sendFeedback, withAddition } from "./feedback.js";
 import { KeySetup } from "./components/KeySetup.js";
 import { setupView } from "./keySetup.js";
 import { KeyManager } from "./components/KeyManager.js";
@@ -1527,7 +1528,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
   /**
    * Write a server's config and connect it live — shared by the typed `/mcp add`, the
    * `/mcp` box's Add and Edit, and (indirectly, through the same writer) the
-   * `add_mcp_server` tool. One path so a config any of them accepts is one the others
+   * `mcp_server` tool. One path so a config any of them accepts is one the others
    * would too. Connects immediately: writing the file and telling the user to restart
    * would defeat the entire point of a guided add.
    */
@@ -1574,7 +1575,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
   /**
    * `/mcp add <name> <command|url> [args…]` and `/mcp remove <name>`.
    *
-   * Shares its parser and writer with the `add_mcp_server` tool, so a config the command
+   * Shares its parser and writer with the `mcp_server` tool, so a config the command
    * accepts is exactly one the tool would, and vice versa.
    */
   async function mcpConfigCommand(arg: string) {
@@ -2393,7 +2394,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
 
   // Hand a free-text directive to the model with an instruction wrapper, as its own
   // turn — used by the manual /rules and /skills commands (the model does the
-  // "rewrite it well and save it" work via remember_rule / create_skill).
+  // "rewrite it well and save it" work via remember_rule / the skill tool).
   async function runDirective(instruction: string, activity: string) {
     const s = session.current;
     if (!s) return;
@@ -2507,6 +2508,48 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
 
     // /analytics — the anonymous usage ping. Bare opens the on/off switch, the same
     // fixed box every other setting uses; an argument acts directly, same as /model.
+    // /feedback — a message to the maintainer, from inside the app. No account, no issue
+    // tracker, no mail client: the whole point is that it costs the sender nothing. What
+    // leaves the machine is decided in cli/feedback.ts and shown here before it goes.
+    if (name === "/feedback") {
+      const typed = arg.trim();
+      const message = typed || (await askApproval.current(
+        "What would you like to tell the maintainer?",
+        ["Cancel"],
+        undefined,
+        undefined,
+        { label: "Your message", placeholder: "what is missing, broken, or worth adding" },
+      ).then((answer) => readFreeText(answer) ?? ""));
+      if (!message.trim()) return;
+
+      // The confirm LOOPS, because the moment you read your own message back is the
+      // moment you remember the thing you left out — usually an email address to reply
+      // to. Typing in the box's own text row adds a line and shows the message again,
+      // rather than cancelling and retyping the whole thing.
+      let text = message;
+      for (;;) {
+        const refusal = refuseReason(text);
+        if (refusal) return say(refusal);
+
+        const feedback = buildFeedback(text, appVersion());
+        const choice = await askApproval.current(previewOf(feedback), ["Send it", "Don't send"], undefined, undefined, {
+          label: "add a line",
+          placeholder: "your email for a reply, or more detail",
+        });
+        const added = readFreeText(choice);
+        if (added !== null) {
+          text = withAddition(text, added);
+          continue;
+        }
+        if (choice !== "Send it") return note("Not sent.");
+
+        note("sending…");
+        const result = await sendFeedback(feedback);
+        note(result.message, result.ok ? undefined : { error: true });
+        return;
+      }
+    }
+
     if (name === "/analytics") {
       const verb = arg.trim().toLowerCase();
       if (verb === "on" || verb === "off") {
@@ -2776,7 +2819,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
         const { providerId, words } = splitModelArg(arg, allProviders(), current, here.kind !== "error");
         // `/model openrouter` alone: that provider's picker.
         if (!words) return setOverlay({ kind: "model", providerId });
-        const picked = providerId === current ? here : resolveChoice(words, orderedModelsOf(providerId), "model");
+        const picked = providerId === current && words === arg.trim() ? here : resolveChoice(words, orderedModelsOf(providerId), "model");
         if (picked.kind === "error") return say(picked.message);
         // Several fit: show exactly those, in the picker, rather than a list to retype from.
         if (picked.kind === "several") return setOverlay({ kind: "model", providerId, filter: words });
@@ -2965,7 +3008,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
       if (arg) {
         await runDirective(
           `The user wants a new reusable skill for this project: "${arg}". Design it and save it ` +
-            `with create_skill — a short invocation name, a one-line description, and the procedure ` +
+            `with the skill tool — a short invocation name, a one-line description, and the procedure ` +
             `as a clear markdown checklist (use $ARGUMENTS/$1 if it should take input). Then confirm.`,
           "creating a skill…",
         );
@@ -3353,11 +3396,14 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
         return {
           label: m.label + (m.id === id ? "  ✓" : ""),
           description: m.description ? `${facts} · ${m.description}` : facts,
+          // Searched but not shown, so a filter opened by `/model <words>` matches the same
+          // things the words matched: the id as well as the name.
+          keywords: m.id,
         };
       });
       return (
         <Picker
-          title={`Choose a ${pickerProvider} model`}
+          title={`Choose ${/^[aeiou]/i.test(pickerProvider) ? "an" : "a"} ${pickerProvider} model`}
           items={items}
           width={width}
           maxRows={maxRows}

@@ -248,12 +248,20 @@ export function microcompact(
       return { ...e, content: stub };
     }
     // 2) Old standalone assistant recaps → stub (pure text, no tool calls, long enough).
+    //
+    // NOT a reply the person answered. "yes please", "B", "go" mean nothing without the
+    // proposal they answer, and stubbing that proposal left the model holding an answer
+    // to a question it could no longer see. A real session: "yes you can pick that up"
+    // answered a reply that became this stub, and the model went on to do far more than
+    // was agreed, ending in "i did not tell you to do a whole ass work".
+    const answered = entries[i + 1]?.role === "user" && !(entries[i + 1] as { synthetic?: true }).synthetic;
     if (
       i < recapBoundary &&
       e.role === "assistant" &&
       !(e.toolCalls && e.toolCalls.length > 0) &&
       e.content.length >= RECAP_MIN_CHARS &&
-      e.content !== RECAP_STUB
+      e.content !== RECAP_STUB &&
+      !answered
     ) {
       recapsCleared++;
       return { ...e, content: RECAP_STUB };

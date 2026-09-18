@@ -12,9 +12,12 @@ const recap = (text: string): Entry => ({ role: "assistant", content: text });
 const userMsg = (text: string): Entry => ({ role: "user", content: text });
 const longRecap = "Session 6 delivered the folder tree, context menu, and SVG icons. ".repeat(6);
 
+const note = (text: string): Entry => ({ role: "user", content: text, synthetic: true });
+
 test("old standalone assistant recaps are condensed; recent ones are kept", () => {
   const entries: Entry[] = [
-    recap(longRecap), // old — should be stubbed
+    recap(longRecap), // old, and nobody answered it — should be stubbed
+    note("[Background shell #1 finished]"),
     ...Array.from({ length: 8 }, (_, i) => userMsg(`turn ${i}`)),
     recap(longRecap), // within the recent window — kept
   ];
@@ -214,4 +217,20 @@ test("a file the working set does NOT carry whole is left alone", () => {
   ];
   const swept = microcompact(entries, 5, new Set(["/p/other.ts"]));
   assert.equal(swept.cleared, 0, "only files carried WHOLE are redundant");
+});
+
+test("a reply the person answered is never condensed, however old", () => {
+  // Real session: "yes you can pick that up good choice" answered a proposal that was
+  // later replaced by the recap stub, so the model held an agreement to something it
+  // could no longer see, and did far more than was agreed.
+  const proposal = "I can wire the decode sandbox into the present path next, or stop at the probe. " + longRecap;
+  const entries: Entry[] = [
+    userMsg("hey"),
+    recap(proposal),
+    userMsg("yes you can pick that up good choice"),
+    ...Array.from({ length: 12 }, (_, i) => recap(`step ${i}`)),
+  ];
+  const { entries: out, recapsCleared } = microcompact(entries, 8);
+  assert.equal(recapsCleared, 0);
+  assert.equal(out[1]!.content, proposal, "the reply the user said yes to was condensed away");
 });

@@ -103,7 +103,11 @@ export function splitModelArg(
 ): { providerId: string; words: string } {
   const [first = "", ...rest] = wordsOf(arg);
   const named = providers.find((p) => norm(p.id) === first || norm(p.label) === first);
-  if (!named || matchesHere) return { providerId: current, words: arg.trim() };
+  if (!named) return { providerId: current, words: arg.trim() };
+  // Naming the provider already in use only scopes the search. Kept as a search word it
+  // matched every model on a router, whose ids all carry the provider name.
+  if (named.id === current) return { providerId: current, words: rest.join(" ") };
+  if (matchesHere) return { providerId: current, words: arg.trim() };
   return { providerId: named.id, words: rest.join(" ") };
 }
 

@@ -13,14 +13,22 @@
  * how every other governed action in the codebase fails.
  */
 import type { Tool, ToolContext, ToolResult } from "./types.js";
-import { addServerToConfig, configPathFor, parseAddSpec, serverExistsInConfig, type AddScope } from "../mcp/configWrite.js";
+import {
+  addServerToConfig,
+  configPathFor,
+  parseAddSpec,
+  removeServerFromConfig,
+  resolveConfigPath,
+  serverExistsInConfig,
+  type AddScope,
+} from "../mcp/configWrite.js";
 
 const ADD = "Yes, add it";
 const REPLACE = "Yes, replace it";
 const SKIP = "No, don't";
 
-export const addMcpServer: Tool = {
-  name: "add_mcp_server",
+export const mcpServer: Tool = {
+  name: "mcp_server",
   deferred: true,
   readOnly: false,
   // The credential guidance was WRONG, not merely thin. It told the model to reference
@@ -30,8 +38,13 @@ export const addMcpServer: Tool = {
   // looking like a bad token rather than a bad config. Meanwhile the parent environment
   // is already inherited, so the variable the model was told to "reference" needed no
   // mention at all. The correct advice is close to the opposite of what was written.
+  keywords: ["mcp", "server", "integration", "connect", "add", "remove", "delete", "disable", "enable", "turn", "off"],
   description:
-    "Connect a new MCP server to this project so its tools become available to you. " +
+    "Manage this project's MCP servers: `action` add (the default), remove, disable or " +
+    "enable one. Disabling keeps the server configured and stops its tools being offered, " +
+    "which is what 'turn off the linear server for now' means; removing deletes it from " +
+    "the config. Both take just a `name`, and both ask the user first.\n" +
+    "Adding connects a new MCP server to this project so its tools become available to you. " +
     "Use it when the user asks to add an integration: 'add the github mcp server', " +
     "'connect to our postgres'. Give either a `command` (with `args`) for a local " +
     "server or a `url` for a remote one, never both. The user is always asked to " +
@@ -59,6 +72,13 @@ export const addMcpServer: Tool = {
     additionalProperties: false,
     required: ["name"],
     properties: {
+      action: {
+        type: "string",
+        enum: ["add", "remove", "disable", "enable"],
+        description:
+          "Default 'add'. 'disable' keeps the server but stops offering its tools; 'enable' undoes that; " +
+          "'remove' deletes it from the config. Those three need only `name`.",
+      },
       name: {
         type: "string",
         description: "Short server name; becomes the prefix of its tools (e.g. 'github' → mcp__github__*).",
@@ -97,6 +117,13 @@ export const addMcpServer: Tool = {
   },
 
   async execute(args, ctx: ToolContext): Promise<ToolResult> {
+    const action = typeof args.action === "string" ? args.action.trim() : "add";
+    if (action === "remove" || action === "disable" || action === "enable") {
+      return manageServer(action, args, ctx);
+    }
+    if (action !== "add") {
+      return { output: "Error: `action` must be add, remove, disable or enable.", isError: true, summary: "bad action" };
+    }
     const spec = specFromArgs(args);
     if (!spec.ok) return { output: `Error: ${spec.error}`, isError: true, summary: "bad server spec" };
 
@@ -202,6 +229,80 @@ function specFromArgs(args: Record<string, unknown>):
     what: `\`${what}\``,
     display: `${url ? "--http " : ""}${name} ${what}`,
     parsed: parsed.spec,
+  };
+}
+
+/**
+ * Remove, disable or enable one configured server.
+ *
+ * Every one of these was reachable only through the `/mcp` screen, so "turn that server
+ * off" could be said and not done. They go through the same config write and the same live
+ * manager call the screen uses, so a change takes effect now rather than next launch.
+ */
+async function manageServer(
+  action: "remove" | "disable" | "enable",
+  args: Record<string, unknown>,
+  ctx: ToolContext,
+): Promise<ToolResult> {
+  const name = typeof args.name === "string" ? args.name.trim() : "";
+  if (!name) return { output: "Error: `name` is required — which server.", isError: true, summary: "no server name" };
+  const config = ctx.mcp?.configFor(name);
+  if (!config) {
+    return {
+      output: `Error: no MCP server named '${name}' is configured here. The servers in play are the mcp__<server>__* tools you can see; /mcp lists them all.`,
+      isError: true,
+      summary: `no server '${name}'`,
+    };
+  }
+  if (!ctx.requestApproval) {
+    return {
+      output:
+        `Error: changing an MCP server needs the user's confirmation and there's no way to ask here. ` +
+        `Tell them to run /mcp and ${action} '${name}' there.`,
+      isError: true,
+      summary: "cannot ask",
+    };
+  }
+
+  const root = ctx.governance?.forbidden.root ?? ctx.cwd;
+  const question =
+    action === "remove"
+      ? `Remove the MCP server '${name}' from the config? Its tools stop being available.`
+      : action === "disable"
+        ? `Disable the MCP server '${name}'? It stays configured, and its tools stop being offered.`
+        : `Enable the MCP server '${name}' again? Its tools become available.`;
+  const yes = action === "remove" ? "Yes, remove it" : action === "disable" ? "Yes, disable it" : "Yes, enable it";
+  const choice = await ctx.requestApproval(question, [yes, SKIP]);
+  if (choice !== yes) {
+    return { output: `Left '${name}' as it was.`, summary: "declined" };
+  }
+
+  if (action === "remove") {
+    const path = await resolveConfigPath(root, name);
+    const removed = await removeServerFromConfig(path, name).catch((e: unknown) => e as Error);
+    if (removed instanceof Error) {
+      return { output: `Error: couldn't write ${path}: ${removed.message}`, isError: true, summary: "write failed" };
+    }
+    await ctx.mcp?.removeServer(name);
+    return removed
+      ? { output: `Removed '${name}' from ${path}. Its tools are gone from this session.`, summary: `removed '${name}'` }
+      : { output: `'${name}' was not in ${path}, so nothing was written.`, isError: true, summary: `'${name}' not in config` };
+  }
+
+  const disabled = action === "disable";
+  const path = await resolveConfigPath(root, name);
+  const scope: AddScope = path === configPathFor("global", root) ? "global" : "project";
+  const next = { ...config, disabled };
+  const written = await addServerToConfig(path, { name, scope, config: next }).catch((e: unknown) => e as Error);
+  if (written instanceof Error) {
+    return { output: `Error: couldn't write ${path}: ${written.message}`, isError: true, summary: "write failed" };
+  }
+  await ctx.mcp?.addServer(next);
+  return {
+    output: disabled
+      ? `Disabled '${name}'. It stays in ${path}; say the word and I can enable it again.`
+      : `Enabled '${name}'. Its tools are available again.`,
+    summary: `${disabled ? "disabled" : "enabled"} '${name}'`,
   };
 }
 

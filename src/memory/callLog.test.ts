@@ -172,3 +172,20 @@ test("the engine records the model that produced each call", () => {
   assert.equal(rec.miss, 6_600);
   assert.equal(rec.out, 20);
 });
+
+test("a session with nothing said in it is not listed", async () => {
+  // Real project: 4 of the 12 sessions since 2.4.0 had 0 entries (saved by /include or
+  // /update before any message) and each showed up in /continue as "0 msgs".
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mw-emptysession-"));
+  try {
+    const empty = await sessionIn(dir);
+    empty.id = "00000000-0000-0000-0000-000000000000";
+    empty.transcript = [];
+    await saveSession(empty);
+    await saveSession(await sessionIn(dir));
+    const listed = await listSessions(dir);
+    assert.deepEqual(listed.map((m) => m.id), ["11111111-2222-3333-4444-555555555555"]);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});

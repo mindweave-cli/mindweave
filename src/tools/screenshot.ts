@@ -125,6 +125,26 @@ export function tieNote(query: string | undefined, tied: WindowInfo[]): string {
   );
 }
 
+/**
+ * What to say when the window cannot be decided (pure).
+ *
+ * With no title given, "ambiguous" only ever means that NO window had focus when the list
+ * was taken (focus is briefly nowhere while it moves between windows). It used to read
+ * `"(focused window)" matches 5 windows`, describing a search that never happened.
+ */
+export function ambiguousMessage(query: string | undefined, candidates: WindowInfo[]): string {
+  if (!query) {
+    return (
+      `No window had focus at that moment, so there is no focused window to capture. ` +
+      `Name the one you want:\n${listTitles(candidates)}`
+    );
+  }
+  return (
+    `"${query}" matches ${candidates.length} windows, so it is not clear which to capture. ` +
+    `Name one more precisely:\n${listTitles(candidates)}`
+  );
+}
+
 /** Render window titles for an error the model can act on without another call. */
 export function listTitles(windows: WindowInfo[]): string {
   if (windows.length === 0) return "No capturable windows are open.";
@@ -231,12 +251,7 @@ export const screenshot: Tool = {
           : `There is no window to capture. ${listTitles(pick.candidates)}`,
       );
     }
-    if (pick.kind === "ambiguous") {
-      return fail(
-        `"${query ?? "(focused window)"}" matches ${pick.candidates.length} windows, so it is not clear ` +
-          `which to capture. Name one more precisely:\n${listTitles(pick.candidates)}`,
-      );
-    }
+    if (pick.kind === "ambiguous") return fail(ambiguousMessage(query, pick.candidates));
 
     const target = pick.window;
     // The window is resolved BEFORE this either way, so the user is never asked about a

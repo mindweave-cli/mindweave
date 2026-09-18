@@ -19,24 +19,27 @@
  */
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, realpathSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { respond } from "./engine.js";
-import { BackgroundShells } from "../tools/backgroundShells.js";
+import { backgroundEventNote, respond } from "./engine.js";
+import { BackgroundShells, type ShellInfo } from "../tools/backgroundShells.js";
 import type { Session } from "../memory/types.js";
 
 let requests: { messages: { role: string; content?: string }[] }[] = [];
 let toolRounds = 0;
+/** Held before each reply, so calls within one turn land at measurably different times. */
+let replyDelayMs = 0;
 let server: Server;
 
 before(async () => {
   server = createServer((req, res) => {
     let body = "";
     req.on("data", (c) => (body += c));
-    req.on("end", () => {
+    req.on("end", async () => {
+      if (replyDelayMs > 0) await new Promise((r) => setTimeout(r, replyDelayMs));
       try {
         requests.push(JSON.parse(body));
       } catch {
@@ -188,4 +191,122 @@ test("a turn with nothing in the background adds no notes at all", async () => {
     "a quiet session must not grow synthetic entries",
   );
   mgr.dispose(true);
+});
+
+// ── What the note says about who ended it ─────────────────────────────────────
+
+function ended(over: Partial<ShellInfo>): ShellInfo {
+  return {
+    id: 5,
+    command: "npx electron out/main/index.js",
+    cwd: "C:\app",
+    status: "killed",
+    exitCode: null,
+    startedAt: 0,
+    finishedAt: 1,
+    ready: true,
+    notify: "on_failure",
+    ...over,
+  } as ShellInfo;
+}
+
+test("the agent's own kill_shell is not reported back as the user closing the app", () => {
+  // Found in a real session: the agent killed its app to restart it, and was then told
+  // "this is the user stopping their own app", blaming the user for its own action.
+  const note = backgroundEventNote({ info: ended({ stoppedBy: "agent" }), kind: "ended", tail: "", wake: false });
+  assert.equal(note, null);
+});
+
+test("a stop the user made is still reported as theirs", () => {
+  const note = backgroundEventNote({ info: ended({ stoppedBy: "user" }), kind: "ended", tail: "", wake: false });
+  assert.match(note ?? "", /the user stopping their own app/);
+});
+
+test("an app that exited on its own after starting is only PROBABLY the user", () => {
+  const note = backgroundEventNote({ info: ended({ status: "exited", exitCode: 0 }), kind: "ended", tail: "", wake: false });
+  assert.match(note ?? "", /most likely the user/);
+});
+
+test("a runaway Mindweave stopped is reported as that, with its output, not as a user close", () => {
+  const note = backgroundEventNote({ info: ended({ stoppedBy: "system" }), kind: "ended", tail: "spam spam", wake: false });
+  assert.match(note ?? "", /stopped by Mindweave/);
+  assert.match(note ?? "", /spam spam/);
+  assert.doesNotMatch(note ?? "", /user stopping/);
+});
+
+test("the running note does not invite describing a window nobody looked at", () => {
+  const note = backgroundEventNote({ info: ended({ status: "running", finishedAt: null }), kind: "ready", tail: "", wake: true });
+  assert.match(note ?? "", /unless you have actually looked/);
+});
+
+test("each call in a turn is logged with its own time, not the time the turn was saved", async () => {
+  // Real sessions: 145 calls carried 4 distinct timestamps, because every call was stamped
+  // when the turn was saved. The log could not show where a long turn spent its time.
+  requests = [];
+  toolRounds = 3;
+  replyDelayMs = 25;
+  const mgr = new BackgroundShells();
+  const s = session(mgr);
+  try {
+    await respond(s, {});
+  } finally {
+    replyDelayMs = 0;
+    mgr.dispose(true);
+  }
+  const times = (s.callLog ?? []).map((c) => c.at);
+  assert.ok(times.length >= 4, `expected a call record per model call, saw ${times.length}`);
+  assert.equal(new Set(times).size, times.length, `calls share timestamps: ${times.join(", ")}`);
+  for (let i = 1; i < times.length; i++) assert.ok(times[i]! > times[i - 1]!, "call times are out of order");
+});
+
+test("an app that failed to start while the agent was checking its own work is not handed back as a question", () => {
+  // Real session: the agent launched the app it was building, the launch failed, and the
+  // note told it to "offer to fix it". It stopped and asked, and the user replied
+  // "why would you stop an unfinished work?".
+  const note = backgroundEventNote({
+    info: ended({ status: "exited", exitCode: 1, ready: false }),
+    kind: "ended",
+    tail: "",
+    wake: true,
+  });
+  assert.match(note ?? "", /part of that work/);
+  assert.match(note ?? "", /do not restart it again without changing something/);
+});
+
+// ── The working directory each turn starts in ────────────────────────────────
+
+
+test("a turn that starts back at the root says where the previous turn had moved to", async () => {
+  // Real session: the agent cd-ed into a test folder, the next turn started at the root
+  // without saying so, and `cargo run` failed with "could not find Cargo.toml".
+  requests = [];
+  toolRounds = 0;
+  const mgr = new BackgroundShells();
+  const s = session(mgr);
+  const sub = join(s.cwd, "Testings", "gpu-present");
+  mkdirSync(sub, { recursive: true });
+  s.toolContext.cwd = sub;
+  try {
+    await respond(s, {});
+  } finally {
+    mgr.dispose(true);
+  }
+  const tail = requests[0]!.messages.at(-1)?.content ?? "";
+  assert.match(tail, /previous turn had moved into Testings[\/]gpu-present/);
+  assert.match(tail, /each turn starts back at the root/);
+  assert.equal(s.toolContext.cwd, s.cwd);
+});
+
+test("a turn that was already at the root says nothing about it", async () => {
+  requests = [];
+  toolRounds = 0;
+  const mgr = new BackgroundShells();
+  const s = session(mgr);
+  try {
+    await respond(s, {});
+  } finally {
+    mgr.dispose(true);
+  }
+  const all = requests[0]!.messages.map((m) => m.content ?? "").join("\n");
+  assert.doesNotMatch(all, /previous turn had moved into/);
 });

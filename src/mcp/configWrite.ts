@@ -6,7 +6,7 @@
  * carries credentials, so a typo is a server that silently fails to start. Making people
  * hand-write it is how you get a bad first five minutes.
  *
- * Two callers share everything here — the `/mcp add` command and the `add_mcp_server`
+ * Two callers share everything here — the `/mcp add` command and the `mcp_server`
  * tool the model can use when you just say what you want. One writer, so the two can
  * never disagree about what a valid config looks like.
  *

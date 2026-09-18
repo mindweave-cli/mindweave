@@ -86,7 +86,7 @@ export function activeSkills(skills: SkillMeta[], workingSet: string[] = []): Sk
  * Caps on the always-loaded skill catalog.
  *
  * This block renders into the CACHED system prefix on every session and only ever
- * grows: every create_skill adds a line, permanently, and nothing trims it.
+ * grows: every skill created adds a line, permanently, and nothing trims it.
  *
  * The cap is on LENGTH PER ENTRY rather than on the number of entries, and that is a
  * deliberate departure from "keep the most recent N". A skill is only reachable by

@@ -970,3 +970,33 @@ test("two events in ONE drain do not print the same output twice", async () => {
 
   mgr.dispose(true);
 });
+
+test("a command started in the background has its output read, so a prompt it stops on is caught", async () => {
+  // The explicit background path handed the manager the process but not the file the
+  // process writes into, so from 2.4.0 on every `run_in_background` command was silent:
+  // `shells` read nothing, every note said "(no output)", and the stall watchdog never saw
+  // the prompt it exists for. Only commands moved to the background after a timeout worked.
+  const { mkdtempSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = mkdtempSync(join(tmpdir(), "mw-bgout-"));
+  writeFileSync(join(dir, "asks.js"), 'process.stdout.write("Overwrite existing config? [y/N] "); setInterval(() => {}, 1000);\n');
+  const mgr = new BackgroundShells();
+  const ctx = { cwd: dir, roots: [dir], reads: new Map(), backgroundShells: mgr } as unknown as Parameters<typeof runCommand.execute>[1];
+  try {
+    const started = await runCommand.execute({ command: `node asks.js`, run_in_background: true, notify: "on_finish" }, ctx);
+    assert.match(started.output, /background as shell #1/);
+    let seen = "";
+    for (let i = 0; i < 100 && !seen.includes("[y/N]"); i++) {
+      await sleep(50);
+      seen += (await mgr.read(1))?.chunk ?? "";
+    }
+    assert.match(seen, /Overwrite existing config\? \[y\/N\]/, "the background command's output never reached the manager");
+    mgr.checkStalls(Date.now() + 10 * 60_000);
+    const stalled = (await mgr.drainEvents()).find((e) => e.kind === "stalled");
+    assert.ok(stalled, "a command waiting on a prompt was not flagged");
+    assert.match(stalled.tail, /\[y\/N\]/);
+  } finally {
+    mgr.dispose(true);
+  }
+});

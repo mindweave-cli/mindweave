@@ -11,7 +11,20 @@
  */
 import type { Tool, ToolResult } from "./types.js";
 import { isMcpToolName } from "../mcp/catalog.js";
-import { writeRule, appendForbidden, appendForbiddenCommand, appendForbiddenMcpTool, deriveRuleName, slugify, writeSkill } from "../governor/write.js";
+import {
+  writeRule,
+  appendForbidden,
+  appendForbiddenCommand,
+  appendForbiddenMcpTool,
+  deriveRuleName,
+  slugify,
+  writeSkill,
+  removeRule,
+  removeSkill,
+  removeForbiddenPath,
+  removeForbiddenCommand,
+  removeForbiddenMcpTool,
+} from "../governor/write.js";
 import { rescope } from "../governor/scope.js";
 import { parseGlobs } from "../governor/rules.js";
 import { failQuietly } from "./results.js";
@@ -132,11 +145,81 @@ async function doForbidMcpTool(args: Record<string, unknown>, ctx: Ctx): Promise
   };
 }
 
+// ── lifting what was recorded ────────────────────────────────────────────────
+// Every standing decision could be MADE and none could be taken back, so "drop that
+// rule" or "you can run that again" meant the user editing files under .mindweave/ by
+// hand. Each of these reports a MISS as a miss: lifting something that was never
+// recorded says so, rather than claiming a change that did not happen.
+
+async function doForgetRule(args: Record<string, unknown>, ctx: Ctx): Promise<ToolResult> {
+  const name = typeof args.value === "string" ? args.value.trim() : "";
+  if (!name) return failQuietly("`value` is required — the rule's name.");
+  const gone = await removeRule(projectRoot(ctx), name);
+  // The live session drops it too, so the very next turn is built without it.
+  if (ctx.governance && gone) {
+    const slug = slugify(name);
+    ctx.governance.rules = ctx.governance.rules.filter((r) => slugify(r.name) !== slug);
+    if (ctx.ruleScope) rescope(ctx.ruleScope, ctx.governance.rules);
+  }
+  return gone
+    ? { output: `Dropped rule '${name}'. It no longer applies, from this turn on.`, summary: `dropped rule '${name}'` }
+    : failQuietly(`No rule named '${name}'. The rules in force are in your context; use the name shown there.`);
+}
+
+async function doUnforbidPath(args: Record<string, unknown>, ctx: Ctx): Promise<ToolResult> {
+  const pattern = typeof args.value === "string" ? args.value.trim() : "";
+  if (!pattern) return failQuietly("`value` is required — the forbidden path pattern to lift.");
+  const normalized = pattern.replace(/^\.\//, "").replace(/\/$/, "");
+  const gone = await removeForbiddenPath(projectRoot(ctx), pattern);
+  if (ctx.governance && gone) {
+    ctx.governance.forbidden = {
+      ...ctx.governance.forbidden,
+      patterns: ctx.governance.forbidden.patterns.filter((p) => p !== normalized),
+    };
+  }
+  return gone
+    ? { output: `'${normalized}' is no longer protected — I can edit it again.`, summary: `unforbade '${normalized}'` }
+    : failQuietly(`'${pattern}' is not in the forbidden list, so there was nothing to lift.`);
+}
+
+async function doUnforbidCommand(args: Record<string, unknown>, ctx: Ctx): Promise<ToolResult> {
+  const pattern = typeof args.value === "string" ? args.value.trim() : "";
+  if (!pattern) return failQuietly("`value` is required — the forbidden command to lift.");
+  const gone = await removeForbiddenCommand(projectRoot(ctx), pattern);
+  if (ctx.governance && gone) {
+    ctx.governance.forbidden = {
+      ...ctx.governance.forbidden,
+      commands: (ctx.governance.forbidden.commands ?? []).filter((c) => c !== pattern),
+    };
+  }
+  return gone
+    ? { output: `'${pattern}' is no longer forbidden — I can run it again.`, summary: `unforbade command '${pattern}'` }
+    : failQuietly(`'${pattern}' is not in the forbidden commands, so there was nothing to lift.`);
+}
+
+async function doUnforbidMcpTool(args: Record<string, unknown>, ctx: Ctx): Promise<ToolResult> {
+  const name = typeof args.value === "string" ? args.value.trim() : "";
+  if (!name) return failQuietly("`value` is required — the full MCP tool name to lift.");
+  const gone = await removeForbiddenMcpTool(projectRoot(ctx), name);
+  if (ctx.governance && gone) {
+    const mcpTools = (ctx.governance.forbidden.mcpTools ?? []).filter((t) => t !== name);
+    ctx.governance.forbidden = { ...ctx.governance.forbidden, mcpTools };
+    ctx.mcp?.setForbidden(mcpTools);
+  }
+  return gone
+    ? { output: `'${name}' is available to me again.`, summary: `unforbade '${name}'` }
+    : failQuietly(`'${name}' is not in the forbidden MCP tools, so there was nothing to lift.`);
+}
+
 const ACTIONS = {
   remember_rule: doRememberRule,
   forbid_path: doForbidPath,
   forbid_command: doForbidCommand,
   forbid_mcp_tool: doForbidMcpTool,
+  forget_rule: doForgetRule,
+  unforbid_path: doUnforbidPath,
+  unforbid_command: doUnforbidCommand,
+  unforbid_mcp_tool: doUnforbidMcpTool,
 } as const;
 
 export type GovernorAction = keyof typeof ACTIONS;
@@ -145,6 +228,7 @@ export const governor: Tool = {
   name: "governor",
   deferred: true,
   readOnly: false,
+  keywords: ["rule", "rules", "remember", "forget", "policy", "standing", "forbid", "unforbid", "ban", "unban", "allow", "never", "always"],
   // Each action keeps the ONE warning that changes what the model does, and loses the
   // rest. The dropped prose explained things the tool already reports in its own reply
   // (that a duplicate is harmless, that a refusal can be lifted), which is a worse
@@ -164,8 +248,13 @@ export const governor: Tool = {
     "looks like: forbid the specific command the user meant, not a word from it.\n" +
     "- forbid_mcp_tool — one MCP tool, by its FULL 'mcp__server__tool' name; a bare " +
     "name is rejected rather than silently matching nothing.\n" +
-    "Use it when the user states a durable preference or says not to touch/run " +
-    "something — not for a one-off instruction about the task in hand.",
+    "Each of those can be TAKEN BACK, which is what the user means by 'forget that rule', " +
+    "'you can edit that again', 'you can run that now', 'unban that tool': forget_rule takes " +
+    "the rule's name, and unforbid_path / unforbid_command / unforbid_mcp_tool take the exact " +
+    "entry being lifted. Lifting something that was never recorded says so rather than " +
+    "pretending it was there.\n" +
+    "Use it when the user states a durable preference, says not to touch or run something, " +
+    "or takes one of those back — not for a one-off instruction about the task in hand.",
   parameters: {
     type: "object",
     additionalProperties: false,
@@ -173,7 +262,16 @@ export const governor: Tool = {
     properties: {
       action: {
         type: "string",
-        enum: ["remember_rule", "forbid_path", "forbid_command", "forbid_mcp_tool"],
+        enum: [
+          "remember_rule",
+          "forbid_path",
+          "forbid_command",
+          "forbid_mcp_tool",
+          "forget_rule",
+          "unforbid_path",
+          "unforbid_command",
+          "unforbid_mcp_tool",
+        ],
         description: "What to record.",
       },
       value: {
@@ -206,18 +304,21 @@ export const governor: Tool = {
   },
 };
 
-export const createSkill: Tool = {
-  name: "create_skill",
+export const skillTool: Tool = {
+  name: "skill",
   deferred: true,
   readOnly: false,
   // Two things the model could not have known: the name is normalised (so the
   // invocation it announces may not be the name it passed), and creating over an
   // existing name destroys that skill.
+  keywords: ["skill", "skills", "procedure", "workflow", "playbook", "create", "delete", "remove"],
   description:
-    "Create a reusable skill for THIS project: a named, step-by-step procedure that " +
+    "Create or delete a reusable skill for THIS project: a named, step-by-step procedure " +
+    "that " +
     "you or the user (via /name) can run later. Use it when the user says to save a " +
     "skill, or to capture a multi-step workflow clearly worth repeating. It persists " +
-    "across sessions.\n" +
+    "across sessions. Pass action: 'delete' with just a name to remove one — that is " +
+    "what 'drop that skill' or 'we do not need that skill any more' means.\n" +
     "Unlike a rule, a skill is CHEAP to keep: only its name and description sit in " +
     "your context, and the steps are loaded only when it runs. So prefer a skill for " +
     "anything procedural, and a rule only for something that must colour every turn.\n" +
@@ -230,8 +331,13 @@ export const createSkill: Tool = {
   parameters: {
     type: "object",
     additionalProperties: false,
-    required: ["name", "description", "steps"],
+    required: ["name"],
     properties: {
+      action: {
+        type: "string",
+        enum: ["create", "delete"],
+        description: "Default 'create'. 'delete' removes the skill named below.",
+      },
       name: {
         type: "string",
         description: "Short invocation name, e.g. 'release' (becomes /release).",
@@ -268,6 +374,19 @@ export const createSkill: Tool = {
     const description = typeof args.description === "string" ? args.description.trim() : "";
     const body = typeof args.steps === "string" ? args.steps.trim() : "";
     if (!name) return failQuietly("`name` is required.");
+
+    if (args.action === "delete") {
+      const gone = await removeSkill(projectRoot(ctx), name);
+      // Out of the live catalog too, so /name stops offering it immediately.
+      if (ctx.governance && gone) {
+        const slug = slugify(name);
+        ctx.governance.skills = ctx.governance.skills.filter((s) => slugify(s.name) !== slug);
+      }
+      return gone
+        ? { output: `Deleted skill '${slugify(name)}'.`, summary: `deleted skill '${slugify(name)}'` }
+        : failQuietly(`No skill named '${name}'. Your available skills are listed in your context.`);
+    }
+
     if (!body) return failQuietly("`steps` is required — the skill needs a body.");
 
     const saved = await writeSkill(projectRoot(ctx), {

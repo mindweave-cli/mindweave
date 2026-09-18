@@ -76,7 +76,7 @@ export const todoWrite: Tool = {
         items: {
           type: "object",
           additionalProperties: false,
-          required: ["content", "activeForm", "status"],
+          required: ["content", "status"],
           properties: {
             content: {
               type: "string",
@@ -84,7 +84,7 @@ export const todoWrite: Tool = {
             },
             activeForm: {
               type: "string",
-              description: "Present-continuous form shown while active, e.g. 'Running the tests'.",
+              description: "Optional present-continuous form shown while active, e.g. 'Running the tests'. Defaults to content.",
             },
             status: {
               type: "string",
@@ -154,9 +154,10 @@ function parseTodos(raw: unknown): TodoItem[] | string {
     const activeForm = typeof t.activeForm === "string" ? t.activeForm.trim() : "";
     const status = t.status as TodoStatus;
     if (!content) return `todos[${i}].content is required.`;
-    if (!activeForm) return `todos[${i}].activeForm is required.`;
     if (!STATUSES.includes(status)) return `todos[${i}].status must be one of: ${STATUSES.join(", ")}.`;
-    items.push({ content, activeForm, status });
+    // Optional. It only changes how the task in progress reads back, and refusing a whole
+    // list over it cost a real session a round.
+    items.push({ content, activeForm: activeForm || content, status });
   }
   return items;
 }

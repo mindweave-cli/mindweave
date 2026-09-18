@@ -205,6 +205,16 @@ export interface TodoItem {
 export interface ToolContext {
   /** Working directory; `run_command` may change it (cd persistence). */
   cwd: string;
+
+  /**
+   * Which model is answering, and how hard it thinks. Set per turn by the engine so a
+   * tool can REPORT it (see mindweaveStatus) when the user asks what is running. Core
+   * still decides everything about the model; this is a fact, not a control.
+   */
+  modelConfig?: import("../drivers/types.js").ModelConfig;
+  /** Where the previous turn left `cwd`, when this turn reset it to the project root.
+   *  Undefined when the previous turn ended at the root. */
+  cwdResetFrom?: string;
   /**
    * The user-approved plan currently in force, verbatim (see dynamo/planArtifact).
    * Set by exit_plan on approval, loaded from `.mindweave/plan.md` at session
@@ -556,6 +566,18 @@ export interface Tool {
    * deferred: the search round trip would cost more than the schema ever did.
    */
   deferred?: boolean;
+
+  /**
+   * Extra words `find_tools` matches this tool on, as strongly as its name.
+   *
+   * A deferred tool is only ever found by searching for it, and the search scores names
+   * heavily and descriptions barely — so a tool named after its mechanism is unfindable
+   * by the word a person would use. Measured: "remember a rule for this project" did not
+   * return `governor` at all, because `create_skill` and `save_memory` merely mention the
+   * word "rule" in passing and sort earlier. These are the words the CALLER would use,
+   * not a restatement of the name.
+   */
+  keywords?: string[];
 
   /**
    * Advertise this tool only when the session actually has something for it to act on.

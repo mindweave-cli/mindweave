@@ -24,7 +24,7 @@ import { findTool, toolSchemas, TOOLS } from "../tools/registry.js";
 import { deferredToolsIndex } from "../tools/deferredNative.js";
 import { prefixPrint, diffPrefix, cacheCallLine, writeCacheLog } from "./cacheBreak.js";
 import { commandShellLabel } from "../tools/runCommand.js";
-import { isInteractiveServerCommand } from "../tools/backgroundShells.js";
+import { isInteractiveServerCommand, type BackgroundShells } from "../tools/backgroundShells.js";
 import { basePrompt } from "./prompt.js";
 import { basename } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -212,8 +212,19 @@ export function volatileContext(
   approvedPlan = "",
   /** Notes for the folders being worked in right now (see memory/projectNotes.ts). */
   directoryNotes: { path: string; text: string }[] = [],
+  /** Where the previous turn left the shell, when this turn started back at the root. */
+  cwdResetFrom = "",
 ): string {
   const parts: string[] = [];
+  // Each turn starts at the project root, and a model that `cd`-ed into a subfolder last
+  // turn does not know that unless it is told. It was not, and a real session ran
+  // `cargo run` from the root expecting the subfolder: "could not find Cargo.toml".
+  if (cwdResetFrom) {
+    parts.push(
+      `Commands run from the project root. The previous turn had moved into ${cwdResetFrom}, but each ` +
+        `turn starts back at the root: cd there again, or use paths from the root.`,
+    );
+  }
   // Standing rules FIRST in the volatile tail. They're rebuilt every turn here (not
   // in the cached prefix), so a long conversation can never bury them — and they sit
   // at the top of the freshest context the model reads before it acts. Binding by
@@ -760,6 +771,11 @@ function buildRequest(
           })
         : "",
       directoryNotes,
+      // Only while the turn is still sitting where the reset put it. Once a command moves,
+      // the command's own result says where it is now.
+      session.toolContext.cwdResetFrom && session.toolContext.cwd === session.cwd
+        ? relativize(session.toolContext, session.toolContext.cwdResetFrom)
+        : "",
     ),
     tools,
     model: session.modelConfig,
@@ -775,66 +791,102 @@ async function backgroundEventNotes(session: Session): Promise<string[]> {
   const mgr = session.toolContext.backgroundShells;
   if (!mgr) return [];
   const events = await mgr.drainEvents();
-  return events.map(({ info, kind, tail, wake }) => {
-    // It came up. This is the only positive event a server ever produces, and it is
-    // what lets the model actually deliver the "I'll tell you when it's running" it
-    // was told to say. Nothing has gone wrong, so there is nothing to fix.
-    if (kind === "ready") {
-      return (
-        `[Background shell #${info.id} (\`${info.command}\`) is up and running.]\n` +
-        `Recent output:\n${tail || "(no output)"}\n\n` +
-        `Tell the user in one short line that it's running. Nothing is wrong — do not investigate, ` +
-        `do not restart it, and do not change any files because of this.`
-      );
-    }
-    // The watchdog thinks this running shell is stuck. It has produced nothing for a
-    // while — either blocked on a prompt it will never answer, or silently wedged on a
-    // command that should have kept working. The point is to stop it sitting invisible
-    // until the timeout, and to hand the model the two moves that resolve it.
-    if (kind === "stalled") {
-      const why =
-        info.stallReason === "prompt"
-          ? `It looks like it is waiting for interactive input (its last line reads as a prompt). ` +
-            `Kill it with kill_shell #${info.id} and re-run non-interactively — pipe the answer in ` +
-            `(e.g. \`echo y | …\`) or add a non-interactive flag like \`-y\`/\`--yes\`.`
-          : `It has produced no output for a long time and may be wedged. Read it with shells #${info.id} ` +
-            `to judge, then either keep waiting if it is genuinely mid-work, or kill it with ` +
-            `kill_shell #${info.id} and look into why it hangs.`;
-      return (
-        `[Background shell #${info.id} (\`${info.command}\`) appears to be stuck.]\n` +
-        `Recent output:\n${tail || "(no output)"}\n\n${why}`
-      );
-    }
-    const status =
-      info.status === "killed"
-        ? info.stoppedBy === "user"
-          ? "was stopped by the user"
-          : "was killed"
-        : `finished with exit code ${info.exitCode}`;
-    // An ending that is NOT worth interrupting for still arrives, so the model knows the
-    // thing is down and can answer about it. It is explicitly not a task: this is the
-    // path a user closing their own app takes, and treating it as news is what made the
-    // agent reopen it.
-    if (!wake) {
-      return (
-        `[Background shell #${info.id} (\`${info.command}\`) ${status}. It had already started up, so ` +
-        `this is the user stopping their own app, not a failure.]\n` +
-        `This is background information only. Do NOT mention it unless it is relevant, do NOT restart ` +
-        `it, and do NOT change any files because of it. If the user later asks about this app, you now ` +
-        `know it is stopped.`
-      );
-    }
-    // For a server, only a failure to come up reaches here: a normal stop does not wake.
-    const guidance =
-      info.notify === "on_failure"
-        ? "This is a server or app that never came up, so the user never saw it running. Tell them what happened and offer to fix it — but do not restart it repeatedly on your own."
-        : "If it failed, tell the user briefly what went wrong and propose a fix — don't change files unless they agree.";
+  return events.map(backgroundEventNote).filter((note): note is string => note !== null);
+}
+
+/**
+ * The note for one background-shell event, or null when there is nothing to say (pure).
+ *
+ * An ending the AGENT caused says nothing: `kill_shell` already told it the shell
+ * stopped. The note that used to follow declared "this is the user stopping their own
+ * app", which blamed the user for the agent's own restart and gave the model a second,
+ * contradictory account of the same event.
+ */
+export function backgroundEventNote({
+  info,
+  kind,
+  tail,
+  wake,
+}: Awaited<ReturnType<BackgroundShells["drainEvents"]>>[number]): string | null {
+  // It came up. This is the only positive event a server ever produces, and it is
+  // what lets the model actually deliver the "I'll tell you when it's running" it
+  // was told to say. Nothing has gone wrong, so there is nothing to fix.
+  if (kind === "ready") {
     return (
-      `[Background shell #${info.id} (\`${info.command}\`) ${status}.]\n` +
+      `[Background shell #${info.id} (\`${info.command}\`) is up and running.]\n` +
       `Recent output:\n${tail || "(no output)"}\n\n` +
-      guidance
+      `Tell the user in one short line that it's running. Nothing is wrong — do not investigate, ` +
+      `do not restart it, and do not change any files because of this. Running only means the ` +
+      `process started: do not describe what it shows or say a change is visible unless you ` +
+      `have actually looked.`
     );
-  });
+  }
+  // The watchdog thinks this running shell is stuck. It has produced nothing for a
+  // while — either blocked on a prompt it will never answer, or silently wedged on a
+  // command that should have kept working. The point is to stop it sitting invisible
+  // until the timeout, and to hand the model the two moves that resolve it.
+  if (kind === "stalled") {
+    const why =
+      info.stallReason === "prompt"
+        ? `It looks like it is waiting for interactive input (its last line reads as a prompt). ` +
+          `Kill it with kill_shell #${info.id} and re-run non-interactively — pipe the answer in ` +
+          `(e.g. \`echo y | …\`) or add a non-interactive flag like \`-y\`/\`--yes\`.`
+        : `It has produced no output for a long time and may be wedged. Read it with shells #${info.id} ` +
+          `to judge, then either keep waiting if it is genuinely mid-work, or kill it with ` +
+          `kill_shell #${info.id} and look into why it hangs.`;
+    return (
+      `[Background shell #${info.id} (\`${info.command}\`) appears to be stuck.]\n` +
+      `Recent output:\n${tail || "(no output)"}\n\n${why}`
+    );
+  }
+  const status =
+    info.status === "killed"
+      ? info.stoppedBy === "user"
+        ? "was stopped by the user"
+        : "was killed"
+      : `finished with exit code ${info.exitCode}`;
+  // An ending that is NOT worth interrupting for still arrives, so the model knows the
+  // thing is down and can answer about it. It is explicitly not a task: this is the
+  // path a user closing their own app takes, and treating it as news is what made the
+  // agent reopen it.
+  if (info.status === "killed" && info.stoppedBy === "agent") return null;
+  // Mindweave stopped it itself, because its output ran past the size cap. That is a
+  // runaway, not someone closing an app, and the model is the one who can explain it.
+  if (info.status === "killed" && info.stoppedBy === "system") {
+    return (
+      `[Background shell #${info.id} (\`${info.command}\`) was stopped by Mindweave because its output ` +
+      `passed the size limit.]\n` +
+      `Recent output:\n${tail || "(no output)"}\n\n` +
+      `Something in it was writing without end. Tell the user, and look at the output above before ` +
+      `running it again.`
+    );
+  }
+  if (!wake) {
+    // Only a stop the user made through the app is known to be theirs. An app that exited
+    // on its own after coming up was most likely closed by them, which is worth saying as
+    // the likely reading rather than as a fact.
+    const who =
+      info.status === "killed" && info.stoppedBy === "user"
+        ? "the user stopping their own app"
+        : "most likely the user closing their own app";
+    return (
+      `[Background shell #${info.id} (\`${info.command}\`) ${status}. It had already started up, so ` +
+      `this is ${who}, not a failure.]\n` +
+      `This is background information only. Do NOT mention it unless it is relevant, do NOT restart ` +
+      `it, and do NOT change any files because of it. If the user later asks about this app, you now ` +
+      `know it is stopped.`
+    );
+  }
+  // For a server, only a failure to come up reaches here: a normal stop does not wake.
+  const guidance =
+    info.notify === "on_failure"
+      ? "This is a server or app that never came up, so the user never saw it running. If you started it to check work you are still doing, getting it running is part of that work: find out why it failed and fix it. Otherwise tell them what happened and offer to fix it. Either way, do not restart it again without changing something first."
+      : "If it failed, tell the user briefly what went wrong and propose a fix — don't change files unless they agree.";
+  return (
+    `[Background shell #${info.id} (\`${info.command}\`) ${status}.]\n` +
+    `Recent output:\n${tail || "(no output)"}\n\n` +
+    guidance
+  );
 }
 
 /**
@@ -1035,6 +1087,8 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
   // (its lifecycle + tagged tool calls) up this same stream instead of running dark.
   session.toolContext.emitEvent = options.onEvent;
   session.toolContext.abortSignal = options.signal;
+  // So a tool can answer "which model are you running" instead of guessing.
+  session.toolContext.modelConfig = session.modelConfig;
 
   // WORKING-DIRECTORY RESET. Each turn starts at the project root — the working
   // directory is already set to the correct project directory automatically. Within a
@@ -1042,6 +1096,8 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
   // carries a stale `cd` into the next
   // turn — the bug where `cd src-tauri` run in two turns became `…/src-tauri/src-tauri`.
   // The primary root (session.cwd) is fixed; only toolContext.cwd moves.
+  const leftIn = session.toolContext.cwd;
+  session.toolContext.cwdResetFrom = leftIn && leftIn !== session.cwd ? leftIn : undefined;
   session.toolContext.cwd = session.cwd;
 
   // TASK-BOUNDARY SWEEP. If the previous turn finished a task (a todo list completed)
@@ -1073,6 +1129,10 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
   const limits = taskLimits();
   const startedAt = Date.now();
   const usages: Usage[] = [];
+  // When each of those calls returned. Recorded as it happens: stamping them when the
+  // turn is saved gave every call in a turn the same time, so the call log could not say
+  // how a long turn's time was spent (one real session: 145 calls, 4 distinct times).
+  const usageTimes: number[] = [];
 
   // Verification-gate bookkeeping for this turn: did the model change any file,
   // did it ever run a check, and have we already nudged once (one-shot).
@@ -1136,7 +1196,7 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
     // of them — those are different problems with different fixes, and the totals look
     // identical for all of them. Six numbers per call, capped, so a long session cannot
     // grow the meta file without bound.
-    session.callLog = [...(session.callLog ?? []), ...usages.map((u) => toCallRecord(u, session.modelConfig.model))].slice(-CALL_LOG_LIMIT);
+    session.callLog = [...(session.callLog ?? []), ...usages.map((u, i) => toCallRecord(u, session.modelConfig.model, usageTimes[i]))].slice(-CALL_LOG_LIMIT);
   };
   try {
     const reply = await runTurn();
@@ -1308,6 +1368,7 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
     emitUsage(result, options);
     if (result.usage) {
       usages.push(result.usage);
+      usageTimes.push(Date.now());
       writeCacheLog(
         cacheCallLine({
           call: usages.length,
@@ -1747,8 +1808,10 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
       session.transcript.push({
         role: "user",
         content: canSee
-          ? `Here ${shots.length === 1 ? "is the image" : "are the images"} just captured (${names}).`
-          : `${names} was captured and saved, but this model cannot see images, so you are ` +
+          ? // Not "just captured": view_image opens files that already existed (the user's own
+            // screenshots), and saying they were captured tells the model it took them.
+            `Here ${shots.length === 1 ? "is the image" : "are the images"} from the tool call above (${names}).`
+          : `${names} is ready, but this model cannot see images, so you are ` +
             `being told about it rather than shown it. Describe what you expected to verify ` +
             `and ask the user what they see, or switch to a model with vision using /model.`,
         synthetic: true,
@@ -2074,9 +2137,9 @@ const CALL_LOG_LIMIT = 200;
 /** One call's usage, flattened for the session file. Exported so the recording is
  *  testable on its own — persisting a hand-built record proves nothing about what the
  *  engine actually writes. */
-export function toCallRecord(u: Usage, model: string): import("../memory/types.js").CallUsage {
+export function toCallRecord(u: Usage, model: string, at: number = Date.now()): import("../memory/types.js").CallUsage {
   return {
-    at: Date.now(),
+    at,
     prompt: u.promptTokens,
     hit: u.cacheHitTokens,
     miss: u.cacheMissTokens,

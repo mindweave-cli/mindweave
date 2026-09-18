@@ -28,6 +28,7 @@ import { promises as fs } from "node:fs";
 import type { ChildProcess } from "node:child_process";
 import { killTree, killTreeSync } from "./killTree.js";
 import { OutputReader, removeOutputFile, sizeOf } from "./commandOutput.js";
+import { stripNativeStderrNoise } from "./nativeStderr.js";
 
 const MAX_BUFFER_CHARS = 5_000_000;
 /** How often a running shell's output file is read. Fast enough that  returns
@@ -634,7 +635,7 @@ export class BackgroundShells {
     // the output somebody asked for.
     const fresh = entry.reader ? await entry.reader.next(POLL_READ_BYTES) : "";
     if (fresh) this.append(entry, fresh);
-    let chunk = entry.seen.slice(entry.handed);
+    let chunk = stripNativeStderrNoise(entry.seen.slice(entry.handed));
     entry.handed = entry.seen.length;
     if (chunk.length > MAX_READ_CHARS) {
       chunk = `… (earlier output omitted)\n${chunk.slice(chunk.length - MAX_READ_CHARS)}`;
@@ -726,7 +727,7 @@ export class BackgroundShells {
     // so each note continues where the previous one stopped.
     const deltaOf = (entry: Entry) => {
       const fresh = entry.seen.slice(entry.notifiedUpto);
-      return fresh.slice(Math.max(0, fresh.length - TAIL_CHARS));
+      return stripNativeStderrNoise(fresh.slice(Math.max(0, fresh.length - TAIL_CHARS)));
     };
     for (const entry of this.shells.values()) {
       // Cut ONCE per shell per drain, and handed to the first note that fires. Two events
@@ -756,7 +757,7 @@ export class BackgroundShells {
         out.push({
           info: view(entry),
           kind: "stalled",
-          tail: entry.seen.slice(Math.max(0, entry.seen.length - TAIL_CHARS)),
+          tail: stripNativeStderrNoise(entry.seen.slice(Math.max(0, entry.seen.length - TAIL_CHARS))),
           wake: true,
         });
         emitted = true;

@@ -211,3 +211,65 @@ export async function appendForbiddenCommand(
   await fs.writeFile(file, `${text}${separator}${normalized}\n`, "utf8");
   return { added: true, pattern: normalized };
 }
+
+/**
+ * Undo half of the writers above. Nothing here could be taken back before: every
+ * standing decision could be made and none could be lifted, so "actually, drop that
+ * rule" meant editing files under `.mindweave/` by hand.
+ *
+ * A miss is reported, never invented: removing something that was not there returns
+ * `false`, so the caller can say so instead of claiming a change it did not make.
+ */
+export async function removeRule(cwd: string, name: string): Promise<boolean> {
+  const file = join(projectDir(cwd), "rules", `${slugify(name)}.md`);
+  try {
+    await fs.rm(file);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Delete a skill directory (`skills/<slug>/`). False when there was no such skill. */
+export async function removeSkill(cwd: string, name: string): Promise<boolean> {
+  const dir = join(projectDir(cwd), "skills", slugify(name));
+  try {
+    await fs.rm(dir, { recursive: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Drop one line from one of the `forbidden*.md` lists. False when it was not listed. */
+async function removeForbiddenLine(cwd: string, fileName: string, value: string): Promise<boolean> {
+  const wanted = value.trim();
+  if (!wanted) return false;
+  const file = join(projectDir(cwd), fileName);
+  let text = "";
+  try {
+    text = await fs.readFile(file, "utf8");
+  } catch {
+    return false;
+  }
+  const lines = text.split(/\r?\n/);
+  // Compared trimmed, so an entry written with stray spacing still matches what the
+  // user asked to lift, and the file's own comments and blank lines are left alone.
+  const kept = lines.filter((line) => line.trim() !== wanted);
+  if (kept.length === lines.length) return false;
+  await fs.writeFile(file, kept.join("\n"), "utf8");
+  return true;
+}
+
+export async function removeForbiddenPath(cwd: string, pattern: string): Promise<boolean> {
+  const normalized = pattern.trim().replace(/^\.\//, "").replace(/\/$/, "");
+  return removeForbiddenLine(cwd, "forbidden.md", normalized);
+}
+
+export async function removeForbiddenCommand(cwd: string, pattern: string): Promise<boolean> {
+  return removeForbiddenLine(cwd, "forbidden-commands.md", pattern);
+}
+
+export async function removeForbiddenMcpTool(cwd: string, name: string): Promise<boolean> {
+  return removeForbiddenLine(cwd, "forbidden-mcp-tools.md", name);
+}

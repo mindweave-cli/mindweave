@@ -11,7 +11,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { ToolContext } from "./types.js";
 import { parseWindowList, type WindowInfo } from "./screenshotWin.js";
-import { pickWindow, listTitles, safeName, screenshot, needsApproval, tieNote } from "./screenshot.js";
+import { ambiguousMessage, pickWindow, listTitles, safeName, screenshot, needsApproval, tieNote } from "./screenshot.js";
 
 function win(title: string, handle = "1", foreground = false): WindowInfo {
   return { handle, title, foreground };
@@ -255,4 +255,18 @@ test("giving up says NOT to capture a different window, and offers the focused-w
   assert.equal(result.isError, true);
   assert.match(result.output, /do NOT capture a different named window/i);
   assert.match(result.output, /omit `window`|focused/i);
+});
+
+test("with no window named and none focused, the message says that instead of a fake match count", () => {
+  // Real session: `screenshot {}` came back as `"(focused window)" matches 5 windows`.
+  const pick = pickWindow(undefined, [win("Manicule", "1"), win("cmd.exe", "2")]);
+  assert.equal(pick.kind, "ambiguous");
+  const text = ambiguousMessage(undefined, pick.kind === "ambiguous" ? pick.candidates : []);
+  assert.match(text, /No window had focus/);
+  assert.match(text, /Manicule/);
+  assert.doesNotMatch(text, /\(focused window\)" matches/);
+});
+
+test("a named query that matches several windows still says how many", () => {
+  assert.match(ambiguousMessage("vite", [win("Vite A", "1"), win("Vite B", "2")]), /"vite" matches 2 windows/);
 });

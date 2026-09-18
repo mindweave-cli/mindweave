@@ -100,7 +100,17 @@ export function ApprovalBox({
         // so it does nothing rather than sending "".
         if (key.return) {
           const text = typed.trim();
-          if (text) onSubmitText?.(text);
+          if (text) {
+            onSubmitText?.(text);
+            // Emptied, and the highlight handed back to the first answer. Most callers
+            // close the box on a typed answer and never notice. One does not: /feedback
+            // asks again with the line added, and the box is the same mounted component,
+            // so the text stayed in the field with the cursor still in it — a second
+            // Enter added the same line twice, and the way OUT of the field was an arrow
+            // key nobody had a reason to press.
+            setTyped("");
+            setSel(0);
+          }
         } else if (key.backspace || key.delete) setTyped((t) => t.slice(0, -1));
         // Ink reports paste and ordinary keys the same way. Control bytes are dropped
         // so a stray escape sequence cannot end up inside the answer.

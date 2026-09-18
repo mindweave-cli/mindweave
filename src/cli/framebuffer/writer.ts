@@ -250,7 +250,7 @@ export function framebufferStdout<T extends OutputStream>(real: T, onFrame?: (st
    * frame's blank regions are also blanks, so the diff finds them identical and writes
    * nothing for them, while the real terminal still holds whatever was in those cells
    * before. That is what fused an old line onto a new one, leaving rows like
-   * `Tools(session)s, ask_user, create_skill,`.
+   * `Tools(session)s, ask_user, skill,`.
    */
   function syncSize(): boolean {
     // A LIVE query where the platform has one (`getWindowSize`), because `real.rows` /

@@ -106,6 +106,7 @@ Short version, one line each. The depth is in the linked pages.
 | `/undo` | Reverts what the last turn changed |
 | `/update` | Installs the newest version and reopens on this conversation |
 | `/mcp` | Manages connected MCP servers |
+| `/feedback` | Sends the maintainer a message, no account needed |
 | `shift-tab` | Cycles interaction modes |
 
 Type while it works and your message queues; press up to take it back and edit it.

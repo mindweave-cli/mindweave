@@ -49,6 +49,100 @@ test(
   },
 );
 
+/** A throwaway Node script, so a "native program" is real and needs nothing installed. */
+async function script(body: string): Promise<{ dir: string; file: string }> {
+  const dir = await mkdtemp(join(tmpdir(), "mw-exit-"));
+  const file = join(dir, "prog.js");
+  await (await import("node:fs/promises")).writeFile(file, body, "utf8");
+  return { dir, file };
+}
+
+test(
+  "a program that succeeds while writing progress to stderr is not reported as failed",
+  { skip: !IS_WINDOWS && "PowerShell path is Windows-only" },
+  async () => {
+    // cargo, npm and git all print progress on stderr. Under `2>&1` Windows PowerShell
+    // wraps each of those lines as an error record and sets `$?` false, even though the
+    // program exited 0, and that was reported as exit 1: a build that finished read as
+    // a build that broke, in real sessions, over and over.
+    const { dir, file } = await script('process.stderr.write("Compiling thing v1.0\\n"); console.log("Finished release");\n');
+    try {
+      for (const command of [`node "${file}" 2>&1 | Select-Object -Last 5`, `node "${file}" 2>&1`]) {
+        const result = await runCommand.execute({ command }, ctx());
+        assert.equal(result.isError, false, `reported as failed: ${command}\n${result.output}`);
+        assert.match(result.output, /Finished release/);
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  "a program's real failure under 2>&1 still reports its own code",
+  { skip: !IS_WINDOWS && "PowerShell path is Windows-only" },
+  async () => {
+    const { dir, file } = await script('process.stderr.write("error[E0425]\\n"); process.exit(101);\n');
+    try {
+      const result = await runCommand.execute({ command: `node "${file}" 2>&1 | Select-Object -Last 5` }, ctx());
+      assert.equal(result.isError, true);
+      assert.match(result.output, /code 101/);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  "an error the command deliberately silenced is not a failure",
+  { skip: !IS_WINDOWS && "PowerShell path is Windows-only" },
+  async () => {
+    // `Get-Process x -ErrorAction SilentlyContinue | Stop-Process` is how a model stops
+    // a process that may not be running. Nothing went wrong, and it read as exit 1.
+    for (const command of [
+      "Get-Process mindweave_no_such_proc -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue",
+      "Get-Item C:\\mindweave-no-such-path-xyzzy -EA 0",
+      "Get-Item C:\\mindweave-no-such-path-xyzzy -ErrorAction:Ignore",
+    ]) {
+      const result = await runCommand.execute({ command }, ctx());
+      assert.equal(result.isError, false, `reported as failed: ${command}\n${result.output}`);
+    }
+  },
+);
+
+test(
+  "a loud cmdlet failure after a program that succeeded is still a failure",
+  { skip: !IS_WINDOWS && "PowerShell path is Windows-only" },
+  async () => {
+    const { dir, file } = await script('console.log("ok");\n');
+    try {
+      const result = await runCommand.execute(
+        { command: `node "${file}"; Get-Content "C:\\mindweave-definitely-missing-xyzzy.txt"` },
+        ctx(),
+      );
+      assert.equal(result.isError, true, "a real failure was hidden by the program that ran before it");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  "a negative exit code reads as negative, not as 4294967295",
+  { skip: !IS_WINDOWS && "Windows returns negative codes unsigned" },
+  async () => {
+    const { dir, file } = await script("process.exit(-1);\n");
+    try {
+      const result = await runCommand.execute({ command: `node "${file}"` }, ctx());
+      assert.equal(result.isError, true);
+      assert.match(result.output, /code -1\b/);
+      assert.doesNotMatch(result.output, /4294967295/);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  },
+);
+
 test("a command that works still reports success", async () => {
   const result = await runCommand.execute(
     { command: IS_WINDOWS ? 'Write-Output "hello"' : 'echo hello' },
@@ -128,5 +222,49 @@ test("a command whose output fitted leaves no file behind", async () => {
       else process.env[k] = v;
     }
     await rm(isolated, { recursive: true, force: true });
+  }
+});
+
+test(
+  "a program's stderr progress reaches the model as the line it printed, not as a PowerShell error record",
+  { skip: !IS_WINDOWS && "PowerShell path is Windows-only" },
+  async () => {
+    // Real sessions: `npm run build 2>&1` came back as "node.exe : npm notice run ..." wrapped
+    // in "At line:2 char:1 ... CategoryInfo ... NativeCommandError", which reads as a failure.
+    const { dir, file } = await script(
+      'const nl = String.fromCharCode(10); process.stderr.write("Compiling a v1" + nl + "Compiling b v2" + nl); console.log("Finished release");\n',
+    );
+    try {
+      const result = await runCommand.execute({ command: `node "${file}" 2>&1 | Select-Object -Last 5` }, ctx());
+      assert.equal(result.isError, false);
+      assert.match(result.output, /Compiling a v1/);
+      assert.doesNotMatch(result.output, /NativeCommandError|CategoryInfo|At line:\d/, result.output);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  },
+);
+
+test("a real PowerShell error keeps its full record", { skip: !IS_WINDOWS && "PowerShell path is Windows-only" }, async () => {
+  const result = await runCommand.execute({ command: 'Get-Content "C:\\mindweave-definitely-missing-xyzzy.txt"' }, ctx());
+  assert.match(result.output, /PathNotFound|Cannot find path/);
+});
+
+test("a command that stops on a prompt gets end-of-input at once instead of waiting out the timeout", async () => {
+  // It used to wait on a stdin nobody would ever write to, until the two-minute timeout.
+  const { dir, file } = await script(
+    [
+      'process.stdout.write("Proceed? [y/N] ");',
+      'process.stdin.on("data", () => process.exit(0));',
+      'process.stdin.on("end", () => { console.log("no answer, giving up"); process.exit(2); });',
+    ].join(String.fromCharCode(10)),
+  );
+  try {
+    const started = Date.now();
+    const result = await runCommand.execute({ command: `node "${file}"`, timeout: 20_000 }, ctx());
+    assert.ok(Date.now() - started < 10_000, `the prompt waited ${Date.now() - started}ms for input that could never come`);
+    assert.match(result.output, /no answer, giving up/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
 });

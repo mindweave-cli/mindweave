@@ -51,6 +51,7 @@ import { findRunningDuplicate, findRecentUserClose, guessNotifyPolicy, type Noti
 import { fail, failQuietly } from "./results.js";
 import { defaultOpenRewrite } from "./openDefault.js";
 import { composeFileOutput, createOutputFile, removeOutputFile, tailOf } from "./commandOutput.js";
+import { stripNativeStderrNoise } from "./nativeStderr.js";
 
 const IS_WINDOWS = process.platform === "win32";
 
@@ -411,6 +412,12 @@ async function runShell(
     },
   });
 
+  // Nobody will ever type into this command, so its input ends now. Left open, a prompt
+  // ("Proceed? [y/N]", `npm init`, a credential request) waited on a stream that never
+  // closed until the two-minute timeout, and then got moved to the background still
+  // waiting. Closed, it sees end-of-input straight away and takes its default or gives up.
+  child.stdin?.end();
+
   // Our copy of the descriptor. The child dup'd it at spawn, so closing here leaves it
   // writing happily and means the file is released the moment the command ends rather
   // than whenever this process happens to exit.
@@ -437,7 +444,11 @@ async function runShell(
     }
     // Declared policy wins; the name guess is only the default when nothing was said.
     const notify = declaredNotify ?? guessNotifyPolicy(command);
-    const info = mgr.adopt(child, { command, cwd: ctx.cwd, cwdFile, tempFile, notify });
+    // The output file goes with it. The child is already writing there; without the path
+    // the manager had nothing to read, so every command started in the background was
+    // silent: no output in `shells`, "(no output)" on every note, and a watchdog that
+    // could never see the prompt it exists to catch.
+    const info = mgr.adopt(child, { command, cwd: ctx.cwd, outputPath: outFile.path, cwdFile, tempFile, notify });
     return backgroundedResult(info.id, command, `Started in the background as shell #${info.id}`, notify);
   }
 
@@ -555,7 +566,10 @@ async function runShell(
     if (signal?.aborted) return void onAbort();
     signal?.addEventListener("abort", onAbort);
 
-    const finish = async (exitCode: number | null, signal: string | null) => {
+    const finish = async (rawExit: number | null, signal: string | null) => {
+      // Windows hands a negative exit code back unsigned: `exit -1` arrives as
+      // 4294967295, which says nothing to anyone reading it.
+      const exitCode = rawExit !== null && rawExit > 0x7fffffff ? rawExit - 0x100000000 : rawExit;
       if (settled) return;
       settled = true;
       clearTimeout(timer);
@@ -679,25 +693,44 @@ function buildInvocation(
     };
   }
   if (IS_WINDOWS) {
-    // After the command, record the final location and preserve its exit code.
+    // After the command, record the final location and decide its exit code.
     //
     // `$?` has to be captured on the very FIRST line after the command, because every
-    // statement sets it — including an assignment, which always succeeds. Read it
-    // second and you are reading whether `$__ec = …` worked, which is always true.
+    // statement sets it, including an assignment, which always succeeds.
     //
-    // Both signals are needed because they cover different halves of PowerShell.
-    // `$LASTEXITCODE` is set ONLY by native executables, so a failing cmdlet
-    // (`Get-Content` on a missing file, a failed `Remove-Item` — most of what a model
-    // writes) leaves it null, which used to be coerced to 0 and reported to the model
-    // as SUCCESS. `$?` catches those. It is not enough on its own either: it says
-    // whether something failed, never with which code, and `exit 3` from a real
-    // program has to survive as 3. So: take the native code when there is one, and
-    // otherwise promote a cmdlet failure to 1.
+    // Three signals, because no single one is honest in Windows PowerShell 5.1:
+    //   - `$LASTEXITCODE` is set only by native programs. Reset first, so a non-null
+    //     value means a program ran during THIS command; a non-zero one is the code.
+    //   - `$?` catches cmdlet failures (`Get-Content` on a missing file), which leave
+    //     `$LASTEXITCODE` null. It used to be coerced to success.
+    //   - But `$?` is also false in two cases where nothing failed: a program that
+    //     exits 0 while writing progress to stderr under `2>&1` (cargo, npm and git all
+    //     do), and a cmdlet whose error was deliberately silenced with
+    //     `-ErrorAction SilentlyContinue`. Both were reported to the model as exit 1,
+    //     so a successful build read as a broken one. So when `$?` is false, the
+    //     command failed only if an error was recorded that is neither a native
+    //     program's stderr line nor raised by a command that asked for silence.
     const wrapped =
+      `$global:LASTEXITCODE = $null; $Error.Clear()\n` +
       `${command}\n` +
       `$__ok = $?\n` +
-      `$__ec = $LASTEXITCODE; if ($null -eq $__ec) { $__ec = 0 }\n` +
-      `if (-not $__ok -and $__ec -eq 0) { $__ec = 1 }\n` +
+      `$__native = $LASTEXITCODE\n` +
+      `if ($null -ne $__native -and $__native -ne 0) { $__ec = $__native }\n` +
+      `elseif ($__ok) { $__ec = 0 }\n` +
+      `else {\n` +
+      `  $__quiet = @('SilentlyContinue', 'Ignore') -contains [string]$ErrorActionPreference\n` +
+      `  $__loud = @($Error | Where-Object {\n` +
+      `    if ($_ -isnot [System.Management.Automation.ErrorRecord]) { return $false }\n` +
+      `    if ($_.FullyQualifiedErrorId -like 'NativeCommandError*') { return $false }\n` +
+      `    $__inv = $_.InvocationInfo\n` +
+      `    if ($__inv -and $__inv.Line -and $__inv.OffsetInLine -gt 0) {\n` +
+      `      $__stmt = ($__inv.Line.Substring($__inv.OffsetInLine - 1) -split '[|;]')[0]\n` +
+      `      if ($__stmt -match '(?i)-(ErrorAction|EA)(\\s*:\\s*|\\s+)[''"]?(SilentlyContinue|Ignore|0)\\b') { return $false }\n` +
+      `    }\n` +
+      `    -not $__quiet\n` +
+      `  })\n` +
+      `  $__ec = if ($__loud.Count -gt 0) { 1 } else { 0 }\n` +
+      `}\n` +
       `$PWD.Path | Out-File -FilePath ${psQuote(cwdFile)} -Encoding utf8\n` +
       `exit $__ec`;
     return {
@@ -746,7 +779,8 @@ export function cwdChangeNote(before: string, after: string, shown: string): str
   const where = shown === "." ? "the project root" : shown;
   return (
     `[Working directory is now ${where}. It stays there for the rest of this turn, so ` +
-    `relative paths in your next command resolve from ${where}, not from the project root.]`
+    `relative paths in your next command resolve from ${where}, not from the project root. ` +
+    `Your next turn starts back at the project root.]`
   );
 }
 
@@ -789,7 +823,9 @@ function format(
    *  therefore kept. Absent when nothing was dropped — there is nothing to go back for. */
   keptPath?: string,
 ): ToolResult {
-  const body = output.trim();
+  // A program's stderr under `2>&1` comes back from Windows PowerShell dressed as an error
+  // record. Reduced to the line the program printed, or a successful build reads as failed.
+  const body = (shell === "powershell" ? stripNativeStderrNoise(output) : output).trim();
   const parts: string[] = [];
 
   if (timedOut) {

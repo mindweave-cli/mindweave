@@ -23,6 +23,8 @@ export interface PickerItem {
   label: string;
   /** Optional dim detail shown to the right (e.g. a time, a one-liner). */
   description?: string;
+  /** Extra text the filter matches but the row does not show, e.g. a model id. */
+  keywords?: string;
 }
 
 interface PickerProps {
@@ -110,7 +112,7 @@ export function Picker({
   // "vision" or "1M" finds a model by what its row says about it.
   const matching = useMemo(() => {
     const words = wordsOf(filter);
-    return items.flatMap((item, i) => (matchesWords(words, item.label, item.description) ? [i] : []));
+    return items.flatMap((item, i) => (matchesWords(words, item.label, item.description, item.keywords) ? [i] : []));
   }, [items, filter]);
   const [sel, setSel] = useState(
     initialFilter ? 0 : Math.min(Math.max(0, initialIndex), Math.max(0, items.length - 1)),

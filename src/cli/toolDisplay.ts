@@ -26,7 +26,7 @@ const DISPLAY_NAME: Record<string, string> = {
   screenshot: "WindowCapture",
   view_image: "Viewed",
   use_skill: "Skill",
-  create_skill: "Skill",
+  skill: "Skill",
   todo_write: "Todo",
   add_directory: "Add",
   link_workspace: "Link",
@@ -41,9 +41,10 @@ const DISPLAY_NAME: Record<string, string> = {
   replace_symbol_body: "Update",
   save_memory: "Remember",
   sessions: "Session",
+  mindweave: "Mindweave",
   workspace: "Workspace",
   kill_shell: "Shell",
-  add_mcp_server: "MCP",
+  mcp_server: "MCP",
   mcp_resource: "MCP",
   // "Tools", not "MCP". It searches BOTH pools — the deferred native tools and any MCP
   // catalog — and the row was reading "MCP(sessions)" for a search that loaded three of
@@ -139,7 +140,7 @@ const TOOL_KIND: Record<string, ToolKind> = {
   // Pink like the servers' own tools, since that is what they are all about.
   find_tools: "mcp",
   mcp_resource: "mcp",
-  add_mcp_server: "mcp",
+  mcp_server: "mcp",
   // everything else (todo, skills, rules, workspace) → "meta"
 };
 

@@ -20,7 +20,7 @@ import { viewImage } from "./viewImage.js";
 import { exitPlan } from "./exitPlan.js";
 import { todoWrite } from "./todo.js";
 import { useSkill } from "./useSkill.js";
-import { governor, createSkill } from "./governorTools.js";
+import { governor, skillTool } from "./governorTools.js";
 import { saveMemoryTool } from "./saveMemory.js";
 import { askUserTool } from "./askUser.js";
 import { workspaceTool } from "./workspace.js";
@@ -29,7 +29,8 @@ import { spawnSubagent } from "./subagent.js";
 import { sessionsTool } from "./sessionTools.js";
 import { findTools } from "./mcpSearch.js";
 import { mcpResourceTool } from "./mcpResources.js";
-import { addMcpServer } from "./mcpAdd.js";
+import { mcpServer } from "./mcpAdd.js";
+import { mindweaveStatus } from "./mindweaveStatus.js";
 
 export const TOOLS: Tool[] = [
   // Discovery (read-only)
@@ -71,8 +72,9 @@ export const TOOLS: Tool[] = [
   saveMemoryTool,
   // Governor (mutating: persist a rule / forbidden path / skill for the project)
   governor,
-  addMcpServer,
-  createSkill,
+  mcpServer,
+  mindweaveStatus,
+  skillTool,
 ];
 
 /** Look up a tool by the name the model called. */
