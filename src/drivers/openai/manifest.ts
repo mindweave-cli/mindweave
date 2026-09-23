@@ -20,6 +20,8 @@
 import type { DriverManifest, Effort, ModelChoice, ModelConfig, ModelId, ModelPrice, ThinkLevel } from "../types.js";
 
 export const ASTRA = "gpt-6-astra";
+export const SOL_6 = "gpt-6-sol";
+export const LUNA_6 = "gpt-6-luna";
 export const SOL = "gpt-5.6-sol";
 export const TERRA = "gpt-5.6-terra";
 export const LUNA = "gpt-5.6-luna";
@@ -36,7 +38,9 @@ export const DEFAULT_MODEL = TERRA;
  */
 export const MODELS: ModelChoice[] = [
   { id: TERRA, label: "GPT-5.6 Terra", description: "balanced intelligence and cost — the default" },
-  { id: ASTRA, label: "GPT-6 Astra", description: "the newest flagship — the most capable, and the priciest" },
+  { id: ASTRA, label: "GPT-6 Astra", description: "the GPT-6 flagship — the most capable, and the priciest" },
+  { id: SOL_6, label: "GPT-6 Sol", description: "GPT-6 at Terra's input rate, with cheaper output" },
+  { id: LUNA_6, label: "GPT-6 Luna", description: "the cheapest GPT-6, for high-volume work" },
   { id: SOL, label: "GPT-5.6 Sol", description: "the GPT-5.6 frontier tier" },
   { id: LUNA, label: "GPT-5.6 Luna", description: "cheap and quick, for high-volume work" },
 ];
@@ -47,7 +51,7 @@ export const MODELS: ModelChoice[] = [
  * OpenAI expresses reasoning as a single `effort` rung with `none` as its off
  * switch, rather than a separate on/off flag plus a budget. That maps onto the
  * shared shape cleanly: `thinking: false` becomes `none` on the wire, and the four
- * thinking rungs are sent as themselves. All three models take the same ladder.
+ * thinking rungs are sent as themselves. Every model here takes the same ladder.
  *
  * The provider also accepts `minimal` between `none` and `low`. It is not offered:
  * it would be a fifth rung whose difference from `low` no user could predict, and
@@ -63,12 +67,25 @@ export function thinkLevels(_model: ModelId): ThinkLevel[] {
 }
 
 /**
- * List prices (USD / 1M tokens). Cached input bills at a tenth of fresh input,
- * which is what keeps a re-sent conversation cheap.
+ * List prices (USD / 1M tokens), short-context tier (this manifest does not model
+ * OpenAI's separate long-context pricing above ~200K input — see `contextWindow`,
+ * which caps the usable window below that tier anyway). Cached input bills at a
+ * tenth of fresh input, which is what keeps a re-sent conversation cheap.
+ *
+ * Sol is running promotional pricing — $4 / $20 rather than its $5 / $30 (2.5x
+ * Terra) list price — "available at least through November 21, 2026"
+ * (developers.openai.com/api/docs/pricing, checked 2026-09-20). Recorded as the
+ * plain current price rather than branched on the date, same call the Gemini
+ * manifest makes for its own promo: a fixed expiry with no announced successor
+ * price belongs in a review before that date, not a guess baked in now.
  */
 const PRICES: Record<string, ModelPrice> = {
   [ASTRA]: { cacheHit: 1, cacheMiss: 10, output: 50 },
-  [SOL]: { cacheHit: 0.5, cacheMiss: 5, output: 30 },
+  // GPT-6 Sol and Luna: list prices, no promotion (developers.openai.com/api/docs/pricing,
+  // checked 2026-09-23).
+  [SOL_6]: { cacheHit: 0.2, cacheMiss: 2, output: 10 },
+  [LUNA_6]: { cacheHit: 0.01, cacheMiss: 0.1, output: 0.5 },
+  [SOL]: { cacheHit: 0.4, cacheMiss: 4, output: 20 },
   [TERRA]: { cacheHit: 0.2, cacheMiss: 2, output: 12 },
   [LUNA]: { cacheHit: 0.02, cacheMiss: 0.2, output: 1.2 },
 };
@@ -79,7 +96,7 @@ export function price(model: ModelId): ModelPrice {
 }
 
 /**
- * The model's USABLE context window. All three STORE 1.05M tokens (922K of it
+ * The model's USABLE context window. Every model here STORES 1.05M tokens (922K of it
  * input), but this is deliberately the sharp window rather than the storage cap:
  * on BYOK every token in the window is the user's money on every turn, so
  * anchoring compaction at 1M would mean carrying an enormous prompt long after it
@@ -92,7 +109,7 @@ export function contextWindow(_model: ModelId): number {
 /**
  * The ceiling this driver puts on a single BUFFERED (non-streaming) call.
  *
- * All three models accept 128K output, but a non-streaming request that runs that
+ * Every model here accepts 128K output, but a non-streaming request that runs that
  * long risks an HTTP timeout, so the buffered path — core's small internal calls,
  * like a compaction summary — is capped far lower. `client.ts` sends this value and
  * `dynamo/contextWindow.ts` reserves it; one exported constant means the request

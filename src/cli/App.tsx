@@ -3162,7 +3162,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
           rememberTrust(projectDir(startCwd.current), trustBreadth);
           setTrustOpen(false);
         }}
-        onQuit={() => exit()}
+        onQuit={() => process.exit(0)}
       />
     );
   }

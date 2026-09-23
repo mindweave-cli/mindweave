@@ -1,13 +1,12 @@
 /**
- * vision.test.ts — V4.1 Flash, its native image input, and the V4 Pro sunset.
+ * vision.test.ts — V4.1 Flash and its native image input.
  *
  * Vision began as a separate `deepseek-v4-flash-vision-exp` model (2026-08-21). V4.1
  * Flash folded it into the base model, so the interesting facts moved: Flash itself
- * now reads images, the old vision id survives only as an alias, and Pro is offered
- * only until DeepSeek routes it into Flash. The wire test at the bottom is the one
- * that has always mattered — `images` is our own field, and a transport that spread it
- * onto the request untouched sent a request that looked well formed while the bytes
- * never left the machine.
+ * now reads images, and the old vision id survives only as an alias. The wire test at
+ * the bottom is the one that has always mattered — `images` is our own field, and a
+ * transport that spread it onto the request untouched sent a request that looked well
+ * formed while the bytes never left the machine.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -21,14 +20,10 @@ import {
   FLASH,
   PRO,
   VISION_LEGACY,
-  PRO_SUNSET_MS,
 } from "./manifest.js";
 import { modelsOf } from "../registry.js";
 import type { DriverManifest, ModelChoice } from "../types.js";
 import { toWireMessages } from "../openaiCompat/wire.js";
-
-const BEFORE_SUNSET = PRO_SUNSET_MS - 1;
-const AFTER_SUNSET = PRO_SUNSET_MS;
 
 test("Flash is the default and reads images; Pro does not", () => {
   assert.equal(MODELS[0]!.id, FLASH, "the first entry is the default");
@@ -40,7 +35,7 @@ test("Flash is the default and reads images; Pro does not", () => {
 
 test("the old vision id is an alias for Flash, not a model of its own", () => {
   assert.ok(!MODELS.some((m) => m.id === VISION_LEGACY), "it must not appear in /model");
-  assert.equal(normalize({ model: VISION_LEGACY, thinking: false, effort: "high" }, BEFORE_SUNSET).model, FLASH);
+  assert.equal(normalize({ model: VISION_LEGACY, thinking: false, effort: "high" }).model, FLASH);
 });
 
 test("both models expose the full reasoning ladder", () => {
@@ -53,13 +48,17 @@ test("Flash is sized as its own model, not borrowed from Pro", () => {
   assert.ok(price(FLASH).output > 0);
 });
 
-test("V4 Pro is offered until the sunset, then dropped from the picker", () => {
+test("V4 Pro is an ordinary offered model, not retiring", () => {
   const pro = MODELS.find((m) => m.id === PRO)!;
-  assert.equal(pro.until, PRO_SUNSET_MS, "Pro carries the retirement date");
+  // Pro was expected to fold into Flash on 2026-09-14; DeepSeek's own docs confirm it
+  // did not, so it carries no `until` — see the manifest's file header for the source.
+  assert.equal(pro.until, undefined, "Pro is not scheduled to retire");
+});
 
-  // The registry is what enforces the date, so exercise it with a synthetic manifest
-  // rather than the wall clock: a model whose `until` is in the past is filtered out,
-  // one in the future is kept.
+test("the registry drops a model once its `until` date passes", () => {
+  // Generic behaviour of `modelsOf`'s retirement filter, exercised on a synthetic
+  // manifest rather than a real model — a model whose `until` is in the past is
+  // filtered out, one in the future is kept.
   const fake = {
     id: "fake",
     models: [
@@ -69,13 +68,6 @@ test("V4 Pro is offered until the sunset, then dropped from the picker", () => {
     ] as ModelChoice[],
   } as DriverManifest;
   assert.deepEqual(modelsOf(fake).map((m) => m.id), ["keep", "future"]);
-});
-
-test("a saved Pro config survives the sunset by resolving to Flash", () => {
-  assert.equal(normalize({ model: PRO, thinking: true, effort: "max" }, BEFORE_SUNSET).model, PRO);
-  assert.equal(normalize({ model: PRO, thinking: true, effort: "max" }, AFTER_SUNSET).model, FLASH);
-  // The reasoning intent is preserved across the switch — max is valid on Flash too.
-  assert.equal(normalize({ model: PRO, thinking: true, effort: "max" }, AFTER_SUNSET).effort, "max");
 });
 
 test("an image actually reaches the wire, in the shape DeepSeek documents", () => {

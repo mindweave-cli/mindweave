@@ -5,26 +5,27 @@
  * data and pure functions. The wire code (and the SDK) live in `client.ts`, which
  * only loads once a Claude model is actually selected.
  *
- * Five models across two request surfaces, and the difference is the reason this
+ * The models span two request surfaces, and the difference is the reason this
  * file carries a table instead of a pair of constants:
  *
- *   - The CURRENT surface (Fable 5, Opus 5, Opus 4.8, Sonnet 5) takes adaptive
- *     thinking plus an `effort` rung, and rejects the older fixed thinking budget
- *     and the sampling parameters outright.
+ *   - The CURRENT surface (Fable, Opus, Sonnet 5) takes adaptive thinking plus an
+ *     `effort` rung, and rejects the older fixed thinking budget and the sampling
+ *     parameters outright.
  *   - The LEGACY surface (Haiku 4.5) predates both: it takes a thinking budget in
  *     tokens and rejects `effort`.
  *
- * Two models add a rule of their own on top of that. Fable 5 cannot be asked NOT
- * to think — an explicit no-thinking request is rejected at any effort — and Opus 5
- * accepts one only at effort `high` or below. Those are wire facts, not preferences,
- * so `SURFACES` below is the single place they are written down: `normalize` reads
- * it to keep a saved config legal, and `client.ts` reads the same rows to decide
- * what to put on the wire. One table, so the two cannot drift apart.
+ * Some models add a rule of their own on top of that. Both Fables and Opus 5.5
+ * cannot be asked NOT to think — an explicit no-thinking request is rejected at any
+ * effort — and Opus 5 accepts one only at effort `high` or below. Those are wire
+ * facts, not preferences, so `SURFACES` below is the single place they are written
+ * down: `normalize` reads it to keep a saved config legal, and `client.ts` reads the
+ * same rows to decide what to put on the wire. One table, so the two cannot drift apart.
  */
 import type { DriverManifest, Effort, ModelChoice, ModelConfig, ModelId, ModelPrice, ThinkLevel } from "../types.js";
 
 export const FABLE_51 = "claude-fable-5-1";
 export const FABLE = "claude-fable-5";
+export const OPUS_55 = "claude-opus-5-5";
 export const OPUS = "claude-opus-5";
 export const OPUS_48 = "claude-opus-4-8";
 export const SONNET = "claude-sonnet-5";
@@ -38,13 +39,14 @@ export const DEFAULT_MODEL = SONNET;
  * also where `/provider` lands when someone switches to Anthropic.
  *
  * Descriptions say what the model is FOR, not what it scores. Someone reading the
- * picker is choosing between five things they are about to pay for, and the useful
+ * picker is choosing between things they are about to pay for, and the useful
  * distinction is the kind of work each one earns its rate on.
  */
 export const MODELS: ModelChoice[] = [
   { id: SONNET, label: "Claude Sonnet 5", description: "fast, strong at code — the default" },
-  { id: OPUS, label: "Claude Opus 5", description: "deep reasoning for long, complex work" },
-  { id: OPUS_48, label: "Claude Opus 4.8", description: "the previous Opus — proven and steady" },
+  { id: OPUS_55, label: "Claude Opus 5.5", description: "long-running agentic work, and cheaper than Opus 5" },
+  { id: OPUS, label: "Claude Opus 5", description: "the previous Opus — deep reasoning for complex work" },
+  { id: OPUS_48, label: "Claude Opus 4.8", description: "an older Opus — proven and steady" },
   { id: FABLE_51, label: "Claude Fable 5.1", description: "the toughest challenges, at the highest rate" },
   { id: FABLE, label: "Claude Fable 5", description: "the previous Fable, at the same rate" },
   { id: HAIKU, label: "Claude Haiku 4.5", description: "cheapest and quickest, for simple work" },
@@ -57,7 +59,7 @@ export const MODELS: ModelChoice[] = [
  * except `window`, which is called out where it is set.
  */
 export interface ModelSurface {
-  /** False when the model rejects an explicit no-thinking request (Fable 5). */
+  /** False when the model rejects an explicit no-thinking request (the Fables, Opus 5.5). */
   canDisableThinking: boolean;
   /** False when the model predates `output_config.effort` and rejects it (Haiku 4.5). */
   takesEffort: boolean;
@@ -71,6 +73,13 @@ export interface ModelSurface {
    * sending it to one of them is an error, not a graceful downgrade.
    */
   searchTool: "web_search_20260209" | "web_search_20250305";
+  /**
+   * True when the model writes its between-tool-call notes ("found X, now checking Y")
+   * as PROGRESS-UPDATE thinking blocks instead of text. Those are empty unless the
+   * request asks for them, so without this the reply goes silent between tool calls.
+   * See `applyReasoning` in client.ts.
+   */
+  progressUpdates: boolean;
 }
 
 const CURRENT = {
@@ -83,13 +92,19 @@ const CURRENT = {
   // carrying an enormous prompt long after it stopped earning its cost.
   window: 200_000,
   searchTool: "web_search_20260209",
+  progressUpdates: false,
 } as const satisfies ModelSurface;
 
 const SURFACES: Record<string, ModelSurface> = {
-  // Thinking is always on and any explicit `thinking` config is rejected — see
-  // `client.ts`, which omits the field entirely for this model.
-  [FABLE_51]: { ...CURRENT, canDisableThinking: false },
-  [FABLE]: { ...CURRENT, canDisableThinking: false },
+  // Thinking is always on: `disabled` and a token budget are both rejected, so the
+  // only `thinking` value ever sent is `adaptive` — see `applyReasoning` in client.ts.
+  // These models (and Opus 5.5) write their between-tool notes as progress updates
+  // (platform.claude.com/docs/en/build-with-claude/thinking, checked 2026-09-23).
+  [FABLE_51]: { ...CURRENT, canDisableThinking: false, progressUpdates: true },
+  [FABLE]: { ...CURRENT, canDisableThinking: false, progressUpdates: true },
+  // Always thinking, like the Fables: `{type:"disabled"}` is a 400 on this model
+  // (platform.claude.com, "What's new in Claude Opus 5.5", checked 2026-09-23).
+  [OPUS_55]: { ...CURRENT, canDisableThinking: false, progressUpdates: true },
   // Thinking may be turned off, but only at effort `high` or below.
   [OPUS]: { ...CURRENT, maxDisabledEffort: "high" },
   [OPUS_48]: { ...CURRENT },
@@ -103,6 +118,7 @@ const SURFACES: Record<string, ModelSurface> = {
     maxDisabledEffort: null,
     window: 200_000,
     searchTool: "web_search_20250305",
+    progressUpdates: false,
   },
 };
 
@@ -157,9 +173,14 @@ export function thinkLevels(model: ModelId): ThinkLevel[] {
 
 /**
  * List prices (USD / 1M tokens). Cache reads are ~1/10 of fresh input, which is
- * what keeps a re-sent conversation cheap. Sonnet is running an introductory rate
- * below this through 2026-08-31; the durable list price is used here so the
- * estimate doesn't start under-reporting the moment that ends.
+ * what keeps a re-sent conversation cheap.
+ *
+ * Sonnet 5 launched at an introductory $2/$10 through 2026-08-31, with a planned
+ * rise to $3/$15 after — this file used to anchor on that durable price so the
+ * estimate wouldn't under-report the moment the promo ended. It never ended:
+ * Anthropic made $2/$10 the permanent price and cancelled the September 1 increase
+ * (platform.claude.com/docs/en/about-claude/pricing, "Claude Sonnet 5 introductory
+ * pricing" note, checked 2026-09-20). $3/$15 is Sonnet 4.6's price, not Sonnet 5's.
  */
 /** Anthropic bills a 5-minute cache WRITE at 1.25x base input — the tokens are both
  *  processed and stored. (The 1h TTL is 2x; Mindweave does not buy it.) Folding writes
@@ -172,9 +193,12 @@ const PRICES: Record<string, ModelPrice> = {
   // input, where every other model on this surface reads back at 10%.
   [FABLE_51]: { cacheHit: 0.25, cacheMiss: 10, output: 50, cacheWrite: 10 * CACHE_WRITE_MULTIPLIER },
   [FABLE]: { cacheHit: 1, cacheMiss: 10, output: 50, cacheWrite: 10 * CACHE_WRITE_MULTIPLIER },
+  // Cheaper than Opus 5 on every line, and its cache read is 5% of base input rather
+  // than the usual 10% (platform.claude.com/docs/en/about-claude/pricing, 2026-09-23).
+  [OPUS_55]: { cacheHit: 0.2, cacheMiss: 4, output: 20, cacheWrite: 4 * CACHE_WRITE_MULTIPLIER },
   [OPUS]: { cacheHit: 0.5, cacheMiss: 5, output: 25, cacheWrite: 5 * CACHE_WRITE_MULTIPLIER },
   [OPUS_48]: { cacheHit: 0.5, cacheMiss: 5, output: 25, cacheWrite: 5 * CACHE_WRITE_MULTIPLIER },
-  [SONNET]: { cacheHit: 0.3, cacheMiss: 3, output: 15, cacheWrite: 3 * CACHE_WRITE_MULTIPLIER },
+  [SONNET]: { cacheHit: 0.2, cacheMiss: 2, output: 10, cacheWrite: 2 * CACHE_WRITE_MULTIPLIER },
   [HAIKU]: { cacheHit: 0.1, cacheMiss: 1, output: 5, cacheWrite: 1 * CACHE_WRITE_MULTIPLIER },
 };
 

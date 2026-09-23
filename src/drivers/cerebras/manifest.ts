@@ -17,10 +17,16 @@ import type { DriverManifest, Effort, ModelChoice, ModelConfig, ModelId, ModelPr
  * A minimal fallback list, shown only before discovery has run or when it fails.
  * Short on purpose: a fallback naming a withdrawn model is worse than one naming
  * two that work. The live list replaces this entirely.
+ *
+ * GLM 4.7 (`zai-glm-4.7`) is gone from this list as of 2026-09-20: Cerebras's own
+ * public-endpoints model overview (inference-docs.cerebras.ai/models/overview) no
+ * longer names it, listing only GPT-OSS 120B and Qwen 3.8 27B. It may still be
+ * reachable through a Dedicated Endpoint, which this fallback does not cover either
+ * way — swapped for the model the public tier actually confirms today.
  */
 export const MODELS: ModelChoice[] = [
   { id: "gpt-oss-120b", label: "GPT-OSS 120B", description: "open weights, with a reasoning dial" },
-  { id: "zai-glm-4.7", label: "GLM 4.7", description: "served on Cerebras, very fast" },
+  { id: "qwen-3.8-27b", label: "Qwen3.8 27B", description: "served on Cerebras, very fast" },
 ];
 
 /** The model used when nothing is saved and no env override is set. */

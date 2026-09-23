@@ -70,7 +70,7 @@ else is configured inside a session.
 
 Short version, one line each. The depth is in the linked pages.
 
-- **15 providers, 53 models, one key** — DeepSeek, Anthropic, OpenAI, Gemini, xAI,
+- **15 providers, 60 models, one key** — DeepSeek, Anthropic, OpenAI, Gemini, xAI,
   Mistral, Groq, Cerebras, Qwen, Kimi, GLM, Meta, MiniMax, Tencent, plus every
   tool-capable model on OpenRouter. Only the driver you
   use is loaded. Switch with `/provider` and `/model`; remembered per project.

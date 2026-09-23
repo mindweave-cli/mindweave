@@ -14,9 +14,12 @@
  * is a route DeepSeek keeps serving; `deepseek-flash` is its canonical name for the
  * same model, so a maintainer can switch to that the day the route is retired.
  *
- * `deepseek-v4-pro` is the stronger model, offered until DeepSeek folds it into V4.1
- * Flash — see PRO_SUNSET_MS. The separate `deepseek-v4-flash-vision-exp` model is
- * gone: its images are now native to Flash, and normalize migrates the old id across.
+ * `deepseek-v4-pro` is the stronger model. It was expected to fold into V4.1 Flash on
+ * 2026-09-14 (see git history for the retired PRO_SUNSET_MS), but DeepSeek's own docs
+ * confirm it did not: Pro continues as its own model with its own pricing, unchanged,
+ * past that date (api-docs.deepseek.com/quick_start/pricing/, checked 2026-09-20). The
+ * separate `deepseek-v4-flash-vision-exp` model is gone: its images are now native to
+ * Flash, and normalize migrates the old id across.
  */
 import type { DriverManifest, Effort, ModelChoice, ModelConfig, ModelId, ModelPrice, ThinkLevel } from "../types.js";
 
@@ -26,25 +29,13 @@ export const PRO = "deepseek-v4-pro";
  *  images now — so it survives only as an alias normalize maps onto Flash. */
 export const VISION_LEGACY = "deepseek-v4-flash-vision-exp";
 
-/**
- * When V4 Pro stops being a model of its own.
- *
- * At this instant DeepSeek starts serving every `deepseek-v4-pro` request from V4.1
- * Flash, at Flash's price. Offering Pro as a distinct choice past it would be offering
- * something that no longer exists, so the picker drops it (the `until` field below,
- * honoured by the registry) and normalize resolves a saved Pro config to Flash. A
- * single published build is then correct on both sides of the date with no re-release.
- */
-export const PRO_SUNSET_MS = Date.parse("2026-09-14T04:00:00Z");
-
 /** The model used when nothing is saved and no env override is set. */
 export const DEFAULT_MODEL = FLASH;
 
-/** The models offered by `/model`. First entry is the default. Pro carries an
- *  `until`, so the registry stops offering it once V4.1 Flash absorbs it. */
+/** The models offered by `/model`. First entry is the default. */
 export const MODELS: ModelChoice[] = [
   { id: FLASH, label: "DeepSeek V4.1 Flash", description: "fast, cheap, reads images — the default" },
-  { id: PRO, label: "DeepSeek V4 Pro", description: "stronger, for harder work", until: PRO_SUNSET_MS },
+  { id: PRO, label: "DeepSeek V4 Pro", description: "stronger, for harder work" },
 ];
 
 /**
@@ -85,17 +76,16 @@ export function thinkLevels(_model: ModelId): ThinkLevel[] {
   ];
 }
 
-// DeepSeek list prices (USD / 1M). Cache hits are far cheaper than misses — the whole
-// reason re-sent context stays cheap. `-pro` is estimated higher; correct it if
-// needed. These are best-effort defaults a user can override without a rebuild.
-//
-// V4.1 Flash is billed on two clocks: peak hours (01:00–04:00 and 06:00–10:00 UTC,
-// Monday–Friday) cost twice the off-peak rate. The off-peak rate is recorded here,
-// because it is the one a session pays for most of the week; peak is exactly double
-// (0.006 / 0.30 / 1.20). A user who runs mostly in peak windows can override.
+// DeepSeek list prices (USD / 1M), verified against api-docs.deepseek.com/quick_start/pricing/
+// (checked 2026-09-20). Cache hits are far cheaper than misses — the whole reason
+// re-sent context stays cheap. Both models are billed on two clocks: peak hours
+// (01:00–04:00 and 06:00–10:00 UTC, Monday–Friday) cost twice the off-peak rate. The
+// off-peak rate is recorded here, because it is the one a session pays for most of the
+// week — Flash peak is 0.006 / 0.30 / 1.20, Pro peak is 0.044 / 1.32 / 3.96. A user who
+// runs mostly in peak windows can override.
 const PRICES: Record<string, ModelPrice> = {
   [FLASH]: { cacheHit: 0.003, cacheMiss: 0.15, output: 0.6 },
-  [PRO]: { cacheHit: 0.028, cacheMiss: 0.28, output: 0.56 },
+  [PRO]: { cacheHit: 0.022, cacheMiss: 0.66, output: 1.98 },
 };
 const DEFAULT_PRICE: ModelPrice = PRICES[FLASH]!;
 
@@ -161,19 +151,13 @@ export function acceptsImages(model: ModelId): boolean {
  *
  * Both models take the same three rungs, so switching between them preserves the
  * user's reasoning choice instead of quietly demoting it.
- *
- * `now` is injected so the sunset is testable; it defaults to the wall clock, which
- * is what every caller in the app relies on.
  */
-export function normalize(config: ModelConfig, now: number = Date.now()): ModelConfig {
+export function normalize(config: ModelConfig): ModelConfig {
   // Anything that is not an explicit Pro selection resolves to Flash. That folds in
   // both the pre-4.1 vision id and the plain `deepseek-v4-flash` id, and it means a
   // config saved by a build that named some other DeepSeek model opens on the default
   // rather than on a model this build cannot serve.
-  let model: ModelId = config.model === PRO ? PRO : FLASH;
-  // Past the sunset, Pro is served by Flash anyway, so a stored Pro config resolves to
-  // Flash rather than pointing at a model the picker no longer offers.
-  if (model === PRO && now >= PRO_SUNSET_MS) model = FLASH;
+  const model: ModelId = config.model === PRO ? PRO : FLASH;
   const thinking = config.thinking === true;
   // Anything outside DeepSeek's accepted set becomes `high`. That covers a config
   // saved by an older build (which stored `xhigh`) and a rung belonging to another

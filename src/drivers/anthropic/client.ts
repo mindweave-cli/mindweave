@@ -263,7 +263,14 @@ function applyReasoning(
   const surface = surfaceOf(model);
 
   if (!surface.canDisableThinking) {
-    // Omit `thinking` entirely — the model is always thinking regardless.
+    // The model is always thinking; `disabled` and a token budget are both 400s.
+    // `adaptive` is its own mode restated, and is sent only to ask for the text of
+    // its between-tool-call progress updates, which is empty by default. Reasoning
+    // stays hidden under `updates`. See `progressRequestOptions` for the beta header.
+    if (surface.progressUpdates) {
+      // The SDK's types predate the `updates` value; the wire accepts it with the header.
+      body.thinking = { type: "adaptive", display: "updates" } as unknown as Anthropic.ThinkingConfigParam;
+    }
   } else if (!surface.takesEffort) {
     const budget = thinkingBudget(maxTokens);
     if (cfg?.thinking && budget > 0) body.thinking = { type: "enabled", budget_tokens: budget };
@@ -272,6 +279,19 @@ function applyReasoning(
   }
 
   if (surface.takesEffort) body.output_config = { effort: cfg?.effort ?? "high" };
+}
+
+/** The beta that makes `thinking.display: "updates"` legal. Without it that value is a 400. */
+export const PROGRESS_UPDATES_BETA = "thinking-display-updates-2026-08-18";
+
+/** Per-request options for a body from `buildBody`: the beta header rides along exactly
+ *  when the body asks for progress updates, so the two can never disagree. */
+export function progressRequestOptions(
+  body: Anthropic.MessageCreateParamsNonStreaming,
+  signal?: AbortSignal,
+): Anthropic.RequestOptions {
+  const updates = (body.thinking as { display?: string } | undefined)?.display === "updates";
+  return { signal, ...(updates ? { headers: { "anthropic-beta": PROGRESS_UPDATES_BETA } } : {}) };
 }
 
 export function buildBody(req: ModelRequest, maxTokens: number): Anthropic.MessageCreateParamsNonStreaming {
@@ -358,13 +378,34 @@ export function toStop(reason: Anthropic.Message["stop_reason"]): StopReason {
   }
 }
 
-/** Pull the assembled reply and tool calls out of a finished message. */
-export function toTurn(message: Anthropic.Message): Turn {
+/** What goes between a progress update and the text on either side of it: enough to
+ *  make a paragraph break, and nothing if one is already there. */
+export function paragraphBreak(before: string): string {
+  if (!before || before.endsWith("\n\n")) return "";
+  return before.endsWith("\n") ? "\n" : "\n\n";
+}
+
+/**
+ * Pull the assembled reply and tool calls out of a finished message.
+ *
+ * On a model with `progressUpdates`, a `thinking` block that carries text is a
+ * progress update (the request asked for `display: "updates"`, under which reasoning
+ * comes back empty), and it is part of the reply: the note the model wrote for the
+ * user before a tool call. It is kept as reply text, a paragraph of its own, exactly
+ * as `emit` streamed it, so the stored reply matches what was on screen.
+ */
+export function toTurn(message: Anthropic.Message, progressUpdates = surfaceOf(message.model).progressUpdates): Turn {
   let content = "";
+  let afterUpdate = false;
   const toolCalls: ToolCall[] = [];
   for (const block of message.content) {
     if (block.type === "text") {
+      if (afterUpdate) content += paragraphBreak(content);
       content += block.text;
+      afterUpdate = false;
+    } else if (block.type === "thinking" && progressUpdates && block.thinking) {
+      content += paragraphBreak(content) + block.thinking;
+      afterUpdate = true;
     } else if (block.type === "tool_use") {
       toolCalls.push({
         id: block.id,
@@ -373,8 +414,8 @@ export function toTurn(message: Anthropic.Message): Turn {
         arguments: JSON.stringify(block.input ?? {}),
       });
     }
-    // `thinking` blocks are deliberately dropped: reasoning reaches the live UI as
-    // deltas, never the stored transcript.
+    // Reasoning `thinking` blocks are deliberately dropped: reasoning reaches the live
+    // UI as deltas, never the stored transcript.
   }
   return { content, toolCalls, stop: toStop(message.stop_reason) };
 }
@@ -408,9 +449,8 @@ export async function webSearch(query: string, options: SearchOptions = {}): Pro
 /** Ask the model for one turn. Usage rides back with it: these are core's internal
  *  calls, and they spend real tokens that the meter would otherwise never see. */
 export async function toolTurn(req: ModelRequest, options: TurnOptions = {}): Promise<Turn> {
-  const message = await api().messages.create(buildBody(req, MAX_TOKENS_BUFFERED), {
-    signal: options.signal,
-  });
+  const body = buildBody(req, MAX_TOKENS_BUFFERED);
+  const message = await api().messages.create(body, progressRequestOptions(body, options.signal));
   return { ...toTurn(message), usage: toUsage(message.usage) };
 }
 
@@ -421,27 +461,38 @@ export async function toolTurn(req: ModelRequest, options: TurnOptions = {}): Pr
  * call's JSON), so nothing here has to reassemble fragmented arguments by hand.
  */
 export async function streamTurn(req: ModelRequest, options: StreamOptions = {}): Promise<StreamResult> {
-  const stream = api().messages.stream(buildBody(req, MAX_TOKENS_STREAM), {
-    signal: options.signal,
-  });
+  const body = buildBody(req, MAX_TOKENS_STREAM);
+  const stream = api().messages.stream(body, progressRequestOptions(body, options.signal));
 
   // Accumulated alongside the emit so a stream that dies partway can still hand back
   // what the user watched arrive. Only the onEvent path needs it: with no sink nothing
   // reached the screen, so there is no visible reply to keep in step with.
-  let seen = "";
+  const reply = replyStream(surfaceOf(body.model).progressUpdates);
   try {
     if (options.onEvent) {
-      for await (const event of stream) {
-        if (event.type === "content_block_delta" && event.delta.type === "text_delta") seen += event.delta.text;
-        emit(event, options.onEvent);
-      }
+      for await (const event of stream) emit(event, options.onEvent, reply);
     }
     const message = await stream.finalMessage();
     return { ...toTurn(message), usage: toUsage(message.usage) };
   } catch (error) {
     if (isAbortLike(error)) throw error;
-    return salvagePartialTurn(seen, error);
+    return salvagePartialTurn(reply.text, error);
   }
+}
+
+/** The reply as streamed so far, carried across `emit` calls so a progress update gets
+ *  its own paragraph. `text` is everything sent as a `text` event. */
+export interface ReplyStream {
+  progressUpdates: boolean;
+  text: string;
+  /** Index of the block the last text came from. */
+  block: number;
+  /** True when that block was a progress update. */
+  afterUpdate: boolean;
+}
+
+export function replyStream(progressUpdates: boolean): ReplyStream {
+  return { progressUpdates, text: "", block: -1, afterUpdate: false };
 }
 
 /**
@@ -449,7 +500,7 @@ export async function streamTurn(req: ModelRequest, options: StreamOptions = {})
  * rather than a flat delta channel, so a tool call announces itself with a
  * `content_block_start` and then streams its arguments as `input_json_delta`.
  */
-export function emit(event: Anthropic.MessageStreamEvent, onEvent: (e: StreamEvent) => void): void {
+export function emit(event: Anthropic.MessageStreamEvent, onEvent: (e: StreamEvent) => void, reply?: ReplyStream): void {
   if (event.type === "content_block_start") {
     const block = event.content_block;
     if (block.type === "tool_use") {
@@ -461,9 +512,26 @@ export function emit(event: Anthropic.MessageStreamEvent, onEvent: (e: StreamEve
 
   const delta = event.delta;
   if (delta.type === "text_delta" && delta.text) {
-    onEvent({ type: "text", delta: delta.text });
+    let text = delta.text;
+    if (reply) {
+      if (reply.afterUpdate && reply.block !== event.index) text = paragraphBreak(reply.text) + text;
+      reply.afterUpdate = false;
+      reply.block = event.index;
+      reply.text += text;
+    }
+    onEvent({ type: "text", delta: text });
   } else if (delta.type === "thinking_delta" && delta.thinking) {
-    onEvent({ type: "reasoning", delta: delta.thinking });
+    if (reply?.progressUpdates) {
+      // A progress update — the same rule `toTurn` applies, so screen and transcript agree.
+      let text = delta.thinking;
+      if (reply.block !== event.index) text = paragraphBreak(reply.text) + text;
+      reply.afterUpdate = true;
+      reply.block = event.index;
+      reply.text += text;
+      onEvent({ type: "text", delta: text });
+    } else {
+      onEvent({ type: "reasoning", delta: delta.thinking });
+    }
   } else if (delta.type === "input_json_delta" && delta.partial_json) {
     onEvent({ type: "tool_args", index: event.index, delta: delta.partial_json });
   }

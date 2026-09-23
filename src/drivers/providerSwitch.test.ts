@@ -155,3 +155,65 @@ t2("an image is NOT replayed to a model that cannot see it, and the model is tol
   assert.ok(sent.includes("cannot see images"), "the model was not told why the image is absent");
   assert.ok(sent.includes("look at this"), "the message itself was lost with its image");
 });
+
+t2("an image in a format the model rejects is held back, and the model is told which formats work", async () => {
+  // Grok takes JPG and PNG only. A WebP sent anyway fails the whole request at the
+  // provider; held back with a reason, the agent can tell the user what to do.
+  const bodies: string[] = [];
+  const server: Server = createServer((req, res) => {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      bodies.push(body);
+      const SEP = String.fromCharCode(10, 10);
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write("data: " + JSON.stringify({ choices: [{ delta: { content: "ok" } }] }) + SEP);
+      res.write(
+        "data: " +
+          JSON.stringify({
+            choices: [{ delta: {}, finish_reason: "stop" }],
+            usage: { prompt_tokens: 5, completion_tokens: 1, total_tokens: 6 },
+          }) +
+          SEP,
+      );
+      res.end("data: [DONE]" + SEP);
+    });
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  const port = (server.address() as { port: number }).port;
+  process.env.XAI_API_KEY = "test-key";
+  process.env.MINDWEAVE_XAI_URL = `http://127.0.0.1:${port}`;
+
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "mw-imgtype-")));
+  const png = join(root, "chart.png");
+  const webp = join(root, "photo.webp");
+  await fsp.writeFile(png, Buffer.from("PNGBYTESPNGBYTES"));
+  await fsp.writeFile(webp, Buffer.from("WEBPBYTESWEBPBYTES"));
+
+  const s = {
+    id: "s2",
+    cwd: root,
+    modelConfig: { model: "grok-4.7", thinking: true, effort: "high" },
+    governance: { rules: [], skills: [], forbidden: { patterns: [], root } },
+    transcript: [
+      {
+        role: "user",
+        content: "compare these",
+        images: [
+          { path: png, mediaType: "image/png" },
+          { path: webp, mediaType: "image/webp" },
+        ],
+      },
+    ],
+    toolContext: { cwd: root, roots: [root], reads: new Map(), todos: [] },
+  } as unknown as Session;
+
+  await respond(s);
+  server.close();
+
+  const sent = bodies.join("");
+  assert.ok(sent.includes(Buffer.from("PNGBYTESPNGBYTES").toString("base64")), "the PNG, which Grok takes, was not sent");
+  assert.ok(!sent.includes(Buffer.from("WEBPBYTESWEBPBYTES").toString("base64")), "the WebP went out and would fail the request");
+  assert.ok(sent.includes("photo.webp was attached but not sent"), "the model was not told the WebP was held back");
+  assert.ok(sent.includes("accepts only JPG and PNG images"), "the model was not told which formats work");
+});

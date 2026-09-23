@@ -9,15 +9,19 @@ Driver for Claude models, built on the official `@anthropic-ai/sdk`.
 | Model | Notes |
 | --- | --- |
 | `claude-sonnet-5` | The default here. Fast, strong at code. |
-| `claude-opus-5` | Most capable, for the hardest work. |
+| `claude-opus-5-5` | Long-running agentic work. Always thinks. |
+| `claude-opus-5` | The previous Opus. |
+| `claude-opus-4-8` | An older Opus. |
+| `claude-fable-5-1` | The toughest work, at the highest rate. Always thinks. |
+| `claude-fable-5` | The previous Fable. Always thinks. |
+| `claude-haiku-4-5` | Cheapest and quickest. |
 
-Four reasoning levels on both (Standard, Thinking, Deep, Maximum), which map to
-adaptive thinking plus an `effort` budget.
+Four reasoning levels (Standard, Thinking, Deep, Maximum), which map to adaptive
+thinking plus an `effort` budget. On the models that always think, Standard is a
+lighter effort rather than "no thinking", because that request is rejected.
 
-Haiku 4.5 is deliberately **not** offered. It predates this request surface and
-would need a second, legacy path (fixed thinking budgets, no `effort`), which is
-complexity the driver doesn't need to carry to be useful. Adding it later means one
-row in `manifest.ts` plus that alternate path in `client.ts`.
+Haiku 4.5 predates this request surface: it takes a fixed thinking budget and no
+`effort`, so it gets its own path in `client.ts` and just two levels.
 
 ## Why this folder looks different from `deepseek/`
 
@@ -50,6 +54,13 @@ Worth knowing before you change `buildBody`:
 - `temperature`, `top_p`, `top_k` — removed on these models.
 - On Opus 5, thinking may only be **disabled** at effort `high` or below. Pairing
   no-thinking with `xhigh` or `max` is a 400, so `normalize` steps it down first.
+- On both Fables and Opus 5.5, `thinking` of `disabled` or a token budget is a 400.
+  These models are sent `{type: "adaptive", display: "updates"}` with the
+  `thinking-display-updates-2026-08-18` beta header: the notes they write between
+  tool calls come back as progress-update `thinking` blocks, empty unless asked for,
+  and the driver shows them as reply text so the session doesn't go quiet.
+- On Opus 5.5 and Fable 5.1, forced tool use (`tool_choice` of `any` or `tool`) is a
+  400. The driver only ever sends `auto`.
 - Assistant-turn prefills — removed. Nothing here uses them.
 
 A test asserts none of the removed parameters can appear in a request body.

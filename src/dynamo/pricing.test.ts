@@ -187,8 +187,8 @@ test("cache writes are a SUBSET of misses and are never charged twice", () => {
     cacheWriteTokens: 5_000,
   };
   const s = summarizeTask([half], "claude-sonnet-5")!;
-  // 5K at 3.00 + 5K at 3.75 per million.
-  const expected = (5_000 * 3 + 5_000 * 3.75) / 1_000_000;
+  // 5K at 2.00 (base input) + 5K at 2.50 (1.25x cache write) per million.
+  const expected = (5_000 * 2 + 5_000 * 2.5) / 1_000_000;
   assert.ok(Math.abs(s.costUsd - expected) < 1e-9, `expected ${expected}, got ${s.costUsd}`);
   assert.equal(s.billedTokens, 10_000, "the token count must not double-count the written slice");
 });

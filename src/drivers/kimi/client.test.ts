@@ -7,8 +7,8 @@
  * request rather than a soft downgrade.
  *
  *   - K3 takes `reasoning_effort` and has no `thinking` parameter at all.
- *   - K2.7 Code takes `thinking` but only ever `"enabled"`.
- *   - K2.6 / K2.5 take `thinking` both ways, and default to ENABLED.
+ *   - K2.7 Code and its HighSpeed tier take `thinking` but only ever `"enabled"`.
+ *   - K2.6 takes `thinking` both ways, and defaults to ENABLED.
  *
  * No network, no API key.
  */
@@ -16,7 +16,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { buildBody } from "../openaiCompat/wire.js";
 import { cacheSplit, kimiProvider, reasoningFields } from "./client.js";
-import { K25, K26, K27_CODE, K3, MODELS, normalize, surfaceOf, thinkLevels } from "./manifest.js";
+import { K26, K27_CODE, K27_CODE_HIGHSPEED, K3, MODELS, normalize, surfaceOf, thinkLevels } from "./manifest.js";
 import type { Effort, ModelRequest } from "../types.js";
 
 const base: ModelRequest = { system: "SYSTEM", messages: [] };
@@ -31,20 +31,22 @@ test("K3 takes an effort rung and NO thinking parameter", () => {
   assert.ok(!("thinking" in fields), "K3 does not know the `thinking` parameter");
 });
 
-test("K2.7 Code is always sent enabled — `disabled` is a rejected request", () => {
+test("K2.7 Code (both serving tiers) is always sent enabled — `disabled` is a rejected request", () => {
   // Even when the config says otherwise. `normalize` should never produce that,
   // but the renderer must not be the thing that trusts it.
-  for (const thinking of [true, false]) {
-    assert.deepEqual(reasoningFields({ model: K27_CODE, thinking, effort: "high" }), {
-      thinking: { type: "enabled" },
-    });
+  for (const model of [K27_CODE, K27_CODE_HIGHSPEED]) {
+    for (const thinking of [true, false]) {
+      assert.deepEqual(reasoningFields({ model, thinking, effort: "high" }), {
+        thinking: { type: "enabled" },
+      });
+    }
   }
 });
 
 test("thinking OFF is sent EXPLICITLY on the models that allow it", () => {
-  // K2.6 and K2.5 default to ENABLED, so omitting the field means paying for
-  // reasoning the UI discards on every internal call.
-  for (const model of [K26, K25]) {
+  // K2.6 defaults to ENABLED, so omitting the field means paying for reasoning the
+  // UI discards on every internal call.
+  for (const model of [K26]) {
     assert.deepEqual(reasoningFields({ model, thinking: false, effort: "high" }), {
       thinking: { type: "disabled" },
     });

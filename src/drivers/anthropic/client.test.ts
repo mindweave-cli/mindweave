@@ -13,8 +13,19 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type Anthropic from "@anthropic-ai/sdk";
-import { buildBody, emit, renderMessages, thinkingBudget, toStop, toTurn, toUsage } from "./client.js";
-import { FABLE, FABLE_51, HAIKU, MODELS, OPUS, OPUS_48, SONNET, normalize, price, thinkLevels } from "./manifest.js";
+import {
+  PROGRESS_UPDATES_BETA,
+  buildBody,
+  emit,
+  progressRequestOptions,
+  renderMessages,
+  replyStream,
+  thinkingBudget,
+  toStop,
+  toTurn,
+  toUsage,
+} from "./client.js";
+import { FABLE, FABLE_51, HAIKU, MODELS, OPUS, OPUS_48, OPUS_55, SONNET, normalize, price, thinkLevels } from "./manifest.js";
 import type { Effort, ModelRequest, StreamEvent } from "../types.js";
 
 const base: ModelRequest = { system: "SYSTEM", messages: [] };
@@ -245,13 +256,14 @@ test("on the current surface, reasoning is adaptive thinking plus an effort leve
   }
 });
 
-test("neither Fable is sent a thinking field at all — both reject every explicit value", () => {
-  // Including `{type:"disabled"}`, which the other models accept happily. The one
-  // thing that must never appear on either model's body is the key itself.
-  for (const model of [FABLE_51, FABLE]) {
+test("the always-thinking models (both Fables, Opus 5.5) are only ever sent adaptive + progress updates", () => {
+  // `disabled` and a token budget are both 400s on these models, whatever the saved
+  // config says. The one value sent is `adaptive` asking for the progress updates'
+  // text, which is otherwise empty and leaves the reply silent between tool calls.
+  for (const model of [FABLE_51, FABLE, OPUS_55]) {
     for (const thinking of [true, false]) {
       const body = bodyFor(model, thinking, "xhigh");
-      assert.ok(!("thinking" in body), `thinking must be absent (${model}, thinking=${thinking})`);
+      assert.deepEqual(body.thinking, { type: "adaptive", display: "updates" }, `${model}, thinking=${thinking}`);
       // Effort still applies — Fable takes the full ladder.
       assert.deepEqual(body.output_config, { effort: "xhigh" });
     }
@@ -266,6 +278,29 @@ test("Fable 5.1 reads back from cache at a quarter of Fable 5's rate", () => {
   assert.equal(price(FABLE_51).output, price(FABLE).output);
   assert.equal(price(FABLE_51).cacheHit, 0.25);
   assert.equal(price(FABLE_51).cacheHit, price(FABLE).cacheHit / 4);
+});
+
+test("the progress-updates beta header rides along exactly when the body asks for updates", () => {
+  for (const model of [FABLE_51, FABLE, OPUS_55]) {
+    const opts = progressRequestOptions(bodyFor(model, true, "high"));
+    assert.deepEqual(opts.headers, { "anthropic-beta": PROGRESS_UPDATES_BETA }, model);
+  }
+  // Every other model: no `display`, no beta header — nothing about them changes.
+  for (const model of [...CURRENT_SURFACE, HAIKU]) {
+    for (const thinking of [true, false]) {
+      const body = bodyFor(model, thinking, "high");
+      assert.ok(!(body.thinking && "display" in body.thinking), `${model} must not ask for a display`);
+      assert.equal(progressRequestOptions(body).headers, undefined, `${model} must not send the beta`);
+    }
+  }
+});
+
+test("Opus 5.5 is priced below Opus 5, with its cache read at 5% of base input", () => {
+  assert.deepEqual(
+    { hit: price(OPUS_55).cacheHit, miss: price(OPUS_55).cacheMiss, out: price(OPUS_55).output },
+    { hit: 0.2, miss: 4, out: 20 },
+  );
+  assert.ok(price(OPUS_55).cacheMiss < price(OPUS).cacheMiss);
 });
 
 test("Haiku 4.5 gets a token budget and NO effort — it predates both", () => {
@@ -323,8 +358,8 @@ test("normalize never pairs disabled thinking with an effort Opus 5 rejects", ()
   }
 });
 
-test("normalize forces thinking ON for both Fables — neither can be asked to skip it", () => {
-  for (const model of [FABLE_51, FABLE]) {
+test("normalize forces thinking ON for both Fables and Opus 5.5 — none can be asked to skip it", () => {
+  for (const model of [FABLE_51, FABLE, OPUS_55]) {
     for (const effort of EFFORTS) {
       assert.equal(normalize({ model, thinking: false, effort }).thinking, true, `${model}/${effort}`);
     }
@@ -450,6 +485,74 @@ test("streaming maps text, thinking, and tool-call deltas onto the shared events
     { type: "tool_args", index: 2, delta: ':"a"}' },
   ]);
 });
+
+// ── Progress updates (Fable 5, Fable 5.1, Opus 5.5) ──────────────────────────
+
+/** One response from a progress-update model: empty reasoning, a note, a tool call,
+ *  another empty reasoning block, a second note, another tool call, then the answer. */
+const PROGRESS_BLOCKS = [
+  { type: "thinking", thinking: "", signature: "s0" },
+  { type: "thinking", thinking: "Found the parser. Checking its callers next.", signature: "s1" },
+  { type: "tool_use", id: "t1", name: "search", input: { q: "parse(" } },
+  { type: "thinking", thinking: "", signature: "s2" },
+  { type: "thinking", thinking: "Two callers; reading the second.", signature: "s3" },
+  { type: "tool_use", id: "t2", name: "read_file", input: { path: "b.ts" } },
+  { type: "text", text: "Both callers are covered." },
+];
+
+/** The same response as the stream of events that delivers it. */
+function progressStream(): unknown[] {
+  const out: unknown[] = [];
+  PROGRESS_BLOCKS.forEach((b, index) => {
+    out.push({ type: "content_block_start", index, content_block: { ...b, ...(b.type === "text" ? { text: "" } : {}), ...(b.type === "thinking" ? { thinking: "" } : {}) } });
+    if (b.type === "thinking") {
+      // Under `display: "updates"` a reasoning block streams one empty delta; a note streams its text.
+      const text = b.thinking as string;
+      const mid = Math.floor(text.length / 2);
+      for (const part of text ? [text.slice(0, mid), text.slice(mid)] : [""]) {
+        out.push({ type: "content_block_delta", index, delta: { type: "thinking_delta", thinking: part } });
+      }
+    } else if (b.type === "text") {
+      out.push({ type: "content_block_delta", index, delta: { type: "text_delta", text: b.text } });
+    }
+  });
+  return out;
+}
+
+const EXPECTED_REPLY =
+  "Found the parser. Checking its callers next.\n\nTwo callers; reading the second.\n\nBoth callers are covered.";
+
+test("a progress update is reply text, a paragraph of its own, in the stored turn", () => {
+  const message = { model: OPUS_55, content: PROGRESS_BLOCKS, stop_reason: "tool_use" } as unknown as Anthropic.Message;
+  const turn = toTurn(message);
+  assert.equal(turn.content, EXPECTED_REPLY);
+  assert.equal(turn.toolCalls.length, 2);
+  // A model without progress updates keeps dropping every thinking block, as before.
+  const onSonnet = toTurn({ ...message, model: SONNET } as Anthropic.Message);
+  assert.equal(onSonnet.content, "Both callers are covered.");
+});
+
+test("a progress update streams as text, and the screen matches what is stored", () => {
+  const reply = replyStream(true);
+  const events: StreamEvent[] = [];
+  for (const e of progressStream()) emit(e as Anthropic.MessageStreamEvent, (x) => events.push(x), reply);
+  const shown = events.flatMap((e) => (e.type === "text" ? [e.delta] : [])).join("");
+  assert.equal(shown, EXPECTED_REPLY);
+  assert.equal(reply.text, EXPECTED_REPLY, "the salvage copy must match the screen too");
+  assert.ok(!events.some((e) => e.type === "reasoning"), "under updates nothing is reasoning");
+  const stored = toTurn({ model: OPUS_55, content: PROGRESS_BLOCKS, stop_reason: "end_turn" } as unknown as Anthropic.Message);
+  assert.equal(shown, stored.content);
+});
+
+test("without progress updates, thinking deltas stay reasoning and never reach the reply", () => {
+  const reply = replyStream(false);
+  const events: StreamEvent[] = [];
+  for (const e of progressStream()) emit(e as Anthropic.MessageStreamEvent, (x) => events.push(x), reply);
+  const shown = events.flatMap((e) => (e.type === "text" ? [e.delta] : [])).join("");
+  assert.equal(shown, "Both callers are covered.");
+  assert.ok(events.some((e) => e.type === "reasoning"));
+});
+
 
 test("streaming ignores events it has no shared equivalent for", () => {
   assert.deepEqual(

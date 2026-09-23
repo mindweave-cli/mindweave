@@ -16,7 +16,7 @@ import type {
   TurnOptions,
 } from "../types.js";
 import { compatStreamTurn, compatToolTurn, type CompatProvider } from "../openaiCompat/wire.js";
-import { BUFFERED_OUTPUT_TOKENS, DEFAULT_MODEL, takesEffort } from "./manifest.js";
+import { ALWAYS_ON_DEFAULT, BUFFERED_OUTPUT_TOKENS, DEFAULT_MODEL, canDisableReasoning, takesEffort } from "./manifest.js";
 
 const BASE_URL = process.env.MINDWEAVE_XAI_URL ?? "https://api.x.ai/v1";
 
@@ -29,17 +29,19 @@ function modelOf(config: ModelConfig | undefined): string {
 /**
  * xAI's reasoning fields.
  *
- * `reasoning_effort` is served by ONE model here, so it is sent only for that one.
- * On the others it is not a tolerated extra: they do not accept the parameter.
- *
- * Unlike Qwen, GLM and DeepSeek, there is nothing to send when reasoning is off on a
- * model that has no dial — this provider does not default to thinking-on, so an
- * absent field is genuinely absent rather than a hidden bill. Stated because the
- * opposite is true of three other drivers here, and the reflex by now is to send it.
+ * Two shapes, one per kind of model (see the manifest). Grok 4.3 can be switched
+ * off, so it is sent `none` when thinking is off. Grok 4.5-4.7 always reason and do
+ * not accept `none`: they are sent the depth, and never an off switch. `normalize`
+ * has already put a legal rung in the config; the fallback here is xAI's own default,
+ * so an unnormalized config cannot send anything the model would not have run anyway.
  */
 export function reasoningFields(config: ModelConfig | undefined): Record<string, unknown> {
-  if (!takesEffort(modelOf(config))) return {};
-  return { reasoning_effort: config?.thinking ? (config.effort ?? "low") : "none" };
+  const model = modelOf(config);
+  if (!takesEffort(model)) return {};
+  if (canDisableReasoning(model)) {
+    return { reasoning_effort: config?.thinking ? (config.effort ?? "low") : "none" };
+  }
+  return { reasoning_effort: config?.thinking ? (config.effort ?? ALWAYS_ON_DEFAULT) : ALWAYS_ON_DEFAULT };
 }
 
 /**

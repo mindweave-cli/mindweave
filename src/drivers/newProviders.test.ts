@@ -90,26 +90,48 @@ test("a model with no reasoning dial can never be put into a thinking state", ()
 
 // ── xAI ───────────────────────────────────────────────────────────────────────
 
-test("xAI sends an effort rung ONLY to the model that serves one", () => {
+test("xAI sends `none` ONLY to the model that can switch reasoning off", () => {
   assert.deepEqual(xaiReasoning({ model: xai.GROK_43, thinking: true, effort: "high" }), {
     reasoning_effort: "high",
   });
   assert.deepEqual(xaiReasoning({ model: xai.GROK_43, thinking: false, effort: "low" }), {
     reasoning_effort: "none",
   });
-  for (const model of [xai.GROK_46, xai.GROK_45]) {
-    assert.deepEqual(xaiReasoning({ model, thinking: true, effort: "high" }), {}, model);
+  // 4.5-4.7 always reason: they get a depth, never an off switch.
+  for (const model of [xai.GROK_47, xai.GROK_46, xai.GROK_45]) {
+    assert.deepEqual(xaiReasoning({ model, thinking: true, effort: "medium" }), { reasoning_effort: "medium" }, model);
+    assert.deepEqual(xaiReasoning({ model, thinking: false, effort: "low" }), { reasoning_effort: "high" }, model);
   }
 });
 
-test("xAI never sends a rung above its own ladder", () => {
-  // xAI stops at `high`; `xhigh` and `max` belong to other providers and are
-  // rejected here. This is the pairing a /model switch would otherwise produce.
-  const accepted = new Set(["none", "low", "medium", "high"]);
-  for (const effort of EFFORTS) {
-    const config = xai.normalize({ model: xai.GROK_43, thinking: true, effort });
-    const sent = xaiReasoning(config).reasoning_effort;
-    assert.ok(accepted.has(sent as string), `${effort} produced ${String(sent)}`);
+test("an old Grok 4.5/4.6 config keeps the depth it always ran at", () => {
+  // Before 2.5.1 these models had one level (thinking off, effort low) and nothing was
+  // sent, so xAI ran them at its default, `high`. Reading that config back must not
+  // turn into `low` on the wire — a silent drop in quality nobody chose.
+  for (const model of [xai.GROK_46, xai.GROK_45, xai.GROK_47]) {
+    const config = xai.normalize({ model, thinking: false, effort: "low" });
+    assert.deepEqual(config, { model, thinking: true, effort: "high" }, model);
+    assert.equal(xaiReasoning(config).reasoning_effort, "high", model);
+  }
+});
+
+test("xAI never sends a rung the model does not take", () => {
+  // `max` is no xAI model's; `xhigh` is 4.6 and later only (4.5 treats it as `high`,
+  // so it is not offered there); `none` is 4.3's alone. These are the pairings a
+  // /model switch would otherwise produce.
+  const accepted: Record<string, Set<string>> = {
+    [xai.GROK_43]: new Set(["none", "low", "medium", "high"]),
+    [xai.GROK_45]: new Set(["low", "medium", "high"]),
+    [xai.GROK_46]: new Set(["low", "medium", "high", "xhigh"]),
+    [xai.GROK_47]: new Set(["low", "medium", "high", "xhigh"]),
+  };
+  for (const [model, ok] of Object.entries(accepted)) {
+    for (const effort of EFFORTS) {
+      for (const thinking of [true, false]) {
+        const sent = xaiReasoning(xai.normalize({ model, thinking, effort })).reasoning_effort;
+        assert.ok(ok.has(sent as string), `${model} ${thinking}/${effort} produced ${String(sent)}`);
+      }
+    }
   }
 });
 

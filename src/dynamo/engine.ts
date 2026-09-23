@@ -656,6 +656,13 @@ function modelSeesImages(session: Session): boolean {
   return manifestForModel(session.modelConfig.model).acceptsImages?.(session.modelConfig.model) ?? false;
 }
 
+/** "JPG and PNG" from `["image/png", "image/jpeg"]` — the names a user knows the files by. */
+export function imageTypeNames(types: string[]): string {
+  const names = types.map((t) => ({ "image/jpeg": "JPG", "image/png": "PNG", "image/gif": "GIF", "image/webp": "WebP" })[t] ?? t);
+  const sorted = [...new Set(names)].sort();
+  return sorted.length <= 1 ? (sorted[0] ?? "") : `${sorted.slice(0, -1).join(", ")} and ${sorted[sorted.length - 1]}`;
+}
+
 async function loadImagePayloads(session: Session): Promise<Map<string, string>> {
   // Nothing to load for a model that cannot look at one. This is the /provider switch
   // case: a picture attached while a vision model was running stays in the transcript,
@@ -688,6 +695,11 @@ function buildRequest(
   directoryNotes: { path: string; text: string }[] = [],
 ): ModelRequest {
   const canSeeImages = modelSeesImages(session);
+  // The formats it takes, when narrower than everything core attaches. A manifest fact,
+  // like vision itself; absent means every type.
+  const imageTypes = canSeeImages
+    ? manifestForModel(session.modelConfig.model).imageTypes?.(session.modelConfig.model)
+    : undefined;
   const messages: ChatMessage[] = [];
   for (const e of session.transcript) {
     if (e.role === "user" || e.role === "summary") {
@@ -704,12 +716,19 @@ function buildRequest(
         const images: ImagePart[] = [];
         const missing: string[] = [];
         const unseen: string[] = [];
+        const wrongType: string[] = [];
         for (const ref of refs) {
           // Told, never silently dropped. A message that mentions a screenshot and
           // carries nothing reads to the model as a picture it failed to notice; the
           // reason it cannot see it is the one thing that makes the message sensible.
           if (!canSeeImages) {
             unseen.push(basename(ref.path));
+            continue;
+          }
+          // A format the provider would reject: held back the same way, so the model
+          // can tell the user which formats work instead of the whole request failing.
+          if (imageTypes && !imageTypes.includes(ref.mediaType)) {
+            wrongType.push(basename(ref.path));
             continue;
           }
           const data = imagePayloads.get(ref.path);
@@ -719,6 +738,13 @@ function buildRequest(
         const notes = [
           ...(unseen.length > 0
             ? [`${unseen.join(", ")} was attached, but the model now running cannot see images`]
+            : []),
+          ...(wrongType.length > 0 && imageTypes
+            ? [
+                `${wrongType.join(", ")} was attached but not sent: the model now running ` +
+                  `accepts only ${imageTypeNames(imageTypes)} images, so tell the user to ` +
+                  `convert it or switch models`,
+              ]
             : []),
           ...(missing.length > 0 ? [`${missing.join(", ")} could not be read from disk`] : []),
         ];

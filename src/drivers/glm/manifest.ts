@@ -19,15 +19,23 @@
  * through the Coding Plan, with no per-token rate to quote. They are on the
  * pay-per-token endpoint now, so they are listed with real prices.
  *
+ * GLM-5.3-FLASHX, added 2026-09-18, is not a different model — Z.ai's own
+ * announcement describes it as the same GLM-5.3-Flash system (320B total / 18B
+ * active, 1M context, native image/video input) served through a faster inference
+ * configuration (up to 200 tok/s vs Flash's baseline). It costs more per token for
+ * that speed, so it is offered as its own choice rather than folded into Flash.
+ *
  * BOTH 5.3 MODELS THINK UNCONDITIONALLY. Z.ai documents `thinking.type` as accepting
  * only `enabled`, and 5.3's `reasoning_effort` has no off value. Every other model
  * here can have thinking turned off, so the ladder below branches on it rather than
- * offering a rung that would be refused.
+ * offering a rung that would be refused. FlashX inherits this from being the same
+ * system as Flash.
  */
 import type { DriverManifest, Effort, ModelChoice, ModelConfig, ModelId, ModelPrice, ThinkLevel } from "../types.js";
 
 export const GLM_53 = "glm-5.3";
 export const GLM_53_FLASH = "glm-5.3-flash";
+export const GLM_53_FLASHX = "glm-5.3-flashx";
 export const GLM_52 = "glm-5.2";
 export const GLM_5 = "glm-5";
 export const GLM_47 = "glm-4.7";
@@ -48,6 +56,7 @@ export const DEFAULT_MODEL = GLM_53;
 export const MODELS: ModelChoice[] = [
   { id: GLM_53, label: "GLM-5.3", description: "the flagship, three reasoning depths — the default" },
   { id: GLM_53_FLASH, label: "GLM-5.3 Flash", description: "most of the flagship, a fraction of the price" },
+  { id: GLM_53_FLASHX, label: "GLM-5.3 FlashX", description: "GLM-5.3 Flash on faster serving, for latency-sensitive work" },
   { id: GLM_52, label: "GLM-5.2", description: "the previous flagship, with a reasoning dial" },
   { id: GLM_5, label: "GLM-5", description: "older, a little cheaper again" },
   { id: GLM_47, label: "GLM-4.7", description: "strong value for everyday work" },
@@ -62,7 +71,16 @@ export const MODELS: ModelChoice[] = [
 export function takesEffort(model: ModelId): boolean {
   return model === GLM_52 || alwaysThinks(model);
 }
-/** * Models whose thinking cannot be switched off. * * Offering them an "answer directly" rung would build a menu entry that produces a * request the provider refuses. The ladder and `normalize` both read this. */export function alwaysThinks(model: ModelId): boolean {  return model === GLM_53 || model === GLM_53_FLASH;}
+/**
+ * Models whose thinking cannot be switched off.
+ *
+ * Offering them an "answer directly" rung would build a menu entry that produces a
+ * request the provider refuses. The ladder and `normalize` both read this. FlashX is
+ * the same served system as Flash, so it carries the same restriction.
+ */
+export function alwaysThinks(model: ModelId): boolean {
+  return model === GLM_53 || model === GLM_53_FLASH || model === GLM_53_FLASHX;
+}
 
 /**
  * The reasoning levels offered by `/think`.
@@ -118,6 +136,7 @@ const PRICES: Record<string, ModelPrice> = {
   // meter that quotes a discount is wrong the day it ends, and wrong quietly.
   [GLM_53]: { cacheHit: 0.26, cacheMiss: 1.4, output: 4.4 },
   [GLM_53_FLASH]: { cacheHit: 0.03, cacheMiss: 0.15, output: 0.5 },
+  [GLM_53_FLASHX]: { cacheHit: 0.075, cacheMiss: 0.37, output: 1.25 },
   [GLM_52]: { cacheHit: 0.26, cacheMiss: 1.4, output: 4.4 },
   [GLM_5]: { cacheHit: 0.2, cacheMiss: 1, output: 3.2 },
   [GLM_47]: { cacheHit: 0.11, cacheMiss: 0.6, output: 2.2 },
@@ -159,12 +178,13 @@ export function bufferedOutputTokens(_model: ModelId): number {
  * GLM-5.3-Flash is natively multimodal — Z.ai documents image (and video) input on its
  * own id, sent the ordinary OpenAI-compat way (`image_url` content parts), which the
  * shared transport already produces. So core may attach the bytes and the model reads
- * them. Every other GLM model here is text-only: pointing an image at one still degrades
- * before anything is sent, which is what core does with a false answer here. (The older
- * `glm-*v*` vision line is separate and not offered by this driver.)
+ * them. FlashX is the same served system, so the same is true of it. Every other GLM
+ * model here is text-only: pointing an image at one still degrades before anything is
+ * sent, which is what core does with a false answer here. (The older `glm-*v*` vision
+ * line is separate and not offered by this driver.)
  */
 export function acceptsImages(model: ModelId): boolean {
-  return model === GLM_53_FLASH;
+  return model === GLM_53_FLASH || model === GLM_53_FLASHX;
 }
 
 /**

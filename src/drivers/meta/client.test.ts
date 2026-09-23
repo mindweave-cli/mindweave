@@ -46,16 +46,22 @@ test("no rung claims to skip reasoning, because `none` is a 400", () => {
 });
 
 test("a config from another provider is snapped onto a rung this API accepts", () => {
-  // `max` is the one the shared config carries and Meta has never heard of.
+  // `max` is real on Standard-tier 1.3 (confirmed against Meta's own reasoning docs),
+  // but Contributor-tier and 1.2 have never heard of it and must snap it down.
   for (const effort of ["low", "medium", "high", "xhigh", "max"] as const) {
-    const n = normalize({ model: MUSE_SPARK_13, thinking: false, effort });
-    assert.equal(n.thinking, true, `${effort} left thinking off on a model that cannot skip it`);
-    assert.ok(
-      thinkLevels(MUSE_SPARK_13).some((l) => l.effort === n.effort),
-      `${effort} normalized to a rung the ladder does not offer: ${n.effort}`,
-    );
+    for (const model of [MUSE_SPARK_13, MUSE_SPARK_13_CONTRIBUTOR, MUSE_SPARK_12]) {
+      const n = normalize({ model, thinking: false, effort });
+      assert.equal(n.thinking, true, `${model}/${effort} left thinking off on a model that cannot skip it`);
+      assert.ok(
+        thinkLevels(model).some((l) => l.effort === n.effort),
+        `${model}/${effort} normalized to a rung the ladder does not offer: ${n.effort}`,
+      );
+    }
   }
-  assert.equal(normalize({ model: MUSE_SPARK_13, thinking: true, effort: "max" }).effort, "xhigh");
+  // The one rung that actually exists, scoped to the one id it exists on.
+  assert.equal(normalize({ model: MUSE_SPARK_13, thinking: true, effort: "max" }).effort, "max");
+  assert.equal(normalize({ model: MUSE_SPARK_13_CONTRIBUTOR, thinking: true, effort: "max" }).effort, "xhigh");
+  assert.equal(normalize({ model: MUSE_SPARK_12, thinking: true, effort: "max" }).effort, "xhigh");
   assert.equal(normalize({ model: MUSE_SPARK_13, thinking: true, effort: "medium" }).effort, "low");
 });
 

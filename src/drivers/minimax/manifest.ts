@@ -35,10 +35,10 @@ export const DEFAULT_MODEL = M27;
  * The models offered by `/model`. First entry is this provider's default, which is
  * also where `/provider` lands when someone switches to MiniMax.
  *
- * M2.7 leads rather than M3: it is the current general-purpose tier at roughly a
- * quarter of M3's practical cost once M3 crosses its own pricing tier (see
- * `contextWindow`), so M2.7 is the deliberate default and M3 the choice for
- * harder work, not something to drift into.
+ * M2.7 leads rather than M3: their ≤512K-token rates are actually equal (see
+ * `PRICES`), but M3 doubles past that line (see `contextWindow`) while M2.7 never
+ * does, so M2.7 is the deliberate default — never worse, sometimes cheaper — and
+ * M3 the choice for harder work specifically, not something to drift into.
  */
 export const MODELS: ModelChoice[] = [
   { id: M27, label: "MiniMax M2.7", description: "the current general-purpose model — the default" },
@@ -85,18 +85,21 @@ export function thinkLevels(model: ModelId): ThinkLevel[] {
 }
 
 /**
- * List prices (USD / 1M tokens). MiniMax publishes a 10:1 cache-read discount
- * across this family; M3's own cache rate is not separately confirmed, so its
- * cache figure is carried at the same ratio as M2.7's confirmed one and marked as
- * such — a wrong price shows a wrong estimate, where a wrong model id would fail
- * outright, so the ids were the part worth being certain about.
+ * List prices (USD / 1M tokens), confirmed against platform.minimax.io's own
+ * pay-as-you-go page (docs/guides/pricing-paygo) rather than carried forward or
+ * estimated: M2 and M2.7 share the same input/output rate and differ only in their
+ * cache-read rate (M2's cache is cheaper, at half M2.7's), and M3's own cache rate
+ * IS separately published now — it matches M2.7's, not a guessed ratio.
+ * `cacheWrite` is confirmed for M2 and M2.7 (both publish a distinct write rate);
+ * M3's write rate is not separately published, so it is left unset, which the
+ * `ModelPrice.cacheWrite` doc says falls back to `cacheMiss` — the safe default.
  */
 const PRICES: Record<string, ModelPrice> = {
-  [M27]: { cacheHit: 0.03, cacheMiss: 0.3, output: 1.2 },
+  [M27]: { cacheHit: 0.06, cacheMiss: 0.3, output: 1.2, cacheWrite: 0.375 },
   // M3's ≤512K-token tier; crossing 512K doubles the whole request, which is why
   // `contextWindow` keeps this model's usable window well clear of that line.
-  [M3]: { cacheHit: 0.03, cacheMiss: 0.3, output: 1.2 },
-  [M2]: { cacheHit: 0.026, cacheMiss: 0.26, output: 1.02 },
+  [M3]: { cacheHit: 0.06, cacheMiss: 0.3, output: 1.2 },
+  [M2]: { cacheHit: 0.03, cacheMiss: 0.3, output: 1.2, cacheWrite: 0.375 },
 };
 
 /** Cache-aware list price for a model, falling back to the default model's. */

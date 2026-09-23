@@ -21,6 +21,7 @@ import type { DriverManifest, Effort, ModelChoice, ModelConfig, ModelId, ModelPr
 export const MAX_38 = "qwen3.8-max";
 export const MAX_37 = "qwen3.7-max";
 export const PLUS = "qwen3.7-plus";
+export const FLASH_38 = "qwen3.8-flash";
 export const FLASH = "qwen3.5-flash";
 
 /** The model used when nothing is saved and no env override is set. */
@@ -32,14 +33,15 @@ export const DEFAULT_MODEL = PLUS;
  *
  * Plus leads rather than Max: it is roughly a sixth of Max's rate and carries the
  * same 1M window, so it is the one that is rarely the wrong answer for ordinary
- * work. Both Max tiers are listed because the older one is materially cheaper and
- * has not been withdrawn.
+ * work. The older Max stays listed because it has not been withdrawn, but it now
+ * costs MORE than 3.8 Max, and its description says so rather than implying a saving.
  */
 export const MODELS: ModelChoice[] = [
   { id: PLUS, label: "Qwen3.7 Plus", description: "balanced and cheap to run — the default" },
   { id: MAX_38, label: "Qwen3.8 Max", description: "the flagship, for the hardest work" },
-  { id: MAX_37, label: "Qwen3.7 Max", description: "the previous flagship, at half the rate" },
-  { id: FLASH, label: "Qwen3.5 Flash", description: "fastest and cheapest, for simple work" },
+  { id: MAX_37, label: "Qwen3.7 Max", description: "the previous flagship — pricier than 3.8 Max" },
+  { id: FLASH_38, label: "Qwen3.8 Flash", description: "the newest Flash — fast and cheap" },
+  { id: FLASH, label: "Qwen3.5 Flash", description: "the previous Flash, cheaper still" },
 ];
 
 /**
@@ -74,11 +76,22 @@ export function thinkLevels(_model: ModelId): ThinkLevel[] {
  *     one these figures come from. This driver targets international, so these are
  *     the rates that apply to it.
  */
+/*
+ * Checked against Alibaba's International price table 2026-09-23 (alibabacloud.com,
+ * model-studio/model-pricing). Implicit cache hits bill at 20% of input EXCEPT on the
+ * Qwen3.8 models, which Alibaba lists as exceptions priced in its console; their cache
+ * figures are the rates OpenRouter's live listing carries for the same models.
+ *
+ * 3.7 Max and 3.5 Flash used to sit at half and about two thirds of their real price
+ * here, so every session on them reported well under what it cost.
+ */
 const PRICES: Record<string, ModelPrice> = {
   [MAX_38]: { cacheHit: 0.25, cacheMiss: 2, output: 6 },
-  [MAX_37]: { cacheHit: 0.25, cacheMiss: 1.25, output: 3.75 },
+  [MAX_37]: { cacheHit: 0.5, cacheMiss: 2.5, output: 7.5 },
+  // Limited-time 20% off the $0.40 / $1.60 list price.
   [PLUS]: { cacheHit: 0.064, cacheMiss: 0.32, output: 1.28 },
-  [FLASH]: { cacheHit: 0.013, cacheMiss: 0.065, output: 0.26 },
+  [FLASH_38]: { cacheHit: 0.016, cacheMiss: 0.15, output: 0.47 },
+  [FLASH]: { cacheHit: 0.02, cacheMiss: 0.1, output: 0.4 },
 };
 
 /** Cache-aware list price for a model, falling back to the default model's. */

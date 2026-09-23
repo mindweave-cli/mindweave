@@ -10,19 +10,19 @@ lineup below costs nothing until you pick from it.
 
 ## Available now
 
-15 providers, 53 models, plus OpenRouter's catalogue. `/provider` moves between them and
+15 providers, 60 models, plus OpenRouter's catalogue. `/provider` moves between them and
 `/model` lists what the one you are on offers, so there is nothing here you need to memorise.
 
 | Provider | Models | Key |
 | --- | --- | --- |
-| **DeepSeek** | 1 | `DEEPSEEK_API_KEY` |
-| **Anthropic** | 6 | `ANTHROPIC_API_KEY` |
-| **OpenAI** | 4 | `OPENAI_API_KEY` |
+| **DeepSeek** | 2 | `DEEPSEEK_API_KEY` |
+| **Anthropic** | 7 | `ANTHROPIC_API_KEY` |
+| **OpenAI** | 6 | `OPENAI_API_KEY` |
 | **Gemini** | 7 | `GEMINI_API_KEY` |
-| **Qwen** | 4 | `DASHSCOPE_API_KEY` |
+| **Qwen** | 5 | `DASHSCOPE_API_KEY` |
 | **Kimi** | 4 | `MOONSHOT_API_KEY` |
-| **GLM** | 6 | `ZAI_API_KEY` |
-| **xAI** | 3 | `XAI_API_KEY` |
+| **GLM** | 7 | `ZAI_API_KEY` |
+| **xAI** | 4 | `XAI_API_KEY` |
 | **Mistral** | 4 | `MISTRAL_API_KEY` |
 | **Groq** | 2 | `GROQ_API_KEY` |
 | **Cerebras** | 2 | `CEREBRAS_API_KEY` |
@@ -38,7 +38,8 @@ tiers, and the cheaper one is cheaper because Meta may train on your prompts and
 completions — Mindweave never picks that one for you. **DeepSeek V4.1 Flash** reads
 images natively, so the default model can see a screenshot you hand it; Mindweave tells
 the model plainly when a picture it was handed cannot be seen rather than pretending
-otherwise. **Tencent's Hy** is reached through TokenHub's international endpoint; the
+otherwise. **Grok** reads JPG and PNG only; a GIF or WebP is held back rather than
+sent, and the agent tells you which formats work. **Tencent's Hy** is reached through TokenHub's international endpoint; the
 mainland console serves the same weights under different model ids, so an account there
 sets `MINDWEAVE_TENCENT_URL` and picks the id its own console lists.
 

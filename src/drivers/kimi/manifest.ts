@@ -12,22 +12,27 @@
  *   - K3 has no `thinking` parameter at all. It takes a top-level
  *     `reasoning_effort` of `low`/`high`/`max`, and it ALWAYS reasons; there is no
  *     off switch, and the reasoning is billed as output tokens.
- *   - K2.7 Code takes `thinking: {type}` but only accepts `"enabled"` — passing
- *     `"disabled"` is an error. So it always reasons too, with no effort dial.
- *   - K2.6 and K2.5 take `thinking: {type}` both ways, with no effort dial.
+ *   - K2.7 Code and its HighSpeed serving tier take `thinking: {type}` but only
+ *     accept `"enabled"` — passing `"disabled"` is an error. So both always reason,
+ *     with no effort dial.
+ *   - K2.6 takes `thinking: {type}` both ways, with no effort dial.
  *
  * Note that `medium` and `xhigh` are not in K3's vocabulary even though they are in
  * the shared one, so `normalize` clamps to the three rungs it actually accepts.
  *
- * The older `moonshot-v1-*` ids are still served and are deliberately not offered:
- * they have no reasoning at all and are superseded by every model listed here.
+ * The older `moonshot-v1-*` ids, `kimi-k2` (the pre-2.5 series) and `kimi-latest`
+ * are all officially discontinued now and 404 — deliberately not offered. `kimi-k2.5`
+ * joined them on 2026-08-31: it is not in a future sunset window like DeepSeek's Pro
+ * (see that manifest's PRO_SUNSET_MS), it is already gone, so it is removed outright
+ * rather than carrying a dead `until` date. A saved config pointing at it falls back
+ * to the default via `normalize`'s `SURFACES` lookup below, same as any unknown id.
  */
 import type { DriverManifest, Effort, ModelChoice, ModelConfig, ModelId, ModelPrice, ThinkLevel } from "../types.js";
 
 export const K3 = "kimi-k3";
 export const K27_CODE = "kimi-k2.7-code";
+export const K27_CODE_HIGHSPEED = "kimi-k2.7-code-highspeed";
 export const K26 = "kimi-k2.6";
-export const K25 = "kimi-k2.5";
 
 /** The model used when nothing is saved and no env override is set. */
 export const DEFAULT_MODEL = K26;
@@ -45,7 +50,7 @@ export const MODELS: ModelChoice[] = [
   { id: K26, label: "Kimi K2.6", description: "the general workhorse — the default" },
   { id: K3, label: "Kimi K3", description: "the flagship, always reasoning, for the hardest work" },
   { id: K27_CODE, label: "Kimi K2.7 Code", description: "tuned for coding and long tool chains" },
-  { id: K25, label: "Kimi K2.5", description: "the cheapest tier, for simple work" },
+  { id: K27_CODE_HIGHSPEED, label: "Kimi K2.7 Code HighSpeed", description: "K2.7 Code at up to 6x the output speed, at double the price" },
 ];
 
 /** How one model expresses reasoning on the wire. */
@@ -61,10 +66,11 @@ export interface ModelSurface {
 const SURFACES: Record<string, ModelSurface> = {
   // Always reasons, and the only dial is the effort rung.
   [K3]: { canDisableThinking: false, takesEffort: true, window: 200_000 },
-  // Always reasons, no dial at all.
+  // Always reasons, no dial at all. HighSpeed is the same system on faster serving,
+  // so it shares K2.7 Code's surface exactly.
   [K27_CODE]: { canDisableThinking: false, takesEffort: false, window: 200_000 },
+  [K27_CODE_HIGHSPEED]: { canDisableThinking: false, takesEffort: false, window: 200_000 },
   [K26]: { canDisableThinking: true, takesEffort: false, window: 200_000 },
-  [K25]: { canDisableThinking: true, takesEffort: false, window: 200_000 },
 };
 
 /** The surface a model runs on, falling back to the default model's. */
@@ -78,10 +84,10 @@ export function surfaceOf(model: ModelId): ModelSurface {
  * Three shapes, one per surface:
  *   - K3: no "answer directly" rung, because there is no such request to make.
  *     The three rungs are its three real effort values.
- *   - K2.7 Code: ONE level. It always reasons and has no effort dial, so there is
- *     genuinely one setting. A single-entry menu is honest; inventing a second
- *     that did nothing would not be.
- *   - K2.6 / K2.5: the plain on/off pair, no effort dial.
+ *   - K2.7 Code and its HighSpeed tier: ONE level each. Both always reason and have
+ *     no effort dial, so there is genuinely one setting. A single-entry menu is
+ *     honest; inventing a second that did nothing would not be.
+ *   - K2.6: the plain on/off pair, no effort dial.
  */
 export function thinkLevels(model: ModelId): ThinkLevel[] {
   const surface = surfaceOf(model);
@@ -116,8 +122,10 @@ export function thinkLevels(model: ModelId): ThinkLevel[] {
 const PRICES: Record<string, ModelPrice> = {
   [K3]: { cacheHit: 0.3, cacheMiss: 3, output: 15 },
   [K27_CODE]: { cacheHit: 0.19, cacheMiss: 0.95, output: 4 },
-  [K26]: { cacheHit: 0.19, cacheMiss: 0.95, output: 4 },
-  [K25]: { cacheHit: 0.15, cacheMiss: 0.6, output: 3 },
+  [K27_CODE_HIGHSPEED]: { cacheHit: 0.38, cacheMiss: 1.9, output: 8 },
+  // Corrected from 0.19: K2.6's published cached rate is lower than K2.7 Code's,
+  // not the same figure — they were priced identically here by mistake.
+  [K26]: { cacheHit: 0.16, cacheMiss: 0.95, output: 4 },
 };
 
 /** Cache-aware list price for a model, falling back to the default model's. */

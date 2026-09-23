@@ -452,6 +452,17 @@ export interface DriverManifest {
   acceptsImages?(model: ModelId): boolean;
 
   /**
+   * The image media types the model takes, when that is narrower than everything core
+   * can attach (PNG, JPEG, GIF, WebP). Absent means all of them, which is the case for
+   * every provider but one today.
+   *
+   * Same bargain as `acceptsImages`: a fact, not a behaviour. Core holds back an image
+   * of any other type and tells the model why, so the agent can tell the user, instead
+   * of the request failing at the provider.
+   */
+  imageTypes?(model: ModelId): string[];
+
+  /**
    * Coerce a stored/unknown model id into one this provider actually serves, and
    * keep the reasoning intent valid for it (a level the target model lacks is
    * clamped down, an illegal combination is corrected). Called when loading a

@@ -16,7 +16,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { buildBody, consumeStream, renderMessages, toStop, toTurn, toUsage } from "../openaiCompat/wire.js";
 import { cacheSplit, extraStop, qwenProvider, reasoningFields, thinkingBudget } from "./client.js";
-import { FLASH, MAX_37, MAX_38, MODELS, PLUS, normalize, thinkLevels } from "./manifest.js";
+import { FLASH, FLASH_38, MAX_37, MAX_38, MODELS, PLUS, normalize, price, thinkLevels } from "./manifest.js";
 import type { Effort, ModelRequest, StreamEvent } from "../types.js";
 
 const base: ModelRequest = { system: "SYSTEM", messages: [] };
@@ -310,7 +310,18 @@ test("normalize snaps an unlisted effort onto a rung /think actually offers", ()
 
 test("an unknown model id falls back rather than reaching the wire", () => {
   assert.equal(normalize({ model: "qwen-imaginary", thinking: true, effort: "high" }).model, PLUS);
-  for (const model of [PLUS, MAX_38, MAX_37, FLASH]) {
+  for (const model of [PLUS, MAX_38, MAX_37, FLASH_38, FLASH]) {
     assert.equal(normalize({ model, thinking: true, effort: "high" }).model, model, `${model} was coerced away`);
   }
+});
+
+test("prices match Alibaba's International table, not the older, lower figures", () => {
+  // 3.7 Max was carried at exactly half its price and 3.5 Flash at about two thirds,
+  // so every session on either reported well under what it cost.
+  const row = (m: string) => ({ ...price(m) });
+  assert.deepEqual(row(MAX_37), { cacheHit: 0.5, cacheMiss: 2.5, output: 7.5 });
+  assert.deepEqual(row(FLASH), { cacheHit: 0.02, cacheMiss: 0.1, output: 0.4 });
+  assert.deepEqual(row(FLASH_38), { cacheHit: 0.016, cacheMiss: 0.15, output: 0.47 });
+  // The older Max is no longer the cheaper one, which its description must not hide.
+  assert.ok(price(MAX_37).cacheMiss > price(MAX_38).cacheMiss);
 });

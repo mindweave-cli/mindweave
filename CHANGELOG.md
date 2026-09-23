@@ -3,6 +3,45 @@
 Notable changes to Mindweave. Dates are release dates.
 
 
+## v2.5.1 (2026-09-23): models, prices and settings brought in line with what providers publish
+
+Mindweave connects you to many providers, and it is only as good as what it knows about
+each of them. For this release, every model list, price and reasoning setting was checked
+against the provider's own published documentation, and wherever Mindweave disagreed, it
+now follows the provider.
+
+Saying no to the trust question when opening a folder now quits cleanly. It used to leave
+the terminal frozen, with no way out but closing the window.
+
+The cost shown for a session now matches the rates providers publish. Several prices were
+wrong in both directions. Qwen3.7 Max showed half of what it costs and Qwen3.5 Flash about
+two thirds, while Grok 4.3 showed well over its real price. Claude Sonnet 5 is now at the
+$2 / $10 rate Anthropic made permanent, GPT-5.6 Sol at its current promotional rate, and
+MiniMax M2 at the same rate as M2.7. The cache rates for Grok 4.5, Kimi K2.6 and the
+MiniMax models are corrected.
+
+DeepSeek V4 Pro is back in `/model`. Mindweave had assumed a retirement date for it that
+never came, and anyone who had it selected was moved to V4.1 Flash without being told.
+Kimi K2.5, which Moonshot has shut down, is removed.
+
+New models: Claude Opus 5.5, GPT-6 Sol, GPT-6 Luna, Grok 4.7, Qwen3.8 Flash, Kimi K2.7
+Code HighSpeed and GLM-5.3 FlashX. On Cerebras, Qwen3.8 27B replaces a model Cerebras no
+longer serves. That makes 60 models across 15 providers.
+
+Claude Opus 5.5, Claude Fable 5.1 and Claude Fable 5 write their short notes between tool
+calls, saying what they found and what they will do next, in a form that arrives empty
+unless it is asked for. On those models the reply went quiet for the whole stretch of tool
+work. Mindweave now asks for the notes and shows them as part of the reply.
+
+Grok 4.5, 4.6 and 4.7 always reason and only let you choose how deeply, and `/think` now
+offers that choice instead of a single fixed level. A setting saved before this release
+keeps the depth it has always run at. Muse Spark 1.3 gains the deeper `max` level that
+Meta offers on it.
+
+Grok models can now be handed images. They take JPG and PNG only, so a GIF or WebP
+attached while one is running is held back rather than sent to fail the whole request, and
+the agent is told which formats work so it can tell you.
+
 ## v2.5.0 (2026-09-18): the 2.4 releases, checked against real sessions and fixed where they were wrong
 
 Nothing in this release is new for its own sake. Every change since 2.4.0 was checked
