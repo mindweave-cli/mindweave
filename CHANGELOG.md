@@ -3,7 +3,7 @@
 Notable changes to Mindweave. Dates are release dates.
 
 
-## Unreleased
+## v3.0.1 (2026-10-02): the terminal shows its name as Mindweave 2
 
 The terminal now shows its name as Mindweave 2, in the header, on the first-run screen and in
 `--help`. It said Mindweave 1, a name left over from the previous release. The version is still

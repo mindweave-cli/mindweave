@@ -1,6 +1,6 @@
 {
   "name": "mindweave",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "description": "Mindweave — a fast, model-adaptive terminal coding agent.",
   "license": "Apache-2.0",
   "repository": {
