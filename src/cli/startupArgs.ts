@@ -38,7 +38,7 @@ export function versionText(): string {
 export function helpText(): string {
   const v = appVersion();
   return [
-    `Mindweave 1${v ? ` (v${v})` : ""} — a terminal coding agent that works inside your repository.`,
+    `Mindweave 2${v ? ` (v${v})` : ""} — a terminal coding agent that works inside your repository.`,
     "",
     "Usage:",
     "  mindweave                     start a session in the current directory",

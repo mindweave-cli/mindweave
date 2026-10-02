@@ -136,5 +136,5 @@ test("the no-terminal message says what to do, and names nothing internal", () =
 test("help names the release, not just the bare version", () => {
   // The tag is the release people actually know it by; the bare semver in --version is
   // for scripts, not for a person reading --help to see what they have installed.
-  assert.ok(helpText().includes("Mindweave 1"), "the release name is missing from --help");
+  assert.ok(helpText().includes("Mindweave 2"), "the release name is missing from --help");
 });

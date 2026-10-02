@@ -4490,7 +4490,7 @@ export function Banner({ width: given, mode, modelConfig, busy }: { width: numbe
   // The release name, not the raw semver — the version stays available through
   // --help and the update-check note; this bar is read constantly during a working
   // turn and has no room to spare for a number nobody is reading it for.
-  const left = "Mindweave 1";
+  const left = "Mindweave 2";
   // Three separate facts, so three separate colours. As one run they read as a single
   // undifferentiated status string and the eye has to parse the pipes to find the part
   // it wants. The mode keeps its own colour because that colour IS the mode's identity

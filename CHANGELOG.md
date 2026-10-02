@@ -3,6 +3,13 @@
 Notable changes to Mindweave. Dates are release dates.
 
 
+## Unreleased
+
+The terminal now shows its name as Mindweave 2, in the header, on the first-run screen and in
+`--help`. It said Mindweave 1, a name left over from the previous release. The version is still
+3.0, and `--version` and `--help` still show the exact number.
+
+
 ## v3.0.0 (2026-10-02): a desktop app, goals that run on their own, usage limits, testing apps by using them, and a much faster terminal
 
 This is the largest release so far, and it covers everything since 2.5.1. Mindweave now

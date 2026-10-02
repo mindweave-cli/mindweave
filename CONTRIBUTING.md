@@ -73,7 +73,7 @@ That is the short version. The full statement of how this project is run, why th
 
 ### What we are working on next
 
-**Point releases, driven by use.** Mindweave 1 is out, and the work since has been point
+**Point releases, driven by use.** 3.0 is out, and the work since has been point
 releases rather than a march toward a milestone: an audit of every tool against its own
 implementation, a pass on how much the agent talks and how often it re-reads what it
 already has, and the defects that turned up behind both. They are in the

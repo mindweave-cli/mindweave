@@ -6,8 +6,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { fitBanner, type BannerParts } from "./bannerFit.js";
 
-const SHORT: BannerParts = { title: "Mindweave 1", mode: "LIGHTNING", model: "GLM-5.3", effort: "STANDARD", shuttle: 6 };
-const LONG: BannerParts = { title: "Mindweave 1", mode: "ARCHITECT", model: "anthropic/claude-sonnet-5.5-preview-extended", effort: "THINKING · HIGH", shuttle: 6 };
+const SHORT: BannerParts = { title: "Mindweave 2", mode: "LIGHTNING", model: "GLM-5.3", effort: "STANDARD", shuttle: 6 };
+const LONG: BannerParts = { title: "Mindweave 2", mode: "ARCHITECT", model: "anthropic/claude-sonnet-5.5-preview-extended", effort: "THINKING · HIGH", shuttle: 6 };
 
 /** The row as drawn: title, a space and the animation, the gap, then the status. */
 function drawn(width: number, p: BannerParts): string {
@@ -28,7 +28,7 @@ test("every width, both lengths: exactly the width, never more", () => {
 
 test("wide enough: everything, as before", () => {
   const f = fitBanner(108, SHORT);
-  assert.deepEqual([f.title, f.showShuttle, f.mode, f.model, f.effort], ["Mindweave 1", true, "LIGHTNING MODE ON", "GLM-5.3", "STANDARD"]);
+  assert.deepEqual([f.title, f.showShuttle, f.mode, f.model, f.effort], ["Mindweave 2", true, "LIGHTNING MODE ON", "GLM-5.3", "STANDARD"]);
 });
 
 test("things go in order, least useful first, and no word is ever split", () => {
@@ -47,6 +47,6 @@ test("things go in order, least useful first, and no word is ever split", () => 
   // Whatever is shown is whole words or an explicit "…", never "Mindwe".
   for (let w = 1; w <= 120; w++) {
     const f = fitBanner(w, SHORT);
-    assert.ok(f.title === "" || f.title === "Mindweave 1", `title cut at ${w}: ${f.title}`);
+    assert.ok(f.title === "" || f.title === "Mindweave 2", `title cut at ${w}: ${f.title}`);
   }
 });
