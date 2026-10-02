@@ -19,8 +19,9 @@
  * Safety: only http/https, and a basic SSRF guard refuses localhost / private-network
  * hosts so the tool can't be pointed at internal services.
  */
-import TurndownService from "turndown";
-import type { Tool, ToolContext, ToolResult } from "./types.js";
+import type TurndownService from "turndown";
+import { createRequire } from "node:module";
+import type { Tool, ToolContext, ToolResult, WebDisplay } from "./types.js";
 import { activeDriver } from "../drivers/registry.js";
 import { frameExternal } from "./untrusted.js";
 import { outputDetail } from "./detail.js";
@@ -35,8 +36,20 @@ export const DISTILL_OVER_CHARS = 12_000; // above this, summarize via a model c
  *  redirects, short enough that a redirect loop cannot spin. */
 const MAX_REDIRECTS = 5;
 
-const turndown = new TurndownService({ headingStyle: "atx", codeBlockStyle: "fenced" });
-turndown.remove(["script", "style", "noscript", "iframe"]);
+/**
+ * The HTML-to-markdown converter, built on the first fetch rather than at startup. It pulls in
+ * an HTML parser and a DOM, which cost about 85ms of every launch, and most sessions never fetch
+ * a page.
+ */
+let turndownInstance: TurndownService | null = null;
+function turndown(): TurndownService {
+  if (!turndownInstance) {
+    const Turndown = createRequire(import.meta.url)("turndown") as typeof TurndownService;
+    turndownInstance = new Turndown({ headingStyle: "atx", codeBlockStyle: "fenced" });
+    turndownInstance.remove(["script", "style", "noscript", "iframe"]);
+  }
+  return turndownInstance;
+}
 
 const webFetchTool: Tool = {
   name: "web_fetch",
@@ -91,8 +104,23 @@ const webFetchTool: Tool = {
           `If you need it, download it with run_command.`,
         summary: `fetched ${hostOf(url)} (non-text)`,
         detail: fetchDetail(finalUrl, status, [`Content-Type: ${contentType || "unknown"} — not text, not read`]),
+        web: { kind: "fetch", url: String(url), finalUrl, status, bytes: byteSize(body), binary: true },
       };
     }
+
+    // What a front end draws for this page, the same whichever way it was read.
+    const webFacts = (): WebDisplay => {
+      const title = pageTitle(body);
+      return {
+        kind: "fetch",
+        url: String(url),
+        finalUrl,
+        status,
+        bytes: byteSize(body),
+        ...(title ? { title } : {}),
+        ...(prompt ? { focus: prompt } : {}),
+      };
+    };
 
     let content = contentType.includes("html") ? htmlToMarkdown(body) : body.trim();
     const redirected = hostOf(finalUrl) !== hostOf(url) ? `\n(note: redirected to ${finalUrl})` : "";
@@ -111,6 +139,7 @@ const webFetchTool: Tool = {
             `(focused on: ${prompt})${redirected}\n\n${distilled}`,
           ),
           summary: `fetched ${hostOf(url)} (summarized)`,
+          web: webFacts(),
           detail: fetchDetail(finalUrl, status, [
             `Condensed against: "${prompt}"`,
             ...(redirected ? [`Redirected from ${hostOf(url)}`] : []),
@@ -135,6 +164,7 @@ const webFetchTool: Tool = {
         `${redirected}${redirected ? "\n\n" : ""}${out}${footer}`,
       ),
       summary: `fetched ${hostOf(url)} (${out.length} chars${truncated ? ", truncated" : ""})`,
+      web: webFacts(),
       detail: fetchDetail(finalUrl, status, [
         `Extracted ${estimateTokens(out).toLocaleString("en-US")} tokens${truncated ? ", truncated" : ""}`,
         ...(pageTitle(body) ? [`Title: ${pageTitle(body)}`] : []),
@@ -292,7 +322,7 @@ async function readCapped(res: Response): Promise<string> {
 
 function htmlToMarkdown(html: string): string {
   try {
-    return turndown.turndown(html).replace(/\n{3,}/g, "\n\n").trim();
+    return turndown().turndown(html).replace(/\n{3,}/g, "\n\n").trim();
   } catch {
     // Fall back to a crude tag-strip if turndown chokes on malformed markup.
     return html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();

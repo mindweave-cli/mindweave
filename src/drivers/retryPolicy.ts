@@ -54,6 +54,33 @@ const MAX_DELAY_MS = 8_000;
  */
 const RETRYABLE_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504, 529]);
 
+/**
+ * Words a provider uses when the ACCOUNT has no money left, as opposed to being busy.
+ *
+ * Several providers answer both with a 429, and the two are opposites for a retry: a busy
+ * provider clears in seconds, an empty balance never does, so retrying it only delays the
+ * explanation by the whole backoff and sends requests that cannot succeed. Deliberately
+ * narrower than the list `providerError.ts` uses to word the notice: "exceeded your current
+ * quota" is also how some providers phrase a per-minute limit that DOES clear, and that one
+ * has to keep its retries.
+ */
+const SPENT_BALANCE = [
+  "insufficient balance",
+  "insufficient_quota",
+  "credit balance",
+  "no resource package",
+  "payment required",
+  "purchase credits",
+  "please recharge",
+];
+
+/** Does this failure say the account is out of money, so waiting cannot help (pure)? */
+export function isSpentBalance(error: unknown): boolean {
+  const e = error as { detail?: unknown; message?: unknown } | null;
+  const text = `${typeof e?.detail === "string" ? e.detail : ""} ${typeof e?.message === "string" ? e.message : ""}`.toLowerCase();
+  return SPENT_BALANCE.some((phrase) => text.includes(phrase));
+}
+
 /** Transport failures that are worth another go. */
 const RETRYABLE_NETWORK = [
   "econnreset",
@@ -78,7 +105,7 @@ export function isAbortLike(error: unknown): boolean {
 /** Should this failure be tried again (pure)? */
 export function isRetryable(error: unknown, status?: number | null): boolean {
   if (isAbortLike(error)) return false;
-  if (typeof status === "number") return RETRYABLE_STATUSES.has(status);
+  if (typeof status === "number") return RETRYABLE_STATUSES.has(status) && !isSpentBalance(error);
   const e = error as { code?: unknown; message?: unknown; cause?: unknown } | null;
   const text = [
     typeof e?.code === "string" ? e.code : "",

@@ -44,7 +44,7 @@ import { posixShell, shellMismatchNote } from "./posixShell.js";
 import { killTree, spawnManaged } from "./killTree.js";
 import { captureAfterCommand, looksReadOnly, snapshotBeforeCommand } from "./shellCheckpoint.js";
 import { canonicalRoot, relativize } from "./paths.js";
-import { SHELL_ROWS_FAILED, SHELL_ROWS_OK, formatDuration, shellOutput, withOutcome } from "./detail.js";
+import { FULL_DETAIL_MAX, SHELL_ROWS_FAILED, SHELL_ROWS_OK, formatDuration, shellOutput, withOutcome } from "./detail.js";
 import { parseTestRun, testDetail } from "./testSummary.js";
 import { powershellLintReason, powershellParseError, powershellReservedAssignmentReason } from "./shellLint.js";
 import { findRunningDuplicate, findRecentUserClose, guessNotifyPolicy, type NotifyPolicy } from "./backgroundShells.js";
@@ -52,12 +52,26 @@ import { fail, failQuietly } from "./results.js";
 import { defaultOpenRewrite } from "./openDefault.js";
 import { composeFileOutput, createOutputFile, removeOutputFile, tailOf } from "./commandOutput.js";
 import { stripNativeStderrNoise } from "./nativeStderr.js";
+import { hiddenDesktopName, launcherPath, VIRTUAL_DISPLAY_ARGS, wantsHiddenDesktop } from "./hiddenDesktop.js";
 
 const IS_WINDOWS = process.platform === "win32";
 
 /** Which shell to run in on Windows. Elsewhere everything is POSIX sh and this is
  *  ignored. PowerShell is the default; cmd is opt-in for cmd.exe-syntax commands. */
 type Shell = "powershell" | "cmd";
+
+/**
+ * How long a command that starts an app or a server is watched, inside the call that starts
+ * it, before the model is told how it went. A window usually opens, and a port conflict or a
+ * missing script usually fails, within a couple of seconds; four covers both without making a
+ * launch feel slow. Read on every call so a test can change it, and 0 turns the wait off.
+ */
+export function readyWindowMs(): number {
+  const raw = process.env.MINDWEAVE_READY_WINDOW_MS;
+  if (raw == null || raw.trim() === "") return 4_000;
+  const v = Number(raw);
+  return Number.isFinite(v) && v >= 0 ? v : 4_000;
+}
 
 const DEFAULT_TIMEOUT_MS = 120_000; // 2 minutes
 const MAX_TIMEOUT_MS = 600_000; // 10 minutes
@@ -96,6 +110,7 @@ export function commandShellLabel(): string {
 export const runCommand: Tool = {
   name: "run_command",
   readOnly: false,
+  liveRow: true,
   // Two claims in the previous version of this description were false, and both were
   // the kind a model obeys without being able to check. It promised that a backgrounded
   // command would report when it finished, which is true only for notify:'on_finish'
@@ -164,6 +179,14 @@ export const runCommand: Tool = {
           "it never does, but NOT when it stops — use it for dev servers and apps, because the user " +
           "closing their own app is not something to act on. 'never': you're told nothing at all. " +
           "Say which; guessing from the command name gets it wrong for anything unusual.",
+      },
+      hidden: {
+        type: "boolean",
+        description:
+          "Windows, and Linux with xvfb installed: start what this command opens on a hidden desktop, where its windows never " +
+          "appear on the user's screen but can still be tested with the ui tool. Automatic when the " +
+          "command (or the package script it runs) has the ui tool's debugging-port flags. Pass true " +
+          "for any other app you start only to test it; pass false when the user asked to see the app.",
       },
     },
   },
@@ -300,7 +323,27 @@ export const runCommand: Tool = {
     const watch = !background && !looksReadOnly(command);
     const before = watch ? await snapshotBeforeCommand(ctx) : undefined;
 
-    const result = await runShell(command, ctx, timeout, background, shell, declared, call);
+    // An app started to be tested goes where the user cannot see it (hiddenDesktop.ts).
+    // If that cannot be done it is not started at all: the promise is that it never
+    // appears on the user's screen, and starting it in plain sight would break that.
+    let launcher: string | undefined;
+    if (wantsHiddenDesktop(command, ctx.cwd, typeof args.hidden === "boolean" ? args.hidden : undefined)) {
+      try {
+        launcher = await launcherPath();
+      } catch (error) {
+        return fail(
+          `Could not start this where the user cannot see it (${error instanceof Error ? error.message : String(error)}). ` +
+            `To start it on the user's screen instead, run it again with hidden: false.`,
+        );
+      }
+    }
+
+    const result = await runShell(command, ctx, timeout, background, shell, declared, call, launcher);
+    if (launcher) {
+      result.output =
+        `${result.output}\n\nStarted on a hidden desktop: its windows never appear on the user's screen, and the ui ` +
+        `tool still reaches them. If the user wants to see the app, stop it and start it again with hidden: false.`;
+    }
 
     // Told in the OUTPUT, where the model reads it, because it changes what the model may
     // say afterwards: it asked for one browser and a different one opened. Reporting a
@@ -323,8 +366,9 @@ export const runCommand: Tool = {
 /** How long a command runs before it starts reporting. Almost everything finishes inside
  *  this, and a row that flashed a tail and then settled would be motion for its own sake. */
 const PROGRESS_AFTER_MS = 2000;
-/** How often the tail is resent while it keeps running. */
-const PROGRESS_POLL_MS = 1000;
+/** How often the tail is resent while it keeps running: four times a second, so output scrolls through
+ *  the row instead of arriving as a new block once a second. */
+const PROGRESS_POLL_MS = 250;
 /** Lines of tail shown while a command is still going. */
 const PROGRESS_LINES = 6;
 /** How much of the file a progress glance reads. A few lines of any real output fit in
@@ -376,6 +420,7 @@ async function runShell(
   shell: Shell,
   declaredNotify?: NotifyPolicy,
   call?: ToolCallChannel,
+  hiddenLauncher?: string,
 ): Promise<ToolResult> {
   // How long the command took, for the row's outcome. Taken here rather than around the
   // spawn so it covers what the user actually waited through.
@@ -398,7 +443,16 @@ async function runShell(
   // to a descriptor, not into a pipe somebody has to keep draining.
   const outFile = await createOutputFile();
 
-  const child = spawnManaged(bin, [...args, wrapped], {
+  // On the hidden desktop the launcher starts the shell there and passes the rest of its
+  // command line through untouched, so the shell sees exactly what it would have.
+  const child = spawnManaged(
+    hiddenLauncher ?? bin,
+    hiddenLauncher
+      ? process.platform === "win32"
+        ? [hiddenDesktopName(), bin, ...args, wrapped]
+        : [...VIRTUAL_DISPLAY_ARGS, bin, ...args, wrapped]
+      : [...args, wrapped],
+    {
     cwd: ctx.cwd,
     // stdin stays a pipe so an interactive prompt sees a closed stream and gives up
     // rather than waiting; stdout and stderr are the SAME descriptor, so the two
@@ -449,6 +503,18 @@ async function runShell(
     // silent: no output in `shells`, "(no output)" on every note, and a watchdog that
     // could never see the prompt it exists to catch.
     const info = mgr.adopt(child, { command, cwd: ctx.cwd, outputPath: outFile.path, cwdFile, tempFile, notify });
+    // An app or a server: see how its first moments go before answering, so the model writes
+    // ONE message that knows the outcome instead of "starting" now and "running" ten seconds
+    // later. A finite task keeps the old hand-off, because its result is the point and it
+    // arrives on its own.
+    const windowMs = notify === "on_failure" ? readyWindowMs() : 0;
+    if (windowMs > 0) {
+      const settled = await mgr.settle(info.id, windowMs, ctx.abortSignal);
+      // Esc during the wait cancels the launch, the same as before it started: an app the user
+      // believes they stopped must not be left running.
+      if (settled?.outcome === "aborted") mgr.kill(info.id, "system");
+      if (settled) return settledResult(settled, command, info.id, windowMs);
+    }
     return backgroundedResult(info.id, command, `Started in the background as shell #${info.id}`, notify);
   }
 
@@ -628,6 +694,49 @@ async function runShell(
       grace.unref?.();
     });
   });
+}
+
+/**
+ * The result for an app or server that was watched through its first moments (see `settle`).
+ *
+ * "Up" says only what is known: the process was still alive when the watch ended. It does not say a
+ * window is visible or a page loads, and it tells the model not to claim that. Failing inside the
+ * window is a failed tool call, with the output that says why, so the model can fix it in the same
+ * turn instead of being woken for it later.
+ */
+function settledResult(
+  s: { outcome: "up" | "ended" | "aborted"; info: { exitCode: number | null; signal?: string; listening?: number[]; port?: number }; output: string },
+  command: string,
+  id: number,
+  windowMs: number,
+): ToolResult {
+  const secs = Math.max(1, Math.round(windowMs / 1000));
+  if (s.outcome === "aborted") {
+    return { output: "Interrupted while starting.", isError: true, summary: `interrupted \`${clip(command)}\`` };
+  }
+  const tail = s.output.trim() ? `Output so far:\n${s.output.trim()}` : "It has printed nothing so far.";
+  if (s.outcome === "ended") {
+    const how = s.info.signal ? `was stopped (${s.info.signal})` : `exited with code ${s.info.exitCode ?? "unknown"}`;
+    return {
+      output:
+        `\`${clip(command)}\` ${how} inside its first ${secs}s, so it never came up. Nothing is running.\n\n${tail}\n\n` +
+        `Fix the cause and start it again if the task needs it running.`,
+      isError: true,
+      summary: `stopped at start · ${s.info.signal ?? `exit ${s.info.exitCode ?? "?"}`}`,
+    };
+  }
+  const port = s.info.listening?.length ? s.info.listening : s.info.port !== undefined ? [s.info.port] : [];
+  const where = port.length ? `, listening on port ${port.join(", ")}` : "";
+  return {
+    output:
+      `Started as shell #${id} and still running after ${secs}s${where}.\n\n${tail}\n\n` +
+      `Tell the user in ONE short line that it is running, and nothing more: running only means the process ` +
+      `started, so do not describe what it shows or say a change is visible unless you have looked. Then STOP ` +
+      `(end your turn). You will not be told when it stops, because the user closing their own app is not an ` +
+      `event to act on, so never restart it on your own. Use shells({id: ${id}}) to inspect it and ` +
+      `kill_shell(${id}) to stop it.`,
+    summary: `Running as shell #${id}`,
+  };
 }
 
 /**
@@ -890,7 +999,12 @@ function format(
   // Only for a command that RAN to a conclusion. A run killed on a timeout has whatever
   // its runner had printed by then, and summarising a partial log as a result would put a
   // confident set of numbers under a command nobody let finish.
-  const testRun = timedOut || signal !== null ? undefined : parseTestRun(body);
+  // A run that counted no failures is not a green row when the COMMAND failed: the tests can
+  // pass and something chained after them (a typecheck, a build) still exit non-zero, and a
+  // row reading "✓ 14 passed" over a red dot hid exactly that. Falling through shows the
+  // real output and the exit code instead.
+  const parsedRun = timedOut || signal !== null ? undefined : parseTestRun(body);
+  const testRun = parsedRun && failed && parsedRun.failed === 0 ? undefined : parsedRun;
   return {
     output: parts.join("\n"),
     isError: failed,
@@ -910,6 +1024,9 @@ function format(
     detail: testRun
       ? testDetail(testRun, formatDuration)
       : withOutcome(shellBody(command, body, failed), timedOut, exitCode, signal, timeoutMs, elapsedMs, pid),
+    detailFull: testRun
+      ? undefined
+      : withOutcome(shellBody(command, body, failed, FULL_DETAIL_MAX), timedOut, exitCode, signal, timeoutMs, elapsedMs, pid),
     detailKind: "shell" as const,
   };
 }
@@ -922,8 +1039,8 @@ function format(
  * is the only one anyone reads, and gets a larger, still fixed, budget. Both are capped
  * from the end — see `shellOutput`.
  */
-function shellBody(command: string, body: string, failed: boolean): string {
-  const out = shellOutput(body, failed ? SHELL_ROWS_FAILED : SHELL_ROWS_OK);
+function shellBody(command: string, body: string, failed: boolean, rows?: number): string {
+  const out = shellOutput(body, rows ?? (failed ? SHELL_ROWS_FAILED : SHELL_ROWS_OK));
   return out ? `$ ${command}\n${out}` : `$ ${command}`;
 }
 

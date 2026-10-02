@@ -27,10 +27,10 @@
  */
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
-import { projectDir } from "../memory/store.js";
+import { projectDir, stateRoot } from "../memory/store.js";
 
 /** The files and directories a project's governance is read from. */
-const FORBIDDEN_FILES = ["forbidden.md", "forbidden-commands.md", "forbidden-mcp-tools.md"];
+const FORBIDDEN_FILES = ["forbidden.md", "forbidden-commands.md", "forbidden-mcp-tools.md", "sentinel-allow.md", "context.json"];
 
 /** One directory's entries as `name:mtime:size`, sorted so the stamp is order-stable. */
 async function dirStamp(dir: string, depth: number): Promise<string> {
@@ -64,17 +64,22 @@ async function dirStamp(dir: string, depth: number): Promise<string> {
  */
 export async function governanceStamp(cwd: string): Promise<string> {
   const stateDir = projectDir(cwd);
-  const [rules, skills, ...files] = await Promise.all([
+  const [rules, skills, globalRules, globalSkills, ...files] = await Promise.all([
     dirStamp(join(stateDir, "rules"), 0),
     dirStamp(join(stateDir, "skills"), 1),
-    ...FORBIDDEN_FILES.map(async (name) => {
-      try {
-        const st = await fs.stat(join(stateDir, name));
-        return `${name}:${st.mtimeMs}:${st.size}`;
-      } catch {
-        return `${name}:-`;
-      }
-    }),
+    dirStamp(join(stateRoot(), "rules"), 0),
+    dirStamp(join(stateRoot(), "skills"), 1),
+    // Both scopes: an edit to a universal list must reach sessions already running.
+    ...[stateDir, stateRoot()].flatMap((dir) =>
+      FORBIDDEN_FILES.map(async (name) => {
+        try {
+          const st = await fs.stat(join(dir, name));
+          return `${name}:${st.mtimeMs}:${st.size}`;
+        } catch {
+          return `${name}:-`;
+        }
+      }),
+    ),
   ]);
-  return `r[${rules}] s[${skills}] f[${files.join("|")}]`;
+  return `r[${rules}] s[${skills}] gr[${globalRules}] gs[${globalSkills}] f[${files.join("|")}]`;
 }

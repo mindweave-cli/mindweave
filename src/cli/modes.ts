@@ -21,7 +21,7 @@ export interface Mode {
   name: string;
   /** A small single-width glyph — the mode's icon in the under-chat bar. */
   icon: string;
-  /** Ink color for the icon + name. */
+  /** Ink color for the icon + name. App palette tones (theme.ts): amber, teal-grey, jade. */
   color: string;
   /** One-line hint of what the mode does (dim, next to the name). */
   descriptor: string;
@@ -51,7 +51,7 @@ export const MODES: readonly Mode[] = [
     id: "lightning",
     name: "Lightning",
     icon: "↯",
-    color: "yellow",
+    color: "#EAB767",
     descriptor: "auto-accept",
     readOnly: false,
     guarded: false,
@@ -61,7 +61,7 @@ export const MODES: readonly Mode[] = [
     id: "architect",
     name: "Architect",
     icon: "△",
-    color: "magenta",
+    color: "#8FC0B8",
     descriptor: "read-only · plan",
     readOnly: true,
     guarded: false,
@@ -71,7 +71,7 @@ export const MODES: readonly Mode[] = [
     id: "sentinel",
     name: "Sentinel",
     icon: "❖",
-    color: "cyan",
+    color: "#52BF92",
     descriptor: "ask before acting",
     readOnly: false,
     guarded: true,

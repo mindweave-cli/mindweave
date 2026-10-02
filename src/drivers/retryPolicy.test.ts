@@ -15,6 +15,7 @@ import assert from "node:assert/strict";
 import {
   isAbortLike,
   isRetryable,
+  isSpentBalance,
   nextDelayMs,
   retryAfterMs,
   RETRY_TOTAL_BUDGET_MS,
@@ -92,4 +93,30 @@ test("a cooldown longer than the budget is reported, not slept through", () => {
   assert.equal(nextDelayMs(1, 0, 120_000, 30_000), null);
   assert.equal(nextDelayMs(1, 0, 5_000, 30_000), 5_000, "one we CAN honour is obeyed exactly");
   assert.equal(nextDelayMs(1, 28_000, 5_000, 30_000), null, "measured against what is left, not the whole budget");
+});
+
+test("a spent balance is never retried, even when the provider sends it as a 429", () => {
+  // GLM and OpenAI both answer an empty account with a 429. Waiting cannot fix it, so the
+  // retry only delayed the explanation and sent requests that could not succeed.
+  const glm = { detail: '{"error":{"code":"1113","message":"Insufficient balance or no resource package. Please recharge."}}' };
+  const openai = { detail: '{"error":{"message":"You exceeded your current quota","type":"insufficient_quota","code":"insufficient_quota"}}' };
+  const anthropic = { detail: "Your credit balance is too low to access the API" };
+  for (const e of [glm, openai, anthropic]) {
+    assert.equal(isSpentBalance(e), true);
+    assert.equal(isRetryable(e, 429), false, JSON.stringify(e).slice(0, 60));
+  }
+});
+
+test("an ordinary rate limit and a per-minute quota keep their retries", () => {
+  // "exceeded your current quota" alone is how some providers word a limit that clears, so
+  // it must NOT be treated as an empty balance.
+  for (const detail of [
+    '{"error":{"message":"Rate limit reached for requests","code":"rate_limit_exceeded"}}',
+    '{"error":{"message":"You exceeded your current quota, please retry in 20s","status":"RESOURCE_EXHAUSTED"}}',
+    "Too Many Requests",
+  ]) {
+    assert.equal(isRetryable({ detail }, 429), true, detail.slice(0, 50));
+  }
+  assert.equal(isRetryable({ detail: "Service Unavailable" }, 503), true);
+  assert.equal(isRetryable({ detail: "Insufficient balance" }, 503), false, "a spent balance is not retried on any status");
 });

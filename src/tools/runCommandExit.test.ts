@@ -268,3 +268,31 @@ test("a command that stops on a prompt gets end-of-input at once instead of wait
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test(
+  "a passing test summary does not hide that the command itself failed",
+  { skip: !IS_WINDOWS && "PowerShell path is Windows-only" },
+  async () => {
+    // Tests passed, then a later step in the same command failed (exit 2). The row used to show
+    // only "✓ 14 passed" under a red dot, so the failure was on the screen but explained nowhere.
+    const dir = await mkdtemp(join(tmpdir(), "mw-testfail-"));
+    try {
+      const file = join(dir, "run.cjs");
+      const script = [
+        'console.log(" Test Files  2 passed (2)");',
+        'console.log("      Tests  14 passed (14)");',
+        'console.log("   Duration  1.06s");',
+        'console.error("src/stream.ts(31,7): error TS2412: Type is not assignable");',
+        "process.exit(2);",
+      ].join("\n");
+      await (await import("node:fs/promises")).writeFile(file, script);
+      const result = await runCommand.execute({ command: `node "${file}"` }, ctx());
+      assert.equal(result.isError, true);
+      assert.doesNotMatch(String(result.detail), /^✓ 14 passed/, "the green verdict must not stand in for a failed command");
+      assert.match(String(result.detail), /TS2412/, "the real output, with the error, is shown");
+      assert.match(String(result.detail), /exit|code 2|✗/i, "and the failing exit code is visible");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  },
+);

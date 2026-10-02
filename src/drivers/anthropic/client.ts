@@ -59,11 +59,14 @@ const MAX_TOKENS_STREAM = 64_000;
 const MAX_TOKENS_BUFFERED = BUFFERED_OUTPUT_TOKENS;
 
 let client: Anthropic | null = null;
+/** The key `client` was built with. A different live key (switched with /key, or by the
+ *  app's key manager) rebuilds it; the old code kept the first key for the whole process. */
+let clientKey: string | undefined;
 
 /** The shared SDK client, or a clear setup error if no key is configured yet. */
 function api(): Anthropic {
-  if (!client) {
-    const apiKey = process.env.ANTHROPIC_API_KEY;
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!client || apiKey !== clientKey) {
     if (!apiKey) {
       throw new Error(
         "No ANTHROPIC_API_KEY found. Add your key to the global config so Mindweave works " +
@@ -78,6 +81,7 @@ function api(): Anthropic {
     // here means a session behaves the same way whichever provider it is pointed at,
     // and that an SDK upgrade changing its default cannot quietly change ours.
     client = new Anthropic({ apiKey, maxRetries: RETRY_MAX_ATTEMPTS - 1, defaultHeaders: { "User-Agent": clientId() } });
+    clientKey = apiKey;
   }
   return client;
 }
@@ -274,8 +278,19 @@ function applyReasoning(
   } else if (!surface.takesEffort) {
     const budget = thinkingBudget(maxTokens);
     if (cfg?.thinking && budget > 0) body.thinking = { type: "enabled", budget_tokens: budget };
+  } else if (cfg?.thinking) {
+    // A model that writes progress updates is asked for their text; the rest just think.
+    body.thinking = surface.progressUpdates
+      ? ({ type: "adaptive", display: "updates" } as unknown as Anthropic.ThinkingConfigParam)
+      : { type: "adaptive" };
   } else {
-    body.thinking = cfg?.thinking ? { type: "adaptive" } : { type: "disabled" };
+    // Sonnet 5.5 rejects `disabled`; its lowest setting is `between_tools`, which takes no
+    // other field. The SDK's types predate it. `normalize` has already kept the effort at
+    // `high` or below, the only range it accepts.
+    body.thinking =
+      surface.thinkingOff === "between_tools"
+        ? ({ type: "between_tools" } as unknown as Anthropic.ThinkingConfigParam)
+        : { type: "disabled" };
   }
 
   if (surface.takesEffort) body.output_config = { effort: cfg?.effort ?? "high" };
@@ -451,7 +466,10 @@ export async function webSearch(query: string, options: SearchOptions = {}): Pro
 export async function toolTurn(req: ModelRequest, options: TurnOptions = {}): Promise<Turn> {
   const body = buildBody(req, MAX_TOKENS_BUFFERED);
   const message = await api().messages.create(body, progressRequestOptions(body, options.signal));
-  return { ...toTurn(message), usage: toUsage(message.usage) };
+  // The surface of the model ASKED for, as the streaming path uses, not the name the response
+  // echoes: an echoed alias this table does not know would fall back to the default model's
+  // behaviour and show (or hide) reasoning text the request never asked for.
+  return { ...toTurn(message, surfaceOf(body.model).progressUpdates), usage: toUsage(message.usage) };
 }
 
 /**
@@ -473,7 +491,7 @@ export async function streamTurn(req: ModelRequest, options: StreamOptions = {})
       for await (const event of stream) emit(event, options.onEvent, reply);
     }
     const message = await stream.finalMessage();
-    return { ...toTurn(message), usage: toUsage(message.usage) };
+    return { ...toTurn(message, surfaceOf(body.model).progressUpdates), usage: toUsage(message.usage) };
   } catch (error) {
     if (isAbortLike(error)) throw error;
     return salvagePartialTurn(reply.text, error);

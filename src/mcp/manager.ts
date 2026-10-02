@@ -750,6 +750,26 @@ export class McpManager {
     });
   }
 
+  /**
+   * One server's tools as a manage screen lists them: every tool it offers, each marked
+   * with whether the user's governance is holding it back (changed since it was trusted,
+   * or forbidden). A listing only; dispatch still goes through `allowedCatalog`.
+   */
+  toolsFor(server: string): { def: McpToolDef; blocked: "changed" | "forbidden" | null }[] {
+    return this.catalog()
+      .filter((d) => d.server === server)
+      .map((def) => {
+        const name = mcpToolName(def.server, def.name);
+        return { def, blocked: this.quarantined.has(name) ? "changed" : this.forbidden.has(name) ? "forbidden" : null };
+      });
+  }
+
+  /** Accept every changed (quarantined) tool without asking, for a UI that has
+   *  already asked the user itself. Same effect as answering "Allow" to `reviewQuarantine`. */
+  async allowChanged(): Promise<boolean> {
+    return this.reviewQuarantine(async () => ALLOW_CHANGED);
+  }
+
   /** How many tools are currently offered (for status lines and budgeting). */
   toolCount(): number {
     return this.allowedCatalog().length;

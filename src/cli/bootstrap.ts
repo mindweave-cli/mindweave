@@ -21,6 +21,7 @@ import { join } from "node:path";
 import { stateRoot } from "../memory/store.js";
 import { allProviders } from "../drivers/registry.js";
 import { keysFor, slotVar } from "./keyStore.js";
+import { isKeyDisabled } from "./keyPrefs.js";
 
 /**
  * The global Mindweave config directory (~/.mindweave).
@@ -77,7 +78,8 @@ export function reloadConfig(cwd: string = process.cwd()): void {
 function activateStoredKeys(): void {
   for (const provider of allProviders()) {
     if (process.env[provider.apiKeyEnv]?.trim()) continue;
-    const first = keysFor(provider.apiKeyEnv)[0];
+    // The first key the user has not switched off; a disabled key is kept, never sent.
+    const first = keysFor(provider.apiKeyEnv).find((k) => !isKeyDisabled(k.value));
     if (first) process.env[provider.apiKeyEnv] = first.value;
   }
 }
@@ -160,9 +162,42 @@ export function saveApiKey(apiKeyEnv: string, key: string, slot = 1): void {
   if (!trimmed) return;
   normalizeLegacy(apiKeyEnv);
   const envVar = slotVar(apiKeyEnv, slot);
+  // Replacing the key that is live must replace what the drivers send, too; otherwise an
+  // edited key only took effect on the next launch.
+  const wasLive = Boolean(process.env[envVar]?.trim()) && process.env[envVar]?.trim() === process.env[apiKeyEnv]?.trim();
   process.env[envVar] = trimmed;
   writeEnvVar(envVar, trimmed);
-  if (!process.env[apiKeyEnv]?.trim() || slot === 1) process.env[apiKeyEnv] = trimmed;
+  if (!process.env[apiKeyEnv]?.trim() || slot === 1 || wasLive) process.env[apiKeyEnv] = trimmed;
+}
+
+/**
+ * Make a stored key the default: move it to slot 1, where every launch starts, and make
+ * it live now. The others keep their order behind it. Cleared and rewritten from 1, the
+ * same way `removeApiKey` renumbers, so no value is overwritten before it has moved.
+ */
+export function makeDefaultApiKey(apiKeyEnv: string, slot: number): boolean {
+  normalizeLegacy(apiKeyEnv);
+  const before = keysFor(apiKeyEnv);
+  const chosen = before.find((k) => k.slot === slot);
+  if (!chosen) return false;
+  const ordered = [chosen, ...before.filter((k) => k.slot !== slot)];
+  for (const k of before) {
+    delete process.env[k.envVar];
+    writeEnvVar(k.envVar, null);
+  }
+  ordered.forEach((k, i) => {
+    const envVar = slotVar(apiKeyEnv, i + 1);
+    process.env[envVar] = k.value;
+    writeEnvVar(envVar, k.value);
+  });
+  process.env[apiKeyEnv] = chosen.value;
+  return true;
+}
+
+/** Point the drivers at a given key value, or at none. For callers that pick by value. */
+export function setLiveApiKey(apiKeyEnv: string, value: string | null): void {
+  if (value) process.env[apiKeyEnv] = value;
+  else delete process.env[apiKeyEnv];
 }
 
 /**
@@ -226,7 +261,11 @@ const GLOBAL_ENV_TEMPLATE = [
   // fine and parses as a VALUE of "# DeepSeek", so every provider would have reported a
   // key it did not have: no first-run prompt, and every request rejected with no
   // explanation. Caught by reading the parsed result rather than the file.
-  ...allProviders().flatMap((p) => [`# ${p.label}`, `${p.apiKeyEnv}=`]),
+  // A local runtime (Ollama) has no key line: it counts as set up while it runs, which the
+  // file still says, so a reader learns it is there.
+  ...allProviders().flatMap((p) =>
+    p.local ? [`# ${p.label}: models on this machine, no key. Start it and pull a model; nothing to fill in.`] : [`# ${p.label}`, `${p.apiKeyEnv}=`],
+  ),
   "",
   "# Optional:",
   "# MINDWEAVE_MODEL — which model to open with. Run /model in Mindweave for the list.",

@@ -13,9 +13,12 @@
  * the read-only tool exactly like any other tool call — so this whole function
  * can later move to a server unchanged, with tools executing on the client.
  */
+import { readProfile, profilePrompt } from "../memory/profile.js";
+import { narrationShown, noteReads } from "../cli/toolDisplay.js";
 import { activeDriver, ensureDriver, manifestForModel } from "../drivers/registry.js";
 import type { ChatMessage, ImagePart, ModelRequest, StopReason, StreamResult, Usage, WireToolCall } from "../drivers/types.js";
 import { summarizeTask, taskLimitReason, type TaskLimits } from "./pricing.js";
+import { limitGateReason, noteUsage, refreshUsageLimits, takeLimitWarnings } from "./usageLimits.js";
 import { addTurn, emptySpend } from "./spend.js";
 import { mutationNeedsVerification, isVerification, reScopeCheck, isBackgroundPollStep, stepFailureSignature, repeatFailureStep, repeatFailureNudge, failedActionLabel, firstErrorLine, sameFileEditCounts, overusedSingleEdits, batchEditNudge, narrationFault, narrationNudge, unknownToolError, replyFault, replyRewrite, VERIFY_NUDGE } from "./verify.js";
 import { guardOptions, GUARD_REFUSAL, GUARD_REFUSAL_INPUT, guardRefusalWith, guardQuestion, guardDetail, interpretGuardChoice } from "./guard.js";
@@ -24,7 +27,10 @@ import { findTool, toolSchemas, TOOLS } from "../tools/registry.js";
 import { deferredToolsIndex } from "../tools/deferredNative.js";
 import { prefixPrint, diffPrefix, cacheCallLine, writeCacheLog } from "./cacheBreak.js";
 import { commandShellLabel } from "../tools/runCommand.js";
-import { isInteractiveServerCommand, type BackgroundShells } from "../tools/backgroundShells.js";
+import { isInteractiveServerCommand, type BackgroundShells, type ShellInfo } from "../tools/backgroundShells.js";
+import { uiLiveState } from "../tools/ui.js";
+import { isAgenticOnlyRefusal, withAuxModel } from "./auxModel.js";
+import { marathonBlock } from "./marathonPrompt.js";
 import { basePrompt } from "./prompt.js";
 import { basename } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -32,8 +38,9 @@ import { promises as fsp } from "node:fs";
 import { relativize, resolvePath, rootLabel, rootsOf } from "../tools/paths.js";
 import { renderRules, renderSkillCatalog, reloadGovernance, governanceStamp, rescope } from "../governor/index.js";
 import type { Session, Entry, ToolCallRecord } from "../memory/types.js";
+import { writesAgentState, snapshotAgentState, recordAgentStateChanges } from "../tools/stateCheckpoint.js";
 import type { ImageRef } from "../memory/images.js";
-import { forkSession, reloadProjectMemory } from "../memory/session.js";
+import { forkSession, reconcileInterruptedTools, reloadProjectMemory, repairToolCallOrder } from "../memory/session.js";
 import { selectActiveFiles } from "../memory/workingSet.js";
 import { directoryNotesFor } from "../memory/projectNotes.js";
 import { rippleCheck } from "../tools/editRipple.js";
@@ -58,8 +65,11 @@ import {
   isContinuation,
   microcompact,
   spliceSummary,
+  summaryForWire,
+  summaryIsHistory,
   usableSummary,
 } from "../memory/compaction.js";
+import { MAX_PARALLEL_CALLS, partitionCalls, runLimited } from "./toolBatches.js";
 import { loadPlanArtifact, completePlanArtifact, renderPlanBlock, planDivergenceStop } from "./planArtifact.js";
 import {
   autoCompactThreshold,
@@ -75,6 +85,7 @@ import { compactFromSessionMemory } from "../memory/sessionMemoryCompact.js";
 import { isContextOverflowError } from "../drivers/contextOverflow.js";
 import { detailOf, providerMessage } from "../drivers/providerError.js";
 import { transcriptPath } from "../memory/store.js";
+import { replaceTranscript } from "../memory/earlier.js";
 
 /** Stop retrying autocompact after this many consecutive failures in a session, so a
  *  transcript that's irrecoverably over the limit can't hammer the summarizer each turn
@@ -97,8 +108,14 @@ export function staticSystemPrompt(
   governance: GovernancePrompt,
   workspace: string,
   priorSessions = 0,
+  aboutUser = "",
 ): string {
   let prompt = basePrompt(commandShellLabel());
+
+  // The user's own profile (memory/profile.ts): name, experience level, reply style.
+  if (aboutUser) prompt += `
+
+${aboutUser}`;
 
   if (workspace) {
     prompt += `
@@ -214,6 +231,8 @@ export function volatileContext(
   directoryNotes: { path: string; text: string }[] = [],
   /** Where the previous turn left the shell, when this turn started back at the root. */
   cwdResetFrom = "",
+  /** A running Marathon's standing block (see marathonPrompt.ts), or "". */
+  marathon = "",
 ): string {
   const parts: string[] = [];
   // Each turn starts at the project root, and a model that `cd`-ed into a subfolder last
@@ -257,6 +276,9 @@ export function volatileContext(
         "shortened before the user sees it, so a plan presented that way reaches them in pieces.",
     );
   }
+  // A running Marathon is standing instruction like the approved plan: rendered fresh
+  // every request so compaction cannot lose what the run is for.
+  if (marathon) parts.push(marathon);
   // The maintained session state — first in the volatile tail so the model reads
   // "here's where we are" before the map/task list. Survives compaction.
   const memBlock = renderSessionMemory(sessionMemory);
@@ -453,6 +475,14 @@ export type EngineEvent =
       /** See ToolResult.detailKind — whether `detail` is a real +/- diff (colour it)
        *  or ordinary text (do not). Absent means text. */
       detailKind?: "diff" | "text" | "shell";
+      /** See ToolResult.detailFull — the uncut block, for front ends that can expand a row. */
+      detailFull?: string;
+      /** Paths of images the tool produced (a screenshot), for front ends that can show them. */
+      images?: string[];
+      /** See ToolResult.web. */
+      web?: import("../tools/types.js").WebDisplay;
+      /** See ToolResult.ui. */
+      ui?: import("../tools/types.js").UiDisplay;
       agent?: string;
       /** Display-only: a failure the model resolves itself, so the UI drops the row
        *  rather than painting an error the user can do nothing about. See ToolResult.quiet. */
@@ -467,7 +497,15 @@ export type EngineEvent =
   // arrive tagged with this `id`, so the UI can render a live nested rail per worker.
   | { type: "subagent"; phase: "start"; id: string; task: string; readOnly: boolean }
   | { type: "subagent"; phase: "end"; id: string; summary: string; error: boolean }
-  | { type: "usage"; promptTokens: number; completionTokens: number; totalTokens: number; cacheHitTokens: number; cacheMissTokens: number; cacheWriteTokens?: number };
+  | { type: "usage"; promptTokens: number; completionTokens: number; totalTokens: number; cacheHitTokens: number; cacheMissTokens: number; cacheWriteTokens?: number }
+  /** The lead agent's task list, whole, each time it is rewritten (todo_write). The list
+   *  itself never renders as a chat row (see the tool); this is the structured copy a
+   *  front end can draw as a live checklist. Never sent for a sub-agent's own list. */
+  | { type: "todos"; items: import("../tools/types.js").TodoItem[] }
+  /** Sent once a step's words have streamed and its tool calls are known: whether those words
+   *  lead to anything the conversation shows (see cli/toolDisplay.ts narrationShown). A front
+   *  end holds a step's words until this arrives; the reply that ends a turn never gets one. */
+  | { type: "narration"; shown: boolean };
 
 export interface RespondOptions {
   /** Called once per tool run (and on compaction) with a short line for the live
@@ -484,6 +522,21 @@ export interface RespondOptions {
    */
   onCompaction?: (report: CompactionReport) => void;
   /**
+   * A summarizing compaction is starting, and has ended (whether or not it succeeded).
+   * For a front end that shows the work while it happens; automatic and manual alike.
+   */
+  onCompactionStart?: () => void;
+  onCompactionEnd?: () => void;
+  /**
+   * The turn ended by PAUSING rather than finishing on its own — a step/cost/time
+   * ceiling, the repeated-failure breaker, the background-poll stop, or the re-scope
+   * boundary. Fired just before the lossless pause message is recorded, alongside it —
+   * this is the machine-readable twin of that prose, for a caller that has to tell the
+   * reasons apart (Marathon auto-resumes a `stepBudget` pause but not a
+   * `repeatedFailure` one). Never fired when the turn simply finishes.
+   */
+  onPause?: (reason: PauseReason) => void;
+  /**
    * What the user asked a MANUAL compaction to concentrate on (`/compact <text>`).
    * Additive only — it ranks detail inside the nine sections, it never narrows them.
    * Absent for automatic compactions, which nobody asked for and so nobody steered.
@@ -492,6 +545,13 @@ export interface RespondOptions {
   /** Called for every live event of the turn (deltas, tool lifecycle, usage). The
    *  streaming UI renders from these; omit it for a non-interactive caller. */
   onEvent?: (event: EngineEvent) => void;
+  /**
+   * For a screen that shows a turn one thing at a time: resolves when the row of call `id`, a
+   * shell command already announced through onEvent, is on screen, and only then does the
+   * command start. Must always resolve, including on Esc and at the end of a turn, or the turn
+   * waits forever. Absent (headless, sub-agents, the desktop app today), nothing is held back.
+   */
+  beforeLiveTool?: (id: string) => Promise<void>;
   /** Aborts the in-flight model call, kills a running command, and stops the loop at
    *  the next boundary (the user pressing Esc). run_command listens to the same signal. */
   signal?: AbortSignal;
@@ -687,6 +747,9 @@ async function loadImagePayloads(session: Session): Promise<Map<string, string>>
   return out;
 }
 
+/** What the wire carries in place of an assistant reply that had no words (see buildRequest). */
+export const EMPTY_REPLY_PLACEHOLDER = "(no reply)";
+
 function buildRequest(
   session: Session,
   tools: ReturnType<typeof toolSchemas>,
@@ -701,7 +764,7 @@ function buildRequest(
     ? manifestForModel(session.modelConfig.model).imageTypes?.(session.modelConfig.model)
     : undefined;
   const messages: ChatMessage[] = [];
-  for (const e of session.transcript) {
+  for (const [i, e] of session.transcript.entries()) {
     if (e.role === "user" || e.role === "summary") {
       // Attached images ride with the message, but only while their payload is still
       // live: microcompaction drops the refs once the turn is old, and a file deleted
@@ -711,7 +774,12 @@ function buildRequest(
       // A message that arrived mid-turn is framed HERE rather than being stored framed,
       // so the transcript keeps what the person typed and only the wire carries the
       // explanation. Deterministic from the entry, so the cached prefix is unaffected.
-      const said = e.role === "user" && e.arrival ? arrivalNote(e.arrival, e.content) : e.content;
+      // A summary is sent as background once the user has written after it, so its
+      // hand-off "next step" cannot keep overriding what they actually asked.
+      const said =
+        e.role === "summary"
+          ? summaryForWire(e.content, summaryIsHistory(e, session.transcript.slice(i + 1)))
+          : e.arrival ? arrivalNote(e.arrival, e.content) : e.content;
       if (refs && refs.length > 0) {
         const images: ImagePart[] = [];
         const missing: string[] = [];
@@ -756,10 +824,15 @@ function buildRequest(
       }
       messages.push({ role: "user", content: said });
     } else if (e.role === "assistant") {
+      const calls = e.toolCalls && e.toolCalls.length > 0;
       messages.push({
         role: "assistant",
-        content: e.content,
-        ...(e.toolCalls && e.toolCalls.length > 0 ? { tool_calls: toWire(e.toolCalls) } : {}),
+        // A reply with no words and no tool calls (an empty completion, a filtered one) is
+        // stored as it came, but several providers reject an empty assistant message and it
+        // would be sent on every later request. A placeholder goes on the wire instead; a
+        // message that carries tool calls may have no words and is left alone.
+        content: calls || e.content.trim() !== "" ? e.content : EMPTY_REPLY_PLACEHOLDER,
+        ...(calls ? { tool_calls: toWire(e.toolCalls!) } : {}),
       });
     } else {
       messages.push({ role: "tool", tool_call_id: e.toolCallId, content: e.content });
@@ -781,6 +854,7 @@ function buildRequest(
     gov,
     workspaceText(session),
     session.priorSessions,
+    profilePrompt(readProfile()),
   );
   return {
     system: agentPrompt ? `${base}\n\n${agentPrompt}` : base,
@@ -801,6 +875,11 @@ function buildRequest(
       // the command's own result says where it is now.
       session.toolContext.cwdResetFrom && session.toolContext.cwd === session.cwd
         ? relativize(session.toolContext, session.toolContext.cwdResetFrom)
+        : "",
+      // Lead agent only: a fork inherits `marathon` by reference, and a verifier told to
+      // "keep working toward the goal" would stop being an independent check.
+      session.marathon?.status === "running" && (session.toolContext.subagentDepth ?? 0) === 0
+        ? marathonBlock(session.marathon.goal, session.marathon.turnsSpent === 0 ? "plan" : "run")
         : "",
     ),
     tools,
@@ -833,15 +912,31 @@ export function backgroundEventNote({
   kind,
   tail,
   wake,
+  ports,
 }: Awaited<ReturnType<BackgroundShells["drainEvents"]>>[number]): string | null {
   // It came up. This is the only positive event a server ever produces, and it is
   // what lets the model actually deliver the "I'll tell you when it's running" it
   // was told to say. Nothing has gone wrong, so there is nothing to fix.
-  if (kind === "ready") {
+  // Something it started opened a port after it was already running: typically the app
+  // a build was producing has opened (its window, its debugging port), which is what an
+  // agent that ended its turn to "wait for the app" was waiting for.
+  if (kind === "opened") {
+    const list = (ports ?? []).join(", ");
     return (
-      `[Background shell #${info.id} (\`${info.command}\`) is up and running.]\n` +
+      `[Background shell #${info.id} (\`${info.command}\`) opened port ${list}.]\n` +
       `Recent output:\n${tail || "(no output)"}\n\n` +
-      `Tell the user in one short line that it's running. Nothing is wrong — do not investigate, ` +
+      `Something it started is now listening there: usually the app or server you were waiting for has ` +
+      `opened. If you were waiting for it, carry on now (for an app's debugging port, call ui with that ` +
+      `port). If you were not, there is nothing to do. Nothing is wrong: do not restart it.`
+    );
+  }
+  if (kind === "ready") {
+    const on = info.listening?.length ? ` (listening on port ${info.listening.join(", ")})` : "";
+    return (
+      `[Background shell #${info.id} (\`${info.command}\`) is up and running${on}.]\n` +
+      `Recent output:\n${tail || "(no output)"}\n\n` +
+      `Tell the user in one short line that it's running, and do not repeat anything you already said ` +
+      `about it. Nothing is wrong — do not investigate, ` +
       `do not restart it, and do not change any files because of this. Running only means the ` +
       `process started: do not describe what it shows or say a change is visible unless you ` +
       `have actually looked.`
@@ -946,7 +1041,7 @@ export function callIsConcurrencySafe(
  * an unreadable rules directory must not take the turn down with it — on any failure the
  * session simply keeps the governance it already had.
  */
-async function refreshGovernance(session: Session, force = false): Promise<void> {
+export async function refreshGovernance(session: Session, force = false): Promise<void> {
   try {
     const stamp = await governanceStamp(session.toolContext.cwd);
     // Skipping when the stamp is unchanged is what keeps our OWN writes from causing a
@@ -1048,11 +1143,23 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
   // from here down (including from inside a tool).
   await ensureDriver(session.modelConfig.model);
 
+  // Bring the user's usage limits up to date, once per top-level turn. Cheap when they are off
+  // (one small file read); a sub-agent's turn is inside this one and does not repeat it.
+  if ((session.toolContext.subagentDepth ?? 0) === 0) await refreshUsageLimits().catch(() => {});
+
   // Pick up a governance file the USER edited by hand since the last turn. One stat
   // pass over a few small directories, taken here because a turn is the only moment
   // governance is consulted — so it is fresh exactly where it is used, with no watcher
   // to own, poll or tear down. See refreshGovernance.
   await refreshGovernance(session);
+
+  // A history the provider would reject is healed here, before anything is sent. The usual
+  // cause is a turn that ended with tool calls still unanswered (a tool that threw, a crash
+  // between the call and its result): every later request would then be refused, and the only
+  // cure used to be restarting, which repairs the same thing on load. Both repairs return the
+  // same array when there is nothing to do, so a healthy session pays one scan per turn.
+  const healed = reconcileInterruptedTools(repairToolCallOrder(session.transcript), "the turn ended before this tool returned");
+  if (healed !== session.transcript) session.transcript = healed;
 
   // Resume an approved plan from disk, once per session (undefined = unchecked).
   // A plan approved last session is still the agreed scope this session — that is
@@ -1108,7 +1215,12 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
   // Session): fork a scoped child, forward the child's usage to this turn's meter,
   // and share this turn's abort signal so Esc stops a sub-agent too.
   session.toolContext.forkChild = (task, opts) => forkSession(session, task, opts);
-  session.toolContext.reportUsage = (u) => options.onEvent?.({ type: "usage", ...u });
+  session.toolContext.reportUsage = (u) => {
+    options.onEvent?.({ type: "usage", ...u });
+    // A sub-agent's calls arrive here as events, but its own turn already counted them toward the
+    // limits; only a bare usage (a page-summarising call, say) is new.
+    if (!("type" in u)) countUsage(session, u, options);
+  };
   // The raw event sink, so spawn_subagent can surface a child's nested activity
   // (its lifecycle + tagged tool calls) up this same stream instead of running dark.
   session.toolContext.emitEvent = options.onEvent;
@@ -1190,6 +1302,7 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
   // Narration budget: one nudge per turn, and the turn's earlier prose to compare against.
   let narrationNudged = false;
   const narratedBefore: string[] = [];
+  const readThisTurn = new Set<string>(); // files read so far, for narrationShown
   // Judged next to the prose, pushed after the tool results — see the gate below.
   let pendingNarrationFault: ReturnType<typeof narrationFault> = null;
   let lastFailSig: string | null = null;
@@ -1207,6 +1320,11 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
   // no matter how the turn ends (finish, pause, interrupt, throw). Labeled with
   // the request that drove it. No-op when nothing was edited.
   const turnLabel = lastUserText(session);
+  // The message that opened this turn, stamped now if the save that normally stamps it
+  // has not run yet. The checkpoint below carries that stamp, which is how a rewind to
+  // this message (or any earlier one) finds the file changes to take back with it.
+  const opener = turnOpener(session);
+  if (opener && opener.ts === undefined) opener.ts = Date.now();
   // Fold this turn's cost into the session total on the way out, however the turn ends.
   // In the `finally` rather than the success path on purpose: an interrupted or failed
   // turn still spent the tokens it spent, and a spend figure that quietly omits the
@@ -1240,7 +1358,7 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
   } finally {
     recordSpend();
     const before = session.toolContext.checkpoints?.list().length ?? 0;
-    session.toolContext.checkpoints?.seal(turnLabel);
+    session.toolContext.checkpoints?.seal(turnLabel, opener?.ts);
     // Say that a restore point exists. It was made silently, so `/undo` was a feature
     // you had to already know about — and the moment to learn it is the moment there is
     // something to undo, not after you have lost it.
@@ -1254,10 +1372,14 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
   // is set, and the abort check on the line below. See `resolveStepLimit`.
   for (let step = 0; stepLimit === undefined || step < stepLimit; step++) {
     if (options.signal?.aborted) return interrupted(session);
+    // The user's own usage limit: a step that began under it has finished, so this is the
+    // boundary. Nothing is lost; the work carries on once the window reopens.
+    const heldBack = (session.toolContext.subagentDepth ?? 0) === 0 ? limitGateReason() : null;
+    if (heldBack) return pauseTask(session, options, heldBack, "limit");
     // Stop before another (billable) call if a cost/time ceiling is hit — pause
     // losslessly, exactly like the step budget, so the user can raise it and resume.
     const limitReason = taskLimitReason(summarizeTask(usages, session.modelConfig.model), Date.now() - startedAt, limits);
-    if (limitReason) return pauseTask(session, options, `hit the ${limitReason}`);
+    if (limitReason) return pauseTask(session, options, `hit the ${limitReason}`, "costTimeLimit");
     await maybeCompact(session, options);
 
     // NO working-set block is built or sent. It used to be: the current contents of
@@ -1362,7 +1484,7 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
       const shed = dropOldestRounds(session.transcript);
       if (!shed) return false;
       overflowRecovered = true;
-      session.transcript = shed;
+      replaceTranscript(session, shed);
       await options.persist?.();
       options.onActivity?.("conversation was too long — dropped the oldest turns and retried", {
         context: true,
@@ -1393,6 +1515,7 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
     // may span several calls across tool rounds, and the UI sums them.
     emitUsage(result, options);
     if (result.usage) {
+      countUsage(session, result.usage, options);
       usages.push(result.usage);
       usageTimes.push(Date.now());
       writeCacheLog(
@@ -1430,7 +1553,7 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
       const note = stopReasonNote(result.stop);
       if (content.trim()) session.transcript.push({ role: "assistant", content });
       await options.persist?.();
-      return pauseTask(session, options, note);
+      return pauseTask(session, options, note, result.stop);
     }
 
     // No tool calls → the model is done. Record the reply.
@@ -1500,6 +1623,13 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
     // sees these dangling tool_calls and reconciles them (reconcileInterruptedTools).
     await options.persist?.();
 
+    // Whether the words above lead to anything on screen, before any tool is announced.
+    {
+      const calls = toolCalls.map((c) => ({ name: c.name, args: parseArgs(c.arguments) }));
+      if (content.trim()) options.onEvent?.({ type: "narration", shown: narrationShown(calls, readThisTurn) });
+      noteReads(calls, readThisTurn);
+    }
+
     // Narration gate, part one: JUDGE here, where this message's prose and the turn's
     // earlier prose are both in hand. Do NOT push anything yet — an assistant message
     // carrying tool_calls must be followed immediately by a tool message per call, and
@@ -1514,12 +1644,20 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
     // Announce every tool the model chose, in its order, BEFORE running any —
     // the UI's reveal queue paces them and a slow tool (test/run) can show a live
     // "running" state until its end event lands.
-    for (const call of toolCalls) {
+    // A row is announced when its tool actually STARTS, not up front for the whole step.
+    // Announcing every call at once showed a command as running while a Sentinel prompt
+    // for an earlier call was still waiting, and kept rows appearing behind an open
+    // question: work on screen that nobody had approved. A call that never runs (declined,
+    // refused, interrupted) is announced together with its end, so it still gets its row.
+    const announced = new Set<string>();
+    const announce = (call: (typeof toolCalls)[number]) => {
+      if (announced.has(call.id)) return;
+      announced.add(call.id);
       options.onEvent?.({ type: "tool", phase: "start", id: call.id, name: call.name, args: parseArgs(call.arguments) });
-    }
+    };
 
-    // Concurrency-safe calls run in PARALLEL; the rest run one at a time, in order
-    // (parallel edits to one file race, and an edit must see the last write). A call
+    // Consecutive concurrency-safe calls run in PARALLEL; every other call runs alone, in
+    // order (parallel edits to one file race, and an edit must see the last write). A call
     // is concurrency-safe when the tool says so for THESE args (isConcurrencySafe) —
     // e.g. a read-only sub-agent, which lets the model fan out research — otherwise
     // the default is: read-only ⇒ safe, mutating ⇒ serial.
@@ -1527,8 +1665,9 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
       const tool = lookup(call.name);
       return tool ? callIsConcurrencySafe(tool, parseArgs(call.arguments)) : false;
     };
-    const parallelCalls = toolCalls.filter(concurrencySafe);
-    const serialCalls = toolCalls.filter((call) => !concurrencySafe(call));
+    // Batches keep the model's ORDER (toolBatches.ts): a read written after an edit has to
+    // see the edit, so read-only calls are only grouped with their neighbours.
+    const batches = partitionCalls(toolCalls, concurrencySafe);
 
     const runCall = async (call: (typeof toolCalls)[number]) => {
       // Esc: once the turn is aborted, no further tool may START. The step loop only
@@ -1603,7 +1742,10 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
       // uniformly — including subagent edits. Fails safe: no approval channel, or an
       // unclear answer, refuses rather than runs.
       const ctx = session.toolContext;
-      if (!tool.readOnly && ctx.guarded && !ctx.guardAllowed?.has(call.name)) {
+      // Two kinds of standing "yes": one given during this session (guardAllowed), and
+      // one the user saved in their permissions, for this project or every project.
+      const savedYes = ctx.governance?.sentinelAllow?.includes(call.name) === true;
+      if (!tool.readOnly && ctx.guarded && !ctx.guardAllowed?.has(call.name) && !savedYes) {
         const args = parseArgs(call.arguments);
         // The question is one line; WHAT is about to happen rides as detail, which the
         // CLI prints into the transcript. A gate the user cannot read is a gate they
@@ -1654,19 +1796,58 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
       // Zero threw — every one returned an error result. So this catches nothing today
       // and is deliberately defence in depth: it removes a single point of failure
       // rather than fixing an observed bug, and the next tool added inherits it.
+      announce(call); // approved (or needing no approval): now it is really running
+      // A command waits until its row is actually on screen before it starts, when the caller
+      // paces the screen. Otherwise the screen, which shows one thing at a time, replays a
+      // command that finished long ago and its "running" state is never real. Only commands:
+      // reads and edits take milliseconds, and holding them back would only slow the turn.
+      if (tool.liveRow && options.beforeLiveTool) {
+        await options.beforeLiveTool(call.id);
+        if (options.signal?.aborted) {
+          return {
+            call,
+            output: "Not run: the turn was interrupted before this tool started.",
+            summary: "interrupted",
+            isError: true,
+            detail: undefined as string | undefined,
+          };
+        }
+      }
       let result;
       try {
         // A per-call channel, so a tool that runs for minutes can say what it is doing.
         // Scoped to THIS call rather than hung on the shared context, which every tool in
         // the turn holds the same instance of — with two commands in flight there would be
         // no way to tell whose output was whose.
-        result = await tool.execute(parseArgs(call.arguments), session.toolContext, {
-          progress: (text) => options.onEvent?.({ type: "tool", phase: "progress", id: call.id, text }),
-        });
+        // Memories, rules, skills, permissions and MCP servers are written by their own
+        // helpers, not the edit tools; snapshotting around the call puts them in the same
+        // undo net as project files, so /undo and a rewind take them back too.
+        const stateBefore = session.toolContext.checkpoints && writesAgentState(call.name)
+          ? await snapshotAgentState(session.toolContext)
+          : null;
+        try {
+          result = await tool.execute(parseArgs(call.arguments), session.toolContext, {
+            progress: (text) => options.onEvent?.({ type: "tool", phase: "progress", id: call.id, text }),
+          });
+        } finally {
+          if (stateBefore) await recordAgentStateChanges(session.toolContext, stateBefore);
+        }
       } catch (error) {
-        // An abort is the user, not a fault: let it travel so the loop's own handling
-        // reports an interruption instead of a broken tool.
-        if (isAbort(error)) throw error;
+        // An abort is the user, not a fault, so it is NOT reported as a broken tool. But it
+        // must not travel out of the loop either: the assistant message carrying these calls
+        // is already saved, so a throw here leaves calls with no results, and every later
+        // request in the live session is then malformed until the app is restarted. It is
+        // recorded as an interrupted call instead; when the turn really was stopped the next
+        // pass through the loop sees the abort and ends the turn cleanly.
+        if (isAbort(error)) {
+          return {
+            call,
+            output: "Not completed: this call was interrupted before it finished, so its effect is unknown. Check the current state before relying on it.",
+            summary: "interrupted",
+            isError: true,
+            detail: undefined as string | undefined,
+          };
+        }
         return { call, ...toolFailureResult(call.name, error), detail: undefined as string | undefined };
       }
       return {
@@ -1675,10 +1856,13 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
         summary: result.summary,
         isError: result.isError,
         detail: result.detail,
+        detailFull: result.detailFull,
         detailKind: result.detailKind,
         quiet: result.quiet,
         fullContentOf: result.fullContentOf,
         images: result.images,
+        web: result.web,
+        ui: result.ui,
         displayKind: result.displayKind,
         displayName: result.displayName,
         awaitsModel: result.awaitsModel,
@@ -1691,6 +1875,7 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
     // the model's call order (the sort below); only the UI events go out eagerly.
     const runAndEmit = async (call: (typeof toolCalls)[number]) => {
       const r = await runCall(call);
+      announce(r.call); // one that never ran gets its start now, right before its end
       options.onEvent?.({
         type: "tool",
         phase: "end",
@@ -1699,16 +1884,21 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
         summary: r.summary ?? r.call.name,
         error: r.isError ?? false,
         detail: r.detail,
+        ...("detailFull" in r && r.detailFull ? { detailFull: r.detailFull } : {}),
         ...(r.detailKind ? { detailKind: r.detailKind } : {}),
         ...(r.quiet ? { quiet: true } : {}),
         ...(r.displayKind ? { displayKind: r.displayKind } : {}),
         ...(r.displayName ? { displayName: r.displayName } : {}),
+        ...(r.images?.length ? { images: r.images.map((i) => i.path) } : {}),
+        ...(r.web ? { web: r.web } : {}),
+        ...(r.ui ? { ui: r.ui } : {}),
       });
       return r;
     };
-    const results = await Promise.all(parallelCalls.map(runAndEmit));
-    for (const call of serialCalls) {
-      results.push(await runAndEmit(call));
+    const results: Awaited<ReturnType<typeof runAndEmit>>[] = [];
+    for (const batch of batches) {
+      if (batch.parallel) results.push(...(await runLimited(batch.calls, MAX_PARALLEL_CALLS, runAndEmit)));
+      else results.push(await runAndEmit(batch.calls[0]!));
     }
     // Hand results back in the model's original call order (start events were emitted
     // in that order too), no matter which lane each call ran in.
@@ -1753,6 +1943,9 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
         ...(result.quiet ? { quiet: true } : {}),
         ...(result.displayName ? { displayName: result.displayName } : {}),
         ...(result.displayKind ? { displayKind: result.displayKind } : {}),
+        ...(result.images?.length ? { imagePaths: result.images.map((i) => i.path) } : {}),
+        ...(result.web ? { web: result.web } : {}),
+        ...(result.ui ? { ui: result.ui } : {}),
         ...(result.isError ? { isError: true } : {}),
         // Presence, as recorded by the tool that knows: this result IS the whole
         // content of that file. Not display — the presence derivation reads it.
@@ -2036,11 +2229,20 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
   // transcript, task list, and working set are all intact, so telling Mindweave to
   // continue resumes exactly here with nothing lost, and the user stays in control of
   // the spend.
-  return pauseTask(session, options, `reached the step budget of ${stepLimit} tool steps in one turn`);
+  return pauseTask(session, options, `reached the step budget of ${stepLimit} tool steps in one turn`, "stepBudget");
   }
 }
 
 /** The most recent user request in the transcript, clipped — labels a checkpoint. */
+/** The last message the person sent, which is what this turn is answering. */
+function turnOpener(session: Session): Entry | undefined {
+  for (let i = session.transcript.length - 1; i >= 0; i--) {
+    const e = session.transcript[i]!;
+    if (e.role === "user" && !e.synthetic) return e;
+  }
+  return undefined;
+}
+
 function lastUserText(session: Session): string {
   for (let i = session.transcript.length - 1; i >= 0; i--) {
     const e = session.transcript[i]!;
@@ -2070,10 +2272,29 @@ function endTurnWith(session: Session, options: RespondOptions, msg: string): st
   return msg;
 }
 
+/**
+ * Every way `respond()` can PAUSE a turn rather than let it finish on its own — the
+ * machine-readable twin of the prose each `pause*` function records. A caller that
+ * has to tell these apart (Marathon: auto-resume `stepBudget`, but not
+ * `repeatedFailure`) reads this instead of pattern-matching the user-facing message.
+ */
+export type PauseReason =
+  | "limit"
+  | "stepBudget"
+  | "costTimeLimit"
+  | "repeatedFailure"
+  | "backgroundPoll"
+  | "reScope"
+  // A provider-level early stop (StopReason minus "end" — the same vocabulary
+  // `stopReasonNote` already renders), reused rather than duplicated: "refused" is a
+  // real block, "truncated"/"overloaded" are usually fine to just continue past.
+  | Exclude<StopReason, "end">;
+
 /** Lossless hand-back when the model finishes its task list and then starts a new
  *  one in the same turn (the re-scope guard) — a natural checkpoint to let the user
  *  steer instead of the model taking on scope it wasn't asked for. */
 function pauseReScope(session: Session, options: RespondOptions): string {
+  options.onPause?.("reScope");
   return endTurnWith(
     session,
     options,
@@ -2088,6 +2309,7 @@ function pauseReScope(session: Session, options: RespondOptions): string {
  *  to do but wait — end the turn cleanly instead of looping "still running" checks.
  *  Deliberately worded as a status line to the user, not a "paused" apology. */
 function pauseForBackgroundPoll(session: Session, options: RespondOptions): string {
+  options.onPause?.("backgroundPoll");
   return endTurnWith(
     session,
     options,
@@ -2101,6 +2323,7 @@ function pauseForBackgroundPoll(session: Session, options: RespondOptions): stri
  *  count, and its real working directory, and it still hasn't moved — so hand the wheel
  *  to the user rather than spend more steps on it. */
 function pauseForRepeatedFailure(session: Session, options: RespondOptions, errorOutput: string): string {
+  options.onPause?.("repeatedFailure");
   return endTurnWith(
     session,
     options,
@@ -2111,8 +2334,20 @@ function pauseForRepeatedFailure(session: Session, options: RespondOptions, erro
 }
 
 /** Record and return a clean, lossless pause reply (well-formed transcript) when a
- *  guard trips — step budget or a cost/time ceiling. Saying "continue" resumes. */
-function pauseTask(session: Session, options: RespondOptions, reason: string): string {
+ *  guard trips — step budget or a cost/time ceiling. Saying "continue" resumes.
+ *  `tag` tells the two apart for `onPause`; the prose reason stays a free string since
+ *  it already carries the exact number ("the step budget of 40 tool steps"). */
+function pauseTask(session: Session, options: RespondOptions, reason: string, tag: PauseReason): string {
+  options.onPause?.(tag);
+  // A usage limit is not something to argue with by saying "continue": it lifts on its own.
+  if (tag === "limit") {
+    return endTurnWith(
+      session,
+      options,
+      `(Paused — ${reason}. The task isn't finished, but nothing is lost: your progress, edits, and task ` +
+        `list are saved. Carry on once it opens.)`,
+    );
+  }
   return endTurnWith(
     session,
     options,
@@ -2174,6 +2409,17 @@ export function toCallRecord(u: Usage, model: string, at: number = Date.now()): 
   };
 }
 
+/**
+ * A finished model call counts toward the user's limits, and a window crossing 80% or 95%
+ * says so once, as a line in the conversation. Only the top-level turn speaks: a sub-agent's
+ * call is counted, and the parent's next call is what reports where things stand.
+ */
+function countUsage(session: Session, u: Usage, options: RespondOptions): void {
+  noteUsage(session.modelConfig.model, u);
+  if ((session.toolContext.subagentDepth ?? 0) > 0) return;
+  for (const line of takeLimitWarnings()) options.onActivity?.(`Usage limit: ${line}`);
+}
+
 /** Report a turn's token usage to the UI, if the provider returned it. */
 function emitUsage(result: StreamResult, options: RespondOptions): void {
   if (result.usage) {
@@ -2211,7 +2457,7 @@ async function sweepSessionMemory(session: Session, options: RespondOptions): Pr
     session.sessionMemoryInit ?? false,
   );
   if (!grown) return;
-  await updateSessionMemory(session);
+  await updateSessionMemory(session, options.signal);
   await options.persist?.(); // durable: the notes sidecar is written by the persister
 }
 
@@ -2244,12 +2490,41 @@ export function contextUsed(session: Session): number {
   return estimateEntriesTokens(session.transcript) + overhead;
 }
 
+/**
+ * The auto-compaction bar actually in force for this session: the user's own override
+ * (Settings > Usage > Context, or `/context limit`) if they set one — project first,
+ * then all-projects, per governor/index.ts's context.json — else Mindweave's own
+ * model-anchored default. The env var still wins over either, same as before this
+ * existed: it is the sandbox/CI escape hatch, not a user-facing setting.
+ */
+export function effectiveAutoCompactThreshold(session: Session): number {
+  // Optional chaining: a real session always has governance (loadGovernance runs at
+  // session start), but a hand-built test fixture may skip it, and a pure accessor
+  // shouldn't crash on that rather than just falling through to the model default.
+  const base = session.governance?.contextAutoCompactTokens ?? autoCompactThreshold(session.modelConfig.model);
+  return envInt("MINDWEAVE_AUTOCOMPACT_TOKENS", base);
+}
+
+/**
+ * How full the context is, against the bar auto-compaction fires at: what a front end
+ * draws as the context meter. The same numbers `maybeCompact` decides on, so a full meter
+ * and a compaction cannot disagree.
+ */
+export function contextFill(session: Session): { used: number; limit: number; window: number } {
+  return {
+    used: contextUsed(session),
+    limit: effectiveAutoCompactThreshold(session),
+    window: sharpContextWindow(session.modelConfig.model),
+  };
+}
+
 async function maybeCompact(session: Session, options: RespondOptions): Promise<void> {
   const model = session.modelConfig.model;
-  // Model-anchored bars (env still overrides), so the thresholds are right per model
-  // instead of a fixed number — and a longer/stronger model automatically gets more room.
+  // Model-anchored bars (env, then the user's own override, still win), so the
+  // thresholds are right per model instead of a fixed number — and a longer/stronger
+  // model automatically gets more room.
   const microBar = envInt("MINDWEAVE_MICROCOMPACT_TOKENS", microCompactThreshold(model));
-  const autoBar = envInt("MINDWEAVE_AUTOCOMPACT_TOKENS", autoCompactThreshold(model));
+  const autoBar = effectiveAutoCompactThreshold(session);
 
   // MCP tool schemas are sent on every turn but live OUTSIDE the transcript, so the bars
   // could not see them: a 30K-token catalog meant the model was 30K deeper into its real
@@ -2362,6 +2637,16 @@ export async function compactNow(session: Session, options: RespondOptions = {})
  */
 async function autocompact(session: Session, options: RespondOptions): Promise<void> {
   if (session.transcript.length === 0) return;
+  options.onCompactionStart?.();
+  try {
+    await summarizeAndSplice(session, options);
+  } finally {
+    options.onCompactionEnd?.();
+  }
+}
+
+/** The body of `autocompact`: the notes when they cover the prefix, else the summarizer. */
+async function summarizeAndSplice(session: Session, options: RespondOptions): Promise<void> {
   // Measured BEFORE the summarizer runs, with the same arithmetic the thresholds use,
   // so the bar the user sees is the number the system actually acted on.
   const before = contextUsed(session);
@@ -2392,11 +2677,11 @@ async function autocompact(session: Session, options: RespondOptions): Promise<v
     session.transcript,
     session.sessionMemory,
     session.sessionMemoryEntries,
-    envInt("MINDWEAVE_AUTOCOMPACT_TOKENS", autoCompactThreshold(session.modelConfig.model)),
+    effectiveAutoCompactThreshold(session),
     contextUsed(session) - estimateEntriesTokens(session.transcript),
   );
   if (fromNotes) {
-    session.transcript = fromNotes.entries;
+    replaceTranscript(session, fromNotes.entries);
     // The notes now describe everything before the tail they were spliced in front of.
     session.sessionMemoryEntries = 1;
     session.sessionMemoryTokens = estimateEntriesTokens(session.transcript);
@@ -2407,15 +2692,31 @@ async function autocompact(session: Session, options: RespondOptions): Promise<v
   let summary: string;
   try {
     // Summaries don't need reasoning — use the chosen model with thinking off.
-    const turn = await activeDriver().toolTurn({
-      system: SUMMARY_SYSTEM_PROMPT,
-      messages: [
-        {
-          role: "user",
-          content: `${formatTranscriptForSummary(session.transcript)}\n\n${summaryRequest(options.compactFocus)}`,
-        },
-      ],
-      model: { ...session.modelConfig, thinking: false },
+    // With reasoning off where the model allows it; see auxModel.ts.
+    //
+    // `ensureDriver` here, not just at the top of the turn: a sub-agent (or another
+    // background aux call) can run its OWN model in between and leaves `activeDriver()`
+    // pointed at THAT provider, which is a plain global, not scoped to this session. A
+    // compaction landing after one then handed this session's model string to the
+    // wrong provider's API, which correctly refused it as a model it had never heard
+    // of ("Unknown Model, please check the model code.") — same failure shape as the
+    // model call sites in respondTurn, which is why only THIS one call was missing it.
+    //
+    // `withTools`: a real (read-only) tool set, attached only if the model already
+    // refused a bare call — see auxModel.ts for why some free models require it.
+    const turn = await withAuxModel(session.modelConfig, async (model, withTools) => {
+      await ensureDriver(model.model);
+      return activeDriver().toolTurn({
+        system: SUMMARY_SYSTEM_PROMPT,
+        messages: [
+          {
+            role: "user",
+            content: `${formatTranscriptForSummary(session.transcript)}\n\n${summaryRequest(options.compactFocus)}`,
+          },
+        ],
+        model,
+        ...(withTools ? { tools: toolSchemas({ readOnlyOnly: true }) } : {}),
+      }, { signal: options.signal });
     });
     // The reply is untrusted: a cut-off or all-scratchpad summary must not be allowed
     // to replace the conversation. See usableSummary.
@@ -2423,11 +2724,30 @@ async function autocompact(session: Session, options: RespondOptions): Promise<v
     // is what keeps the meter honest: a turn that happened to trip the bar spends
     // a whole extra summarisation call, and leaving that out made the figure short
     // by exactly the work nobody could see.
-    if (turn.usage) options.onEvent?.({ type: "usage", ...turn.usage });
+    if (turn.usage) {
+      options.onEvent?.({ type: "usage", ...turn.usage });
+      countUsage(session, turn.usage, options);
+    }
     const usable = usableSummary(turn.content, turn.stop);
     if (!usable) return void fail(turn.stop && turn.stop !== "end" ? `the summary came back ${turn.stop}` : "the summary was unusable");
     summary = usable;
   } catch (error) {
+    // Stopped by the user: not a failed compaction, so nothing to count or report.
+    if (options.signal?.aborted) return;
+    // Some free OpenRouter models gate on the CALLING APP's identity, not the shape of
+    // any one request — real tool schemas (withAuxModel's retry, above) genuinely fix a
+    // model that just needs a non-empty `tools` array, but this specific refusal was
+    // confirmed live to survive that retry too: OpenRouter's own error names the cause
+    // as `"failed_routing_step":"Gate Free Endpoints by Agentic Harness"`, which nothing
+    // Mindweave sends in a request can satisfy. Say so plainly instead of surfacing the
+    // provider's raw JSON, which reads as a Mindweave bug rather than a model limit.
+    if (isAgenticOnlyRefusal(error)) {
+      return void fail(
+        `${session.modelConfig.model} won't serve Mindweave's background calls — some free OpenRouter models restrict ` +
+          `themselves to specific recognised apps, and switching what a request sends can't change that. Pick a ` +
+          `different model for this project, or expect compaction and session notes to stay off on this one.`,
+      );
+    }
     return void fail(providerMessage(detailOf(error)) || "the summarizer call failed");
   }
 
@@ -2435,7 +2755,7 @@ async function autocompact(session: Session, options: RespondOptions): Promise<v
   // Nothing re-injects them: the working-set block that used to do so was removed for
   // costing up to 12K per model call. The model re-reads what it still needs, which
   // read_file allows because the summary also clears the presence set the dedup checks.
-  session.transcript = spliceSummary(session.transcript, summary, KEEP_LAST_N);
+  replaceTranscript(session, spliceSummary(session.transcript, summary, KEEP_LAST_N));
   // The notes no longer describe the transcript they were measured against, and the
   // summary now covers everything before the kept tail.
   session.sessionMemoryEntries = 1;
@@ -2456,6 +2776,12 @@ async function finishCompaction(session: Session, options: RespondOptions, befor
   session.compactFailures = 0; // a clean compaction resets the breaker
 
   await restoreAfterCompaction(session);
+
+  // What is still running, said right after the summary: the summary is history, and
+  // may not mention a dev server that is still up or an app still open for testing,
+  // and a model that does not know starts them again.
+  const live = liveStateNote(session.toolContext.backgroundShells?.running() ?? [], uiLiveState(session.toolContext));
+  if (live) session.transcript.splice(1, 0, { role: "user", content: live, synthetic: true });
 
   // Re-read the governor unconditionally here. The prompt is being rebuilt from scratch
   // at this point, so it is the natural moment to rebuild what it is made of — and it is
@@ -2485,6 +2811,30 @@ async function finishCompaction(session: Session, options: RespondOptions, befor
 }
 
 /**
+ * The note put after a compaction about what is still running, or null when nothing is
+ * (pure). Background commands are listed with the ports they are listening on, so a
+ * model that has lost the history does not start a second dev server; an app open for
+ * testing is named, with the instruction to look before acting.
+ */
+export function liveStateNote(shells: ShellInfo[], ui: string | null, now: number = Date.now()): string | null {
+  const lines: string[] = [];
+  for (const sh of shells) {
+    const mins = Math.max(0, Math.round((now - sh.startedAt) / 60_000));
+    const ports = sh.listening?.length ? sh.listening : sh.port ? [sh.port] : [];
+    lines.push(
+      `- Background shell #${sh.id} (\`${sh.command}\`): running for ${mins < 1 ? "under a minute" : `${mins} min`}` +
+        `${ports.length ? `, listening on port ${ports.join(", ")}` : ""}.`,
+    );
+  }
+  if (ui) lines.push(`- ${ui}`);
+  if (lines.length === 0) return null;
+  return (
+    `[Still running after the compaction. This is the live state now, not history.]\n${lines.join("\n")}\n` +
+    `Do not start any of these again: they are already running. Use shells to check one, kill_shell to stop it.`
+  );
+}
+
+/**
  * Reconcile the read ledger with the transcript, and put the working files back.
  *
  * Order matters and is the whole design. The ledger is SNAPSHOTTED, then CLEARED, then
@@ -2511,9 +2861,7 @@ async function restoreAfterCompaction(session: Session): Promise<void> {
   // The correctness half. Unconditional, and before anything that can throw.
   reads.clear();
 
-  const budget = restoreBudgetFor(
-    envInt("MINDWEAVE_AUTOCOMPACT_TOKENS", autoCompactThreshold(session.modelConfig.model)),
-  );
+  const budget = restoreBudgetFor(effectiveAutoCompactThreshold(session));
   if (budget <= 0) return;
 
   // What the kept tail still shows. Re-sending a file the model can already see costs

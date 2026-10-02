@@ -12,7 +12,7 @@ import { join } from "node:path";
 import type { ToolContext } from "../tools/types.js";
 import { resolvePath, nextTouch, canonicalRoot } from "../tools/paths.js";
 import type { Session, Entry } from "./types.js";
-import { latestSession, listSessions, loadMeta, loadTranscript, loadSessionNotes } from "./store.js";
+import { checkpointDir, latestSession, listSessions, loadEarlier, loadMeta, loadTranscript, loadSessionNotes } from "./store.js";
 import { fullReadPaths, writtenPaths } from "./presence.js";
 import { startChassis } from "../alternator/lane.js";
 import { BackgroundShells } from "../tools/backgroundShells.js";
@@ -199,6 +199,9 @@ export function forkSession(parent: Session, task: string, opts: { readOnly?: bo
     // of a verifier is not itself a verifier, and silently carrying the persona down would
     // make every descendant refuse to write.
     agentPrompt: opts.agentPrompt,
+    // A child testing an app does not stream into the parent's view: its steps are drawn
+    // in its own place, and frames with nowhere to go would only be copied for nothing.
+    onLive: undefined,
     // CLEARED, not inherited. This line used to copy the parent's value under a
     // comment claiming it cleared it, and the engine's gate is
     // `guarded && !guardAllowed.has(tool)` — so an inherited grant skipped the check
@@ -295,6 +298,8 @@ export async function createSession(
   const toolContext = freshToolContext(cwd, governance, [cwd, ...extra]);
   // So the session tools can exclude this conversation from "your past sessions".
   toolContext.sessionId = id;
+  // Undo history is written next to the session, so it survives closing the app.
+  toolContext.checkpoints?.persistTo(checkpointDir(cwd, id));
   attachMcp(toolContext, cwd);
   await seedProjectMemoryRead(toolContext, projectMemory);
   return {
@@ -387,7 +392,11 @@ export function repairToolCallOrder(transcript: Entry[]): Entry[] {
   return moved ? out : transcript;
 }
 
-export function reconcileInterruptedTools(transcript: Entry[]): Entry[] {
+export function reconcileInterruptedTools(
+  transcript: Entry[],
+  /** Why the results are missing, as the model is told. Defaults to the session having been closed. */
+  why = "the session was closed before this tool returned",
+): Entry[] {
   const answered = new Set<string>();
   for (const e of transcript) if (e.role === "tool") answered.add(e.toolCallId);
 
@@ -404,10 +413,10 @@ export function reconcileInterruptedTools(transcript: Entry[]): Entry[] {
           role: "tool",
           toolCallId: call.id,
           content:
-            `[interrupted] '${call.name}' did not finish — the session was closed before this tool ` +
-            `returned, so its effect on disk/state is unknown. Re-check the current state (files, ` +
+            `[interrupted] '${call.name}' did not finish — ${why}, ` +
+            `so its effect on disk/state is unknown. Re-check the current state (files, ` +
             `processes, installs) before relying on it or running it again.`,
-          summary: `${call.name} — interrupted (session closed)`,
+          summary: `${call.name} — interrupted`,
           isError: true,
         });
       }
@@ -432,7 +441,7 @@ export async function resumeSession(
   // message, so it must see a group that is already contiguous.
   const transcript = reconcileInterruptedTools(repairToolCallOrder(loaded));
 
-  const [projectMemory, memoryIndex, projectContext, governance, stamp, modelConfig, sessionMemory, saved] =
+  const [projectMemory, memoryIndex, projectContext, governance, stamp, modelConfig, sessionMemory, saved, earlier] =
     await Promise.all([
       loadProjectMemory(cwd),
       loadMemory(cwd),
@@ -442,15 +451,18 @@ export async function resumeSession(
       loadModelConfig(cwd),
       loadSessionNotes(cwd, meta.id),
       listSessions(cwd),
+      loadEarlier(cwd, meta.id),
     ]);
   // Restore any added roots that still exist on disk (primary first).
   const extra = (meta.extraRoots ?? []).filter((r) => existsSync(r));
   const roots = [cwd, ...extra];
   const toolContext = freshToolContext(cwd, governance, roots);
-  // Undo history is in-memory, so a resumed session starts with none even though the
-  // earlier turns really did change files. Marking it lets /undo explain that rather
-  // than claim nothing has happened.
-  toolContext.checkpoints?.noteResumed();
+  // Undo history was written next to the session; bring it back. A session from before
+  // that existed (or one whose history was pruned) has none even though its turns really
+  // did change files, and marking it lets /undo and rewind say so rather than claim
+  // nothing happened.
+  const kept = (await toolContext.checkpoints?.restoreFrom(checkpointDir(cwd, meta.id))) ?? 0;
+  if (kept === 0) toolContext.checkpoints?.noteResumed();
   toolContext.sessionId = meta.id;
   // Re-advertise the deferred tools this session had already surfaced, so a continued
   // session keeps them callable instead of stripping a tool the model was mid-use of.
@@ -473,6 +485,8 @@ export async function resumeSession(
     memoryIndex,
     // The session being resumed is not "prior" to itself.
     priorSessions: Math.max(0, saved.filter((m) => m.id !== meta.id).length),
+    // What compaction took out, for redrawing the chat only (memory/earlier.ts).
+    ...(earlier.length > 0 ? { earlier } : {}),
     projectContext,
     governance,
     // Stamped at load so the first turn's freshness check settles instead of reloading
@@ -494,6 +508,13 @@ export async function resumeSession(
     // what happened, and what happened does not stop being true.
     ...(meta.spend ? { spend: meta.spend } : {}),
     ...(meta.callLog ? { callLog: meta.callLog } : {}),
+    // A measurement of this session, true after a resume as long as the model is the
+    // same (the engine checks that before using it). Without it a reopened session read
+    // as nearly empty until its first call.
+    ...(meta.contextOverhead ? { contextOverhead: meta.contextOverhead } : {}),
+    // A goal in progress (or its outcome) is a fact about the session, same as spend —
+    // resuming must not silently drop it, or a Marathon paused by a restart just vanishes.
+    ...(meta.marathon ? { marathon: meta.marathon } : {}),
   };
 }
 
@@ -519,6 +540,19 @@ export async function resumeSession(
  * session was last saved. The failure direction is the safe one: a file that changed
  * while away is re-read, exactly as it is today.
  */
+/**
+ * Make the read ledger agree with the transcript again, after the transcript was cut
+ * back (a rewind). The same restore a resume does: a file counts as read only if the
+ * conversation still holds that read and nothing changed the file since. Entries with
+ * no stamp are judged against 0, so an unknown read is re-read rather than trusted.
+ */
+export async function rebuildReadLedger(session: Session): Promise<void> {
+  const ctx = session.toolContext;
+  ctx.reads.clear();
+  await seedProjectMemoryRead(ctx, session.projectMemory);
+  await restoreReadLedger(ctx, session.transcript, 0);
+}
+
 async function restoreReadLedger(ctx: ToolContext, transcript: Entry[], savedAt: number): Promise<void> {
   const resolve = (p: string): string | undefined => {
     try {

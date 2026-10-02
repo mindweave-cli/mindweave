@@ -24,6 +24,7 @@
  * Client-side, like the alternator lanes: it holds live process handles, never
  * crosses the engine↔brain wire. All children are killed on process exit.
  */
+import { listListeners, ownerOf, parentMap } from "./listeningPorts.js";
 import { promises as fs } from "node:fs";
 import type { ChildProcess } from "node:child_process";
 import { killTree, killTreeSync } from "./killTree.js";
@@ -83,6 +84,8 @@ function envMs(name: string, fallback: number): number {
 
 /** How often the stall watchdog scans running shells. */
 const STALL_CHECK_MS = envMs("MINDWEAVE_STALL_CHECK_MS", 5_000);
+/** How often the running shells are checked for ports their processes opened. */
+const PORT_WATCH_MS = envMs("MINDWEAVE_PORT_WATCH_MS", 3_000);
 /**
  * A backgrounded command that has printed nothing for this long AND whose last line
  * looks like an interactive prompt is treated as blocked on input. Sooner than the
@@ -145,7 +148,7 @@ export type NotifyPolicy = "on_finish" | "on_failure" | "never";
 export type StopActor = "agent" | "user" | "system";
 
 /** The things that can be worth telling the model about a background shell. */
-export type ShellEventKind = "ready" | "ended" | "stalled";
+export type ShellEventKind = "ready" | "ended" | "stalled" | "opened";
 
 /** Why a running shell was flagged as stalled — a prompt it is blocked on, or just
  *  silence from a command that was expected to keep working. */
@@ -293,6 +296,8 @@ export interface ShellInfo {
    *  Read from the buffer, never guessed — a dev server prints where it is listening,
    *  and that line is the only thing that actually knows. */
   port?: number;
+  /** Ports its processes have been seen listening on (watched, not read from output). */
+  listening?: number[];
   /** What this shell's caller asked to be told about. */
   notify: NotifyPolicy;
   /** Who stopped it, when somebody did. Absent means it ended on its own — which is
@@ -377,6 +382,12 @@ interface Entry extends ShellInfo {
   pollTimer: ReturnType<typeof setInterval> | null;
   cwdFile?: string;
   tempFile?: string;
+  /** Ports it has opened, once confirmed (seen on two scans in a row). */
+  portsSeen: Set<number>;
+  /** Ports seen once, waiting for a second scan: port → when first seen. */
+  portCandidates: Map<number, number>;
+  /** Opened ports the model has not been told about yet. */
+  openedPending: number[];
 }
 
 const active = new Set<BackgroundShells>();
@@ -400,6 +411,7 @@ export class BackgroundShells {
     private readonly exitGraceMs = EXIT_GRACE_MS,
     private readonly stallPromptMs = STALL_PROMPT_MS,
     private readonly stallSilentMs = STALL_SILENT_MS,
+    private readonly portWatchMs = PORT_WATCH_MS,
   ) {
     active.add(this);
     registerCleanup();
@@ -408,6 +420,94 @@ export class BackgroundShells {
     // otherwise, and surfaces only when it finally times out. This scans for that.
     this.stallTimer = setInterval(() => this.checkStalls(), STALL_CHECK_MS);
     this.stallTimer.unref?.();
+  }
+
+  /**
+   * The port watch. A background command's own events are coming up (a server alive
+   * past its startup grace), ending and stalling, and none of them is "the app it was
+   * building has opened". A Tauri build announces its dev server long before the app
+   * itself exists; an agent that ends its turn to wait for the app then waits for an
+   * event that never comes. What the app DOES do when it opens is listen on a port (its
+   * dev server, its debugging port), so the running shells are watched for ports their
+   * own processes open, and a new one is news worth waking the agent for.
+   */
+  private portTimer: ReturnType<typeof setInterval> | null = null;
+  private portBusy = false;
+  /** Listening process → the shell it descends from (null: not ours). Traced once. */
+  private portOwners = new Map<number, number | null>();
+
+  private startPortWatch(): void {
+    if (this.portTimer || this.portWatchMs <= 0) return;
+    this.portTimer = setInterval(() => void this.checkPorts(), this.portWatchMs);
+    this.portTimer.unref?.();
+  }
+
+  /**
+   * One scan for ports the running shells' processes opened. `source` is injectable for
+   * tests; production uses the operating system's own listing.
+   *
+   * A port has to be seen on two scans in a row before it counts, so a port open for a
+   * moment (a test suite's throwaway server) is not announced as an app coming up. For
+   * a server still inside its startup grace, a confirmed port IS it coming up, sooner
+   * than the grace would say; for anything else it is an "opened" event.
+   */
+  async checkPorts(source: { listListeners: typeof listListeners; parentMap: typeof parentMap } = { listListeners, parentMap }): Promise<void> {
+    if (this.portBusy) return;
+    const running = [...this.shells.values()].filter((e) => e.status === "running" && e.child?.pid && e.notify !== "never");
+    if (running.length === 0) {
+      if (this.portTimer) {
+        clearInterval(this.portTimer);
+        this.portTimer = null;
+      }
+      return;
+    }
+    this.portBusy = true;
+    try {
+      const listeners = await source.listListeners();
+      const live = new Set(listeners.map((l) => l.pid));
+      for (const pid of this.portOwners.keys()) if (!live.has(pid)) this.portOwners.delete(pid);
+      const untraced = listeners.filter((l) => !this.portOwners.has(l.pid));
+      if (untraced.length) {
+        const parents = await source.parentMap();
+        const roots = new Map(running.map((e) => [e.child!.pid!, e.id]));
+        const rootSet = new Set(roots.keys());
+        for (const l of untraced) {
+          const root = ownerOf(l.pid, parents, rootSet);
+          this.portOwners.set(l.pid, root === null ? null : roots.get(root)!);
+        }
+      }
+      let changed = false;
+      const now = Date.now();
+      for (const l of listeners) {
+        const id = this.portOwners.get(l.pid);
+        if (id === null || id === undefined) continue;
+        const entry = this.shells.get(id);
+        if (!entry || entry.status !== "running" || entry.portsSeen.has(l.port)) continue;
+        if (!entry.portCandidates.has(l.port)) {
+          entry.portCandidates.set(l.port, now);
+          continue;
+        }
+        entry.portCandidates.delete(l.port);
+        entry.portsSeen.add(l.port);
+        if (entry.notify === "on_failure" && !entry.readyReported) {
+          // Not yet told it is up: that note says it, with every port it has opened by
+          // then, so a port opening meanwhile is not a second note about the same moment.
+          if (entry.readyTimer) {
+            clearTimeout(entry.readyTimer);
+            entry.readyTimer = null;
+          }
+          entry.ready = true;
+        } else {
+          entry.openedPending.push(l.port);
+        }
+        changed = true;
+      }
+      if (changed) this.emit();
+    } catch {
+      // A scan that fails says nothing; the next one tries again.
+    } finally {
+      this.portBusy = false;
+    }
   }
 
   /** Subscribe to state changes (start / finish / kill) — the UI re-renders. */
@@ -447,6 +547,9 @@ export class BackgroundShells {
       pollTimer: null,
       cwdFile: opts.cwdFile,
       tempFile: opts.tempFile,
+      portsSeen: new Set(),
+      portCandidates: new Map(),
+      openedPending: [],
     };
     this.shells.set(id, entry);
     if (opts.outputPath) {
@@ -462,6 +565,8 @@ export class BackgroundShells {
       child.stdout?.on("data", collect);
       child.stderr?.on("data", collect);
     }
+
+    if (entry.notify !== "never") this.startPortWatch();
 
     // The readiness signal. A server that is still alive after the startup grace has
     // come up, and that is the one positive event worth reporting for something that
@@ -575,7 +680,9 @@ export class BackgroundShells {
   ): void {
     if (entry.status !== "running") return;
     entry.status = killed ? "killed" : "exited";
-    entry.exitCode = code;
+    // Windows hands a negative exit code back unsigned (-1 arrives as 4294967295), the
+    // same correction run_command makes for a command in the foreground.
+    entry.exitCode = code !== null && code > 0x7fffffff ? code - 0x100000000 : code;
     if (signal) entry.signal = signal;
     entry.finishedAt = Date.now();
     entry.child = null;
@@ -626,6 +733,70 @@ export class BackgroundShells {
     this.emit();
   }
 
+  /**
+   * Watch a shell that was JUST started, for a few seconds, and say what became of it.
+   *
+   * It exists for apps and servers. The old way was to hand the model "started" and let it end
+   * its turn, then wake it ten seconds later with "it came up". Two replies for one launch, the
+   * second often repeating the first, and the user looking at an open window for several seconds
+   * before the agent noticed. Waiting here, inside the call that started it, lets the one reply
+   * be written knowing the outcome.
+   *
+   *   up       still alive when `ms` ran out, or a port was seen listening: it came up
+   *   ended    it exited inside the window: it never came up, and the output says why
+   *   aborted  the turn was interrupted while waiting
+   *
+   * Whichever it is, the model is being told RIGHT NOW in the tool result, so the matching
+   * background note is marked as told. Left unmarked, the model would hear the same news a
+   * second time and reply to it, which is the duplicate this was written to remove.
+   */
+  async settle(
+    id: number,
+    ms: number,
+    signal?: AbortSignal,
+  ): Promise<{ outcome: "up" | "ended" | "aborted"; info: ShellInfo; output: string } | null> {
+    const entry = this.shells.get(id);
+    if (!entry) return null;
+    const deadline = Date.now() + Math.max(0, ms);
+    let outcome: "up" | "ended" | "aborted" = "up";
+    for (;;) {
+      if (signal?.aborted) {
+        outcome = "aborted";
+        break;
+      }
+      // Exited, and not merely about to be finalized: the process object knows before the
+      // manager's own bookkeeping does, which waits for the pipes to close.
+      if (entry.status !== "running" || (entry.child && entry.child.exitCode !== null)) {
+        outcome = "ended";
+        break;
+      }
+      if (entry.portsSeen.size > 0 || Date.now() >= deadline) break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    // Let the last of its output reach the buffer before it is read.
+    if (outcome === "ended") {
+      const end = Date.now() + this.exitGraceMs + 500;
+      while (entry.status === "running" && Date.now() < end) await new Promise((r) => setTimeout(r, 25));
+    }
+    const fresh = entry.reader ? await entry.reader.next(POLL_READ_BYTES) : "";
+    if (fresh) this.append(entry, fresh);
+    const output = stripNativeStderrNoise(entry.seen.slice(Math.max(0, entry.seen.length - TAIL_CHARS)));
+    // What was just handed over is not handed over again.
+    entry.notifiedUpto = entry.seen.length;
+    if (outcome === "up") {
+      entry.ready = true;
+      entry.readyReported = true;
+      if (entry.readyTimer) {
+        clearTimeout(entry.readyTimer);
+        entry.readyTimer = null;
+      }
+      this.emit();
+    } else if (outcome === "ended") {
+      entry.reported = true;
+    }
+    return { outcome, info: view(entry), output };
+  }
+
   /** New output since the last read of this shell, plus its current status. */
   async read(id: number): Promise<{ info: ShellInfo; chunk: string } | null> {
     const entry = this.shells.get(id);
@@ -641,6 +812,23 @@ export class BackgroundShells {
       chunk = `… (earlier output omitted)\n${chunk.slice(chunk.length - MAX_READ_CHARS)}`;
     }
     return { info: view(entry), chunk };
+  }
+
+  /**
+   * The last `maxChars` of a shell's output, for a UI showing the log beside the chat.
+   *
+   * Unlike `read`, this does NOT move the handed-out position: the agent's next `read`
+   * still gets everything it has not seen. A user glancing at the log must never make the
+   * agent miss the output that says the build failed.
+   */
+  async peek(id: number, maxChars = 8_000): Promise<{ info: ShellInfo; tail: string; clipped: boolean } | null> {
+    const entry = this.shells.get(id);
+    if (!entry) return null;
+    const fresh = entry.reader ? await entry.reader.next(POLL_READ_BYTES) : "";
+    if (fresh) this.append(entry, fresh);
+    const all = stripNativeStderrNoise(entry.seen);
+    const clipped = all.length > maxChars || entry.truncated === true;
+    return { info: view(entry), tail: all.length > maxChars ? all.slice(all.length - maxChars) : all, clipped };
   }
 
   /**
@@ -680,7 +868,8 @@ export class BackgroundShells {
       (e) =>
         (e.status !== "running" && !e.reported && e.wakeOnEnd) ||
         (e.ready && !e.readyReported) ||
-        (e.stallReason !== undefined && !e.stallReported),
+        (e.stallReason !== undefined && !e.stallReported) ||
+        (e.status === "running" && e.openedPending.length > 0),
     ).length;
   }
 
@@ -717,9 +906,9 @@ export class BackgroundShells {
    * don't slowly eat the context window, and it must survive any change here.
    */
   async drainEvents(): Promise<
-    { info: ShellInfo; kind: ShellEventKind; tail: string; wake: boolean }[]
+    { info: ShellInfo; kind: ShellEventKind; tail: string; wake: boolean; ports?: number[] }[]
   > {
-    const out: { info: ShellInfo; kind: ShellEventKind; tail: string; wake: boolean }[] = [];
+    const out: { info: ShellInfo; kind: ShellEventKind; tail: string; wake: boolean; ports?: number[] }[] = [];
     // The DELTA since this shell was last mentioned, not the last N characters of
     // everything. Cutting from the end re-sends output the model has already read the
     // moment a shell produces two events (came up, then ended), which is the same class
@@ -746,6 +935,14 @@ export class BackgroundShells {
       if (entry.ready && !entry.readyReported) {
         entry.readyReported = true;
         out.push({ info: view(entry), kind: "ready", tail: takeDelta(), wake: true });
+        emitted = true;
+      }
+      // It opened a port after it had already come up (or it is a command only reported
+      // at its end): the app it was building has opened. Not for one that has ended since,
+      // which says so itself.
+      if (entry.openedPending.length && entry.status === "running") {
+        const ports = entry.openedPending.splice(0);
+        out.push({ info: view(entry), kind: "opened", tail: takeDelta(), wake: true, ports });
         emitted = true;
       }
       if (entry.stallReason !== undefined && !entry.stallReported) {
@@ -804,6 +1001,10 @@ export class BackgroundShells {
       clearInterval(this.stallTimer);
       this.stallTimer = null;
     }
+    if (this.portTimer) {
+      clearInterval(this.portTimer);
+      this.portTimer = null;
+    }
     active.delete(this);
   }
 
@@ -828,6 +1029,7 @@ function view(e: Entry): ShellInfo {
     ...(e.truncated ? { truncated: true } : {}),
     ...(e.stallReason ? { stallReason: e.stallReason } : {}),
     ...(detectPort(e.seen) !== undefined ? { port: detectPort(e.seen) } : {}),
+    ...(e.portsSeen.size ? { listening: [...e.portsSeen] } : {}),
   };
 }
 

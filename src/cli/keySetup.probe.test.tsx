@@ -10,7 +10,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import React from "react";
 import { render } from "ink";
-import { KeySetup } from "./components/KeySetup.js";
+import { KeySetup, layoutFor } from "./components/KeySetup.js";
 import { setupView } from "./keySetup.js";
 import { allProviders } from "../drivers/registry.js";
 import { readFileSync } from "node:fs";
@@ -95,7 +95,7 @@ test("the screen never exceeds the terminal, and says what is off it", () => {
   // Thirteen providers plus the welcome, the tips and Continue do not fit a short
   // window, and Continue lives at the BOTTOM — clipping it would hide the way out. The
   // list shrinks to the height available instead.
-  for (const rows of [24, 30, 50]) {
+  for (const rows of [20, 24, 26, 30, 34, 38, 40, 50]) {
     const out = frameAt(rows);
     const lines = out.split(String.fromCharCode(10)).length - 1;
     assert.ok(lines <= rows, `at ${rows} rows the screen rendered ${lines} and will be clipped`);
@@ -104,11 +104,42 @@ test("the screen never exceeds the terminal, and says what is off it", () => {
   assert.match(frameAt(24), /more below/, "providers are cut off with nothing saying so");
 });
 
+test("a normal terminal shows EVERY provider at once, not the first nine", () => {
+  // The list was capped at nine rows, so with sixteen providers on the books a new user saw
+  // a slice and reasonably concluded the rest were not supported. When the height allows,
+  // all of them are on screen; the welcome tips give way before any provider does.
+  const keyed = allProviders().filter((p) => !p.local);
+  for (const rows of [38, 40, 50]) {
+    const out = frameAt(rows);
+    for (const p of keyed) assert.ok(out.includes(p.label), `${p.label} is not on screen at ${rows} rows`);
+    assert.doesNotMatch(out, /more below|more above/, `at ${rows} rows the list still scrolls`);
+  }
+  // A shorter terminal that cannot hold them all drops the tips first, and lists as many as fit.
+  const mid = frameAt(34);
+  for (const p of keyed) assert.ok(mid.includes(p.label), `${p.label} is not on screen at 34 rows`);
+  assert.doesNotMatch(mid, /Esc to quit|four tips/i);
+});
+
+test("layoutFor: all providers when they fit, scrolling only when they cannot", () => {
+  assert.deepEqual(layoutFor(50, 15, true), { win: 15, tips: true });
+  assert.equal(layoutFor(34, 15, true).win, 15);
+  assert.equal(layoutFor(34, 15, true).tips, false, "tips must give way before providers do");
+  const short = layoutFor(24, 15, true);
+  assert.ok(short.win < 15 && short.win >= 4, "a short terminal scrolls a bounded window");
+  assert.equal(layoutFor(24, 15, false).win >= 4, true);
+});
+
+test("a first run tells Ollama users they need no key", () => {
+  assert.match(frameAt(40), /Ollama needs no key/);
+});
+
 test("every provider is reachable by name somewhere in setup", () => {
   // Not all at once — the list scrolls — but the LIST must contain them all.
+  // A local runtime (Ollama) takes no key, so it is no row to fill in.
+  const keyed = allProviders().filter((p) => !p.local);
   const view = setupView(() => false);
-  assert.equal(view.rows.length, allProviders().length);
-  for (const p of allProviders()) {
+  assert.equal(view.rows.length, keyed.length);
+  for (const p of keyed) {
     assert.ok(view.rows.some((r) => r.label === p.label && r.envVar === p.apiKeyEnv), `${p.label} is missing`);
   }
 });

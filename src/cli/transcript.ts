@@ -148,7 +148,9 @@ export interface TranscriptState {
 export type Action =
   | { type: "user"; text: string }
   | { type: "token"; delta: string }
-  | { type: "toolStart"; toolId: string; name: string; arg?: string; meta?: string; action?: ToolKind; group?: boolean; covers?: number }
+  /** `at`: when the call really started. The row can reach the screen a beat later, and a
+   *  running command counts its time from the start, not from when it was shown. */
+  | { type: "toolStart"; toolId: string; name: string; arg?: string; meta?: string; action?: ToolKind; group?: boolean; covers?: number; at?: number }
   /** Output from a call that has NOT finished, so a command running for minutes says
    *  what it is doing instead of sitting silent. Carries the latest tail rather than an
    *  increment: the row replaces what it shows, so a dropped update costs nothing and
@@ -417,7 +419,7 @@ export function reduce(s: TranscriptState, a: Action): TranscriptState {
           meta: a.meta,
           action: a.action,
           status: "running",
-          startedAt: Date.now(),
+          startedAt: a.at ?? Date.now(),
         }),
       });
     }

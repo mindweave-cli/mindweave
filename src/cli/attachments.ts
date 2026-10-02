@@ -217,6 +217,38 @@ export function stripAttachments(content: string): string {
     .trimEnd();
 }
 
+/** The files a message carried in full (its `<attached_file>` blocks), as absolute
+ *  paths, so a front end can show each one as a card to open. Read from the message
+ *  itself, so a reopened session shows the same cards the live one did. */
+export function attachedFiles(content: string, cwd: string): string[] {
+  const out: string[] = [];
+  for (const m of content.matchAll(/<attached_file path="([^"]*)">\n/g)) {
+    const abs = isAbsolute(m[1]) ? m[1] : resolve(cwd, m[1]);
+    if (!out.includes(abs)) out.push(abs);
+  }
+  return out;
+}
+
+/**
+ * The chat shows attached images and files as their own cards, so their names are
+ * dropped from the text beside them (the model still gets the names; this is display
+ * only). Only a line made up entirely of file names goes (the line the app appends for
+ * attachments); a name the person typed inside a sentence stays.
+ */
+export function hideAttachedNames(text: string, paths: readonly string[]): string {
+  if (!paths.length) return text;
+  const names = paths.map((p) => p.split(/[\\/]/).pop() ?? p);
+  const lines = text.split("\n").map((line) => {
+    let rest = line;
+    for (const name of names) rest = rest.split(name).join(" ");
+    if (rest === line) return line;
+    // What's left must be other attached file names (a.ts, notes.md) or nothing.
+    const others = rest.trim().split(/\s+/).filter(Boolean);
+    return others.every((t) => /^[^\s]+\.[A-Za-z0-9]{1,8}$/.test(t)) ? others.join(" ") : line;
+  });
+  return lines.join("\n").replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
 /** The line that tells the model where an attached image lives on disk. */
 export function imageSourceLine(path: string): string {
   return `[Image source: ${path}]`;

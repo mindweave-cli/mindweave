@@ -283,14 +283,24 @@ test("a non-Error thrown value still produces a usable result", () => {
   }
 });
 
-test("the tool call site catches faults but lets an interrupt through", () => {
+test("the tool call site turns faults AND interrupts into results, and an interrupt is not called a fault", () => {
   const body = engineSource.match(/const runCall = async \([\s\S]*?\n    \};/)?.[0];
   assert.ok(body, "runCall not found — did it get renamed?");
   assert.match(body, /try \{[\s\S]*?result = await tool\.execute\(/, "execute must be guarded");
   assert.match(body, /toolFailureResult\(call\.name, error\)/, "and a fault must become a result");
-  // Esc is the user, not a fault. Swallowing it here would report a broken tool
-  // instead of an interruption, and the loop would carry on after a cancel.
-  assert.match(body, /if \(isAbort\(error\)\) throw error;/, "an abort must still travel");
+  // Esc is the user, not a fault: it must not be reported as a broken tool. It is also not
+  // allowed to travel out of the loop, because the assistant message carrying these calls is
+  // already saved and a throw leaves them unanswered, which makes every later request in the
+  // session malformed. So it becomes its own kind of result.
+  const abort = body.match(/if \(isAbort\(error\)\) \{[\s\S]*?\n        \}/)?.[0];
+  assert.ok(abort, "an abort must be handled where the call runs");
+  assert.doesNotMatch(abort, /throw error/, "an abort must not travel out and strand the saved tool calls");
+  assert.match(abort, /summary: "interrupted"/, "and it is reported as an interruption");
+  assert.doesNotMatch(abort, /toolFailureResult/, "never as a broken tool");
+  // The loop still does not carry on after a cancel: the abort check at the top of the next
+  // pass comes before any model call.
+  const loop = engineSource.match(/for \(let step = 0;[\s\S]*?await maybeCompact/)?.[0];
+  assert.ok(loop && /options\.signal\?\.aborted\) return interrupted\(session\)/.test(loop), "the loop must stop on an abort before the next step");
 });
 
 test("a glob-scoped rule keeps applying after a compaction", async () => {

@@ -73,7 +73,7 @@ test("Ink is not asked to route console output into the frame stream", async () 
   // frame and stamps the text into the model — where no later diff can find it, since the
   // model and the screen agree about the cell. Off, it reaches the terminal directly and
   // the next full repaint takes it away.
-  const source = await readFile(new URL("../index.ts", import.meta.url), "utf8");
+  const source = await readFile(new URL("../main.ts", import.meta.url), "utf8");
   assert.match(source, /patchConsole:\s*false/, "console output is being routed into the frame stream");
   assert.match(source, /silenceConsole\(\)/, "the console is not silenced while the UI is mounted");
 });

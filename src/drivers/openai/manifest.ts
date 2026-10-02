@@ -20,6 +20,7 @@
 import type { DriverManifest, Effort, ModelChoice, ModelConfig, ModelId, ModelPrice, ThinkLevel } from "../types.js";
 
 export const ASTRA = "gpt-6-astra";
+export const SOL_61 = "gpt-6.1-sol";
 export const SOL_6 = "gpt-6-sol";
 export const LUNA_6 = "gpt-6-luna";
 export const SOL = "gpt-5.6-sol";
@@ -39,6 +40,7 @@ export const DEFAULT_MODEL = TERRA;
 export const MODELS: ModelChoice[] = [
   { id: TERRA, label: "GPT-5.6 Terra", description: "balanced intelligence and cost — the default" },
   { id: ASTRA, label: "GPT-6 Astra", description: "the GPT-6 flagship — the most capable, and the priciest" },
+  { id: SOL_61, label: "GPT-6.1 Sol", description: "the newest Sol, at GPT-6 Sol's rate" },
   { id: SOL_6, label: "GPT-6 Sol", description: "GPT-6 at Terra's input rate, with cheaper output" },
   { id: LUNA_6, label: "GPT-6 Luna", description: "the cheapest GPT-6, for high-volume work" },
   { id: SOL, label: "GPT-5.6 Sol", description: "the GPT-5.6 frontier tier" },
@@ -46,18 +48,45 @@ export const MODELS: ModelChoice[] = [
 ];
 
 /**
+ * The models that cannot be asked NOT to reason. OpenAI's pages list their `effort` as
+ * low, medium, high, xhigh and max: `none` is not on the list, and the reasoning guide
+ * says so for both ("GPT-6 Astra does not support `none`", "GPT-6.1 Sol does not support
+ * `none` or `minimal`", developers.openai.com, checked 2026-10-01). Every other model
+ * here lists `none` among its efforts. Sending `none` to one of these two is the
+ * request the API refuses, so the "answer directly" rung does not exist for them.
+ */
+const ALWAYS_REASONS = new Set<ModelId>([ASTRA, SOL_61]);
+
+/** Whether this model accepts `reasoning.effort: "none"`, the off switch. */
+export function canSkipReasoning(model: ModelId): boolean {
+  return !ALWAYS_REASONS.has(model);
+}
+
+/**
  * The reasoning levels offered by `/think`.
  *
  * OpenAI expresses reasoning as a single `effort` rung with `none` as its off
  * switch, rather than a separate on/off flag plus a budget. That maps onto the
  * shared shape cleanly: `thinking: false` becomes `none` on the wire, and the four
- * thinking rungs are sent as themselves. Every model here takes the same ladder.
+ * thinking rungs are sent as themselves.
  *
- * The provider also accepts `minimal` between `none` and `low`. It is not offered:
- * it would be a fifth rung whose difference from `low` no user could predict, and
- * the ladder is more useful short.
+ * The two models in `ALWAYS_REASONS` have no `none`, so their ladder starts at `low`
+ * and says so: a rung that sat there as "answer directly" would be a setting that
+ * ends in a refused request.
+ *
+ * The provider also accepts `minimal` between `none` and `low` on some models. It is not
+ * offered: it would be a fifth rung whose difference from `low` no user could predict,
+ * and the ladder is more useful short.
  */
-export function thinkLevels(_model: ModelId): ThinkLevel[] {
+export function thinkLevels(model: ModelId): ThinkLevel[] {
+  if (!canSkipReasoning(model)) {
+    return [
+      { label: "Standard", description: "always thinks — lighter budget", thinking: true, effort: "low" },
+      { label: "Thinking", description: "think first, then answer", thinking: true, effort: "medium" },
+      { label: "Deep", description: "more reasoning, more tool work", thinking: true, effort: "high" },
+      { label: "Maximum", description: "maximum reasoning budget", thinking: true, effort: "max" },
+    ];
+  }
   return [
     { label: "Standard", description: "answer directly — fastest", thinking: false, effort: "high" },
     { label: "Thinking", description: "think first, then answer", thinking: true, effort: "medium" },
@@ -84,6 +113,11 @@ const PRICES: Record<string, ModelPrice> = {
   // GPT-6 Sol and Luna: list prices, no promotion (developers.openai.com/api/docs/pricing,
   // checked 2026-09-23).
   [SOL_6]: { cacheHit: 0.2, cacheMiss: 2, output: 10 },
+  // GPT-6.1 Sol: the same input and output rate as GPT-6 Sol with HALF its cache-read price
+  // (developers.openai.com/api/docs/pricing, checked 2026-10-01). Over 272K input tokens the
+  // whole request bills at 2x input and cache and 1.5x output; the usable window here is far
+  // below that, so it is not modelled.
+  [SOL_61]: { cacheHit: 0.1, cacheMiss: 2, output: 10 },
   [LUNA_6]: { cacheHit: 0.01, cacheMiss: 0.1, output: 0.5 },
   [SOL]: { cacheHit: 0.4, cacheMiss: 4, output: 20 },
   [TERRA]: { cacheHit: 0.2, cacheMiss: 2, output: 12 },
@@ -132,16 +166,18 @@ export function acceptsImages(_model: ModelId): boolean {
 /**
  * Coerce a stored or unknown config onto a model this provider actually serves.
  *
- * There is no per-model rule to enforce here — the family shares one ladder, so an
- * unknown model id falls back and an unknown effort clamps, and that is all. The
- * result is then snapped onto a rung `/think` actually lists, so a config carried
- * in from another provider by `/model` cannot leave the user on a setting the menu
- * has no tick beside.
+ * Two corrections. A model that cannot skip reasoning is moved onto thinking, at the
+ * LIGHTEST rung rather than whatever effort the old config carried: a "no thinking" config
+ * arrives from another model with effort `high`, and landing on `high` would spend more of
+ * the user's money than the setting they chose. Then the result is snapped onto a rung
+ * `/think` actually lists, so a config carried in from another provider by `/model` cannot
+ * leave the user on a setting the menu has no tick beside.
  */
 export function normalize(config: ModelConfig): ModelConfig {
   const model: ModelId = PRICES[config.model] ? config.model : DEFAULT_MODEL;
-  const thinking = config.thinking === true;
-  const effort: Effort = EFFORTS.includes(config.effort) ? config.effort : "high";
+  const forcedOn = !canSkipReasoning(model) && config.thinking !== true;
+  const thinking = forcedOn || config.thinking === true;
+  const effort: Effort = forcedOn ? "low" : EFFORTS.includes(config.effort) ? config.effort : "high";
   return { model, thinking, effort: snapToOfferedRung(model, thinking, effort) };
 }
 

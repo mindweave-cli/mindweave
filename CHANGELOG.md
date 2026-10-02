@@ -3,6 +3,395 @@
 Notable changes to Mindweave. Dates are release dates.
 
 
+## v3.0.0 (2026-10-02): a desktop app, goals that run on their own, usage limits, testing apps by using them, and a much faster terminal
+
+This is the largest release so far, and it covers everything since 2.5.1. Mindweave now
+has a desktop app, [mwcode](https://github.com/mindweave-cli/mwcode), built on the same
+engine as the terminal, so a session started in one can be carried on in the other. The
+terminal itself gets a faster renderer, rows that come alive while a tool works, a way to
+hand over a goal and let it run, usage limits, a way to go back to an earlier message, and
+a tool that can test an app by using it. Mindweave also needs a newer Node, which is the one
+change that can stop an existing install from running, so it comes first.
+
+### Node 24 is the minimum
+
+Mindweave now needs Node 24 or newer. The desktop app runs on the Node that ships inside
+its Electron, which is 24, and Mindweave is built and tested against that same version so
+the app and the terminal behave alike. Node 20 and 22 are no longer supported, so anyone
+installing with npm on an older Node needs to update Node first. Automated testing now runs
+on Node 24 and on the newest Node release.
+
+### The terminal is faster
+
+Scrolling a long conversation now takes about 70% less processor time than in 2.5.1, and
+the part of the program that works out what to draw takes about a tenth of the time it did.
+In a real terminal with a 46-turn conversation open, scrolling runs roughly twice as smooth.
+Two things were behind it, and both were found by measuring the real program rather than
+guessing.
+
+The first was that nothing told React to use its production build, so the whole interface
+ran on the slow development build, with all its extra checking. It now starts in production
+mode unless `NODE_ENV` is set explicitly, in which case your setting wins. The second was
+that the renderer rebuilt every character cell of the screen on every frame, even when
+almost nothing had changed. Mindweave now installs a faster version of that part of the
+renderer, and keeps a copy of each row it has already drawn. It only does so when the
+installed file is exactly the version it was tested against, and it checks the output
+against the original renderer on a thousand random frames in its tests. If you ever need
+the original behaviour, set `MINDWEAVE_NO_INK_PATCH=1`.
+
+Windows terminals limit how often they pass a redraw on, whatever the program does, so
+there the gain shows up as much lower processor use and steadier scrolling more than as a
+higher number, and other terminals can show more of the extra frames. The status line
+clock now updates about three times as often, the counters ease toward their numbers by the
+time that has really passed rather than by the number of ticks, and the tail of a running
+command's output is refreshed four times a second instead of once.
+
+Mindweave also starts faster. It reaches a usable prompt about 40% sooner than before this
+work began, and about 15% sooner than 2.5.1. The faster renderer used to be installed through
+a hook that ran on a separate thread, so every one of the few hundred modules the app loads
+waited on a round trip to it. It now runs in the main thread. The syntax highlighter and the
+converter that turns fetched web pages into text are loaded the first time they are needed
+instead of on every launch. Text widths are also remembered between frames instead of being
+measured again each time, which takes about 40% off the work of streaming a reply and 30% off
+scrolling.
+
+The mouse wheel speeds up as you turn it faster. Slow, deliberate turns still move three
+lines a notch, so reading is unchanged. A quicker spin moves further with each notch, up to
+eight times as far, and changing direction or pausing starts again from three lines.
+
+### Fixes from using the terminal for real
+
+A long conversation no longer loses its beginning. Only the last 150 blocks could be scrolled
+to, which is a few dozen turns of tool work, so a long project ended at an arbitrary point and
+everything before it was out of reach. The whole conversation can be scrolled now. Scrolling
+costs the same at 150 blocks and at 8,000, because only what is on screen is ever drawn.
+
+A command now starts when its row appears. Before, a fast model's command could run and finish
+while its row was still waiting for its turn on screen, so it showed up already done. Now the
+row comes in, the command starts, and the row pulses with its output streaming underneath for
+as long as it really runs. Reads and edits are unchanged, and Esc or the end of the turn never
+leaves a command waiting.
+
+The sentence an agent writes before a tool call now gets its own beat, every time. After the
+first one in a turn, the later sentences appeared in the same moment as the tool row under
+them, because the pacing still assumed one sentence per turn. Text, a pause, the tool, a pause,
+the next text, as intended.
+
+Your message lines up with the agent's. The `>` starts in the same column as the agent's dot, and
+your words start where the agent's words start, on wrapped lines too. The blank row under the
+header is gone, so the conversation starts right under the line and a scrolled conversation runs
+up to it, which gives back a row on every screen.
+
+Starting an app or a server now tells the agent how it went inside the same call, after at most
+four seconds, instead of "started" now and "it came up" ten seconds later. That used to produce two
+messages for one launch, often repeating each other, and the agent noticed an open window many
+seconds late. If the app dies at launch, the call fails with its output, so the agent can fix it
+straight away. Pressing Esc while it is being watched stops the app instead of leaving it running.
+
+The working line's dot now pulses in the accent green, on the same beat as the tool rows, and the
+word beside it changes every few seconds through a pool of more than three hundred, so a long
+turn visibly keeps moving and the same word does not come round for a very long time.
+
+Each session now starts with a line saying the desktop app is out, and `/app` opens a screen with
+one choice: Enter opens the download page in your browser. `/analytics` no longer opens a switch.
+It says that usage counting is off for now and why.
+
+### Colours that match the app
+
+The terminal now uses the desktop app's palette instead of the terminal's own named colours,
+which every theme draws differently. Your messages sit on a grey band with white text, so they
+are easy to find without competing with the reply. The blue is gone: selected items and the
+prompt marker are jade, inline code is a warm cream, links are green, successes, failures and
+warnings use the app's own colours, and code blocks are coloured with the app's syntax palette.
+The command line shown above a command's output has its own colour, so it stands out from
+what the command printed.
+
+### Tool rows come alive while they work
+
+A row now appears the moment its tool starts, not after it finishes. While the tool works
+the dot pulses and the verb is in the present tense ("Reading views.py"); when the result
+arrives the dot goes still and the verb settles ("Read views.py"). The dot is white
+everywhere and a failure says so in words, so the colour no longer carries meaning that
+differed between tools. A running command shows the tail of its output as it goes. Consecutive
+reads fold into one row, with the files named three to a line underneath, so a burst of
+reads takes a couple of lines. Nothing new appears while a row on screen is still working,
+and a result is shown for a beat before the next row, so each step can be read.
+
+Rows are announced when their tool starts, not all at once at the beginning of a step.
+Announcing them all together used to show a command as running while a permission prompt
+for an earlier call was still waiting, and kept rows appearing behind an open question.
+Searches, code lookups, the agent's task list, loading a tool and polling a background
+command are no longer drawn as rows at all, since they are the agent finding its way
+around, and the sentences it writes before calls like that are left out too, because they
+would be narration about nothing on screen. The reply that ends a turn is never judged this
+way. The same rule applies to a conversation you reopen.
+
+### Marathon: hand over a goal and let it run
+
+`/marathon` takes a goal and works on it on its own until it is done. It is not a fourth
+mode. It runs ordinary turns in whichever of Lightning, Architect or Sentinel is already
+active and never touches how approval works, so Sentinel still asks about exactly what it
+would have asked about.
+
+Type `/marathon`, then send your goal as the next message. The first turn is for planning,
+and it is the only time Marathon asks questions. It writes its plan as a checklist that stays
+pinned above the input box and ticks as the work goes. After that it asks nothing: where
+something is unclear it picks the most reasonable reading, notes the assumption and keeps
+going. Permission prompts are a different matter and are unaffected.
+
+It does not take its own word that it has finished. When it says it is done, a separate
+check, run by a fresh copy of the session that did none of the work, compares the result
+with the goal. If that finds problems they are handed back and the work continues, and
+Marathon only gives up after ten failed checks. It also stops itself when it is going in
+circles: the same action with the same result four times, the same error three times,
+three turns without progress, or six turns alternating between two actions. Waiting for a
+build you started in the background does not count as being stuck.
+
+Ordinary interruptions are handled. A step limit or a provider hiccup carries on by itself,
+Esc stops the run and leaves it ready to resume, a usage limit holds it until the window
+reopens, and a goal survives closing and reopening Mindweave. Cost and time ceilings are
+optional and off by default.
+
+### Usage limits and a spend view
+
+Set a monthly budget in tokens and press Analyze, and Mindweave fills in a five-hour and a
+weekly amount for you to edit. The windows work like a plan's: the five-hour window opens at
+your first use after the last one ended, the weekly one resets at a fixed time each week
+(set when you turn limits on), and the monthly one follows your billing month, starting on
+any day from 1 to 28. When a window is used up, new steps wait until it reopens. Nothing is
+lost, a step that was already under way finishes, so you can go over by at most one step,
+and work carries on when the window opens. You are told once at 80% and again at 95% of a
+window, as a line in the conversation, and turning "stop at a limit" off makes it warn only.
+
+Limits are kept in `~/.mindweave/limits.json`, so the desktop app and the terminal agree
+without sharing anything else, and deleting the file turns them off. They are set in the
+desktop app under Settings, then Usage; the terminal follows the same limits and warns the
+same way. Budgets are in tokens for now. A limit in money is not available yet.
+
+Settings, Usage also shows what has been spent: a total and a per-model breakdown across
+every project, with today, this week and this month, in tokens, counting uncached input
+plus output. The numbers come from the per-call log each session already keeps. That log is
+capped at 200 calls per session, which used to leave long sessions under-counted, so the
+part that was cut is now recovered from the session's own totals. The live counter and the
+saved record now count exactly the same thing.
+
+`/context limit` sets the point at which a conversation is automatically summarised, for the
+current project or, with `global`, for every project, and `/context limit reset` puts it
+back. The default is still worked out from each model's own window, and the
+`MINDWEAVE_AUTOCOMPACT_TOKENS` environment variable still beats both.
+
+### Go back to an earlier message
+
+`/rewind`, or pressing Esc twice on an empty box, lists your messages newest first, with how
+many files and lines each one changed. Pick one and choose what to take back: the
+conversation and the files, only the conversation, or only the files. The message you went
+back to is put in the input box so you can edit it and send it again. Rewinding also clears
+the session notes and checklist items that described the turns you removed, so they cannot
+be loaded back by mistake.
+
+Undo now outlasts the session. The undo history is saved next to the session, so `/undo`
+and rewind still work after you close Mindweave and reopen the conversation, for the five
+most recent sessions in each project. Undo and rewind now also cover what the agent saves
+about itself: memories, rules, skills, permission files and MCP server settings were
+previously left behind when the turn that added them was taken back, and are now restored
+with everything else.
+
+### Testing an app by using it
+
+The new `ui` tool lets the agent use an app the way a person does: look at a window or a
+web page, click, type, scroll, and see a picture of the result after every action. It
+reaches web pages through the browser debugging protocol, which also covers Electron and
+Tauri apps and any page opened with a debugging port, and reaches native Windows windows
+through the accessibility layer.
+
+An app started for testing stays out of your way. On Windows it is started on a separate
+desktop, which is never drawn on your screen, not for a single frame. If that cannot be set
+up, the app is not started at all, because the promise is that it never appears in front of
+you. Moving a window off the screen after it opens could not make that promise, since
+measurements showed windows staying visible for 30 to 50 milliseconds first. On Linux the app
+starts under a virtual display when `xvfb-run` is installed. Where it is not, the window is
+moved off screen, and only when the debugging port belongs to a process Mindweave started.
+This was built and tested on Windows, and on Linux under a virtual display. It has not been
+tested on macOS.
+
+Many actions can go in one call. A list of steps finds each control by name on a fresh read
+just before it acts, stops at the first failure, and returns one result with one picture,
+while each step appears in the row one after another. New actions: `wait` returns the moment
+some text appears or disappears, `resize` changes the viewport, `inspect` reports a
+control's box, colours and contrast and lists things worth a look, and `look` can take a
+close-up of one control, the whole page, or a picture with numbers drawn over every control.
+A control that has something on top of it is marked as covered. The tool waits for the page to
+settle only as long as it needs to, so a click on a still page takes about 0.25 seconds
+instead of 0.55, and an unchanged control list or identical picture is not sent twice.
+
+Two things around it make waiting for an app work. A background command now notices when
+something it started opens a port, which is the moment a built app is actually up, and wakes
+the agent, so an agent that ended its turn to wait for the app is told when it arrives. And
+`run_command` takes a `hidden` option for starting something out of sight on purpose or
+turning that off. The `screenshot` tool stays a plain capture and now also reaches windows
+on the hidden desktop.
+
+### Ollama
+
+Ollama is now a provider, for models running on your own machine, with no key. Mindweave
+talks to Ollama's own chat interface rather than the OpenAI-compatible one, because the
+compatible one ignores the requested context size, so the model loads with 4096 tokens and
+quietly drops half of the agent's instructions, and it also ignores the request to turn
+thinking off. Models are listed as `ollama:<name>`, the context window defaults to 32K
+(`MINDWEAVE_OLLAMA_CONTEXT` changes it), and Ollama counts as connected while it is running
+and has at least one model that can use tools. `/provider` says whether it is running, and
+choosing it when it is not explains why instead of asking for a key.
+
+### New models, and a fix for two of them
+
+Claude Sonnet 5.5 and GPT-6.1 Sol are added, which makes 62 models across 16 providers.
+Sonnet 5.5 is priced like Sonnet 5. It cannot be told to skip thinking outright, so its
+Standard setting uses the lightest option it does accept and keeps the short notes it writes
+between tool calls visible. GPT-6.1 Sol is priced like GPT-6 Sol with a cache read at half
+the price.
+
+GPT-6 Astra and GPT-6.1 Sol do not accept a request to turn reasoning off, and OpenAI's pages
+list their lowest effort as `low`. Mindweave's Standard setting asked for no reasoning, which
+those two refuse. Their `/think` ladder now starts at a light level, and a setting carried
+over from another model lands on that lightest level rather than a heavier one that would
+spend more.
+
+The first-run screen showed only the first nine providers and scrolled for the rest, so
+someone holding a key for a later one could think it was not supported. It now lists every
+provider whenever the terminal is tall enough, drops the welcome tips before it drops a
+provider, and only scrolls, saying what is above and below, in a terminal too short for the
+list. It also says that Ollama needs no key.
+
+### The loop was checked end to end, and four faults were fixed
+
+The whole turn loop was run against scripted providers and against real ones, covering plain
+answers, long chains of tool calls, every mode, a model that grinds on a failing command, an
+empty reply, a cut-off reply, and a request fanned out across two dozen tool calls. Most of it
+held up, and four things did not.
+
+Tool calls in one step now run in the order the model wrote them wherever order matters. Reads
+and searches still run side by side, up to ten at a time, but a write is never run alongside
+the calls around it, so a read written after an edit sees the edit. Stopping a turn while a
+tool is running no longer throws the turn away: the call is recorded as interrupted, says its
+effect is unknown, and the next turn starts from a history that is complete. A conversation
+that was closed in the middle of a tool call is repaired the same way when it is reopened. A
+reply with no text and no tool calls is no longer sent back as an empty message, which some
+providers reject, so a turn that ends on one carries on instead of failing.
+
+A spent balance is no longer retried. GLM and OpenAI report an empty account as a rate-limit
+error, and Mindweave waited and tried again several times before telling you. It now stops at
+once and shows the provider's own sentence. A real rate limit, including a per-minute quota,
+still gets its retries.
+
+Reasoning and caching were measured on real turns. With DeepSeek, every step after the first
+reads about 98% of the conversation from the cache, and a four-step job costs a fraction of a
+cent. A small fix-the-failing-tests job finished in four or five calls, with thinking on or off.
+
+### DeepSeek and Claude defaults
+
+DeepSeek's Flash model is now called `deepseek-flash`, the name DeepSeek publishes. A model
+saved under the earlier name, or the earlier vision name, opens on the current one, so nothing
+needs changing. Claude Sonnet 5.5 is now the Anthropic default, with Sonnet 5 still listed. The
+reasoning settings a reply is read with now come from the model that was asked for rather than
+the name the provider echoes back, which could differ.
+
+### The usage count is switched off
+
+Mindweave no longer sends any usage count, in the terminal or in the desktop app. Earlier
+versions sent a random number and the version about once a day, on by default. That is now
+off for everyone, including anyone who had it on, and it cannot be turned on for now. Trying
+to, with `/analytics on` or in the app's settings, says that a better way to count is being
+built and that nothing is sent in the meantime.
+
+### Long sessions and compaction
+
+What compaction takes out of a conversation stays visible in the chat. Until now a summary
+replaced the old messages for good, so reopening a session or restarting showed only what
+came after it. The removed part is now kept beside the session and drawn again, and it is
+never sent to the model. Sessions compacted before this release had already lost theirs.
+
+Right after a summary, the model is now told what is still running: background commands with
+the ports they are listening on, and an app open for testing, so it does not start a second
+dev server because the history that mentioned the first one is gone. A summary also used to
+read like an order. It ended in a "next step", and a model that weighed it badly kept carrying
+out a step it had finished turns ago, answering "what should we do next?" with the same report
+every time. Once you write anything after a summary, it is sent as background and the next
+step is left out, so your newest message is what gets answered.
+
+Compaction and the session notes now work on models that refuse a call with reasoning off or
+a call with no tools, which used to make every summary fail three times and then stop for
+good, so a long session on such a model just grew until it overflowed. A model that
+OpenRouter will only serve to particular apps now produces a plain explanation instead of
+the provider's raw error. Compaction after a sub-agent on another provider no longer hands
+that provider the wrong model name, and pressing Esc now stops the notes and summary calls as
+well, which used to leave "Thinking" on screen after the reply on a slow model. A reopened
+session knows how full its context is before its first call.
+
+Sessions are now named by what they are about, from a short title in their notes, instead of
+by their first message. Sessions that have not yet grown long enough to have notes keep their
+first message.
+
+### Keys, your profile and permissions
+
+Each provider can hold several keys, with a name for each ("Work", "Personal"), one of them
+the default, any of them switched off without being deleted, and an option to move on to the
+next key when one is refused. Names and settings are kept in `~/.mindweave/keys.json` against
+a short fingerprint of the key, never the key. Editing the key that is in use now takes effect
+straight away, where before it only did on the next launch.
+
+You can say what to call you, how much you want explained and how long replies should be, in
+`~/.mindweave/profile.json`. Each setting becomes one line in the instructions, and a setting
+you leave empty says nothing, so the model's own defaults stand. Sentinel mode can remember
+"do not ask about this kind of action" for one project or for every project, and a change to
+either list now reaches sessions that are already running. An MCP server's tools can be
+listed with which ones are being held back, and changed tools can be accepted in one go.
+
+### Using Mindweave from another program
+
+`mindweave/core` is a new entry point for programs that are not a terminal. It runs turns
+and Marathon goals, starts, loads and lists sessions, switches the model and reasoning level,
+saves provider keys, compacts a conversation, and reports spend and limits, and it hands back
+plain events with no terminal assumptions, which is how the desktop app runs Mindweave. Tool
+rows read the same way in every program that uses it.
+
+### Smaller fixes
+
+Prices were corrected again. Cerebras's Qwen3.8 27B was being billed at the fallback rate
+because its id never matched the one Mindweave looked for, and now has its own price. GPT-OSS
+120B on Cerebras and on Groq, GPT-OSS 20B on Groq, and the cached-input rate for GLM-4.7 FlashX
+now follow what those providers publish. Groq's two Llama models moved to its enterprise tier
+and no longer publish a price, so their last public prices stay as the estimate. The live
+output counter now counts each finished call at its real size. In a turn that writes mostly
+into tool arguments, which never stream as text, the streamed estimate on its own fell far
+behind.
+
+A test run is no longer shown as a green row when the command itself failed. The tests could
+pass while something chained after them, a typecheck or a build, exited with an error, and
+"14 passed" sat over a failure. The real output and exit code are shown instead.
+
+Pasted text no longer garbles the input box. Many terminals send a carriage return for each
+line break in a paste, which moved the cursor back to the start of the line and drew over the
+box. Escape sequences in pasted text are dropped, and tabs become spaces. Enter is no longer
+lost when keys arrive together or a few milliseconds apart, as they do from a macro, a remote
+session or a stalled machine: the box that Enter acts on is now always the latest one.
+
+Starting Mindweave directly in the inline shell no longer crashes. Setting `CI=1` no longer
+leaves a blank screen. Someone whose only provider is a local model no longer sees the "add a
+key" screen on every launch after the first. A message typed while the queue was draining can
+no longer jump ahead of the ones already waiting. Narrow windows no longer wrap the header onto
+a second row, which made the words run together while scrolling: the header now gives up its
+parts in order, shortening the model name, then the shuttle, then the effort, so it always
+fits. Resizes are noticed within about 80 milliseconds, because Windows terminals often never
+announce them.
+
+`ask_user` and `exit_plan` now run alone: while a question or a plan is waiting for you,
+nothing else runs or appears. Loading a tool no longer draws a "Loaded tool" row. Attached
+files and images are shown as cards with their names taken out of the text beside them.
+Screenshots, web searches, page fetches and app tests are now recorded with what a front end
+needs to draw them again when a session is reopened, and a tool result can carry its full,
+uncut output for a front end that lets you expand a row.
+
+
 ## v2.5.1 (2026-09-23): models, prices and settings brought in line with what providers publish
 
 Mindweave connects you to many providers, and it is only as good as what it knows about

@@ -13,6 +13,7 @@
  */
 import type { ReactElement } from "react";
 import { Box, Text } from "ink";
+import { ACCENT } from "../theme.js";
 
 export interface Tip {
   /** The chord or command, shown bright. */
@@ -55,7 +56,7 @@ export function TipLine({ tip }: { tip: Tip }): ReactElement {
     <Box flexShrink={0}>
       <Text>
         {"  "}
-        <Text color="cyan">{tip.key}</Text>
+        <Text color={ACCENT}>{tip.key}</Text>
         <Text dimColor>{"  " + tip.text}</Text>
       </Text>
     </Box>

@@ -155,3 +155,12 @@ export const findTools: Tool = {
     };
   },
 };
+
+/**
+ * Loading a tool is the agent getting ready, not something done to the project, so it is
+ * never shown: a "Loaded tool" row told the user nothing they could act on. The result
+ * still reaches the model in full (it carries the schemas) and is still recorded; only
+ * the row is dropped, the same call made for searches and the code lookups.
+ */
+const loadTools = findTools.execute.bind(findTools);
+findTools.execute = async (args, ctx, call) => ({ ...(await loadTools(args, ctx, call)), quiet: true });

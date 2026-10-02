@@ -54,7 +54,9 @@ const resumeFrom = app.indexOf("function showResumed");
 test("the live and resumed toolStart pass the same fields", () => {
   const live = fields(dispatchBody(liveFrom, "toolStart"));
   const resumed = fields(dispatchBody(resumeFrom, "toolStart"));
-  const missing = [...live].filter((f) => !resumed.has(f));
+  // `at` is when a live call started, so a running command counts its real time. A resumed row
+  // is never running, so it has nothing to count.
+  const missing = [...live].filter((f) => !resumed.has(f) && f !== "at");
   assert.deepEqual(missing, [], "these reach a live row but not a resumed one, so the two differ on screen");
 });
 

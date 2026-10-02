@@ -78,8 +78,9 @@ test("the total joins the end of the facts line, not a line of its own", () => {
 });
 
 test("an ordinary row is untouched — no counter, no total", () => {
+  // Finished, so past tense: the verb follows the row's own work, not the turn's.
   const out = draw({ name: "Read", arg: "a.ts", live: true, detail: "40 lines" });
-  assert.match(out, /Reading\(a\.ts\)/);
+  assert.match(out, /Read\(a\.ts\)/);
   assert.ok(!/\d+s\b/.test(out), `a counter appeared on a row that never waited: ${JSON.stringify(out)}`);
   assert.ok(!/looked at in/.test(out));
 });

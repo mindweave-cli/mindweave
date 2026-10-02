@@ -115,6 +115,15 @@ type EntryOf =
        *  what it said at the time. */
       displayName?: string;
       displayKind?: ToolKind;
+      /** Paths of images this result produced (a screenshot), so a resumed session can
+       *  show the picture in the row again. Display only; the model gets them separately. */
+      imagePaths?: string[];
+      /** What a web search found or a fetch read, so a resumed session draws the same row.
+       *  Display only; see ToolResult.web. */
+      web?: import("../tools/types.js").WebDisplay;
+      /** One step of testing an app, so a resumed session draws the same test.
+       *  Display only; see ToolResult.ui. */
+      ui?: import("../tools/types.js").UiDisplay;
       /** The model has real work to do on this result before it can answer (an image
        *  going to vision). The row counts the wait instead of sitting silently finished. */
       awaitsModel?: boolean;
@@ -152,6 +161,9 @@ export interface SessionMeta {
   updatedAt: number;
   firstPrompt: string;
   lastPrompt: string;
+  /** What the session is about, from its notes' title (memory/sessionTitle.ts). Absent
+   *  until the notes have one; a list falls back to `firstPrompt`. */
+  title?: string;
   entryCount: number;
   /**
    * Which model answered in this session.
@@ -183,11 +195,19 @@ export interface SessionMeta {
   /** Per-call token usage for this session, most recent last. See `CallUsage`. */
   callLog?: CallUsage[];
   /**
+   * The measured size of everything sent besides the transcript (Session.contextOverhead),
+   * so a reopened session knows how full its context is before its first call. Stored
+   * with its model, and used only while that still matches, as in the live session.
+   */
+  contextOverhead?: { tokens: number; model: string };
+  /**
    * Deferred tools surfaced via `find_tools` during this session (ToolContext.activatedTools).
    * Persisted so a resumed session re-advertises them — otherwise a continued session would
    * strip a tool the model was mid-way through using, and it could no longer call it.
    */
   activatedTools?: string[];
+  /** A running or finished Marathon on this session. See `dynamo/marathon.ts`. */
+  marathon?: import("../dynamo/marathon.js").MarathonState;
 }
 
 /**
@@ -303,6 +323,14 @@ export interface Session {
    */
   priorSessions: number;
   /**
+   * Entries compaction took out of `transcript`, oldest first. For the SCREEN only:
+   * never sent to the model, never counted as context. Without them a reopened
+   * compacted session showed nothing above its summary. See memory/earlier.ts.
+   * `earlierUnsaved` is the part not yet appended to disk.
+   */
+  earlier?: Entry[];
+  earlierUnsaved?: Entry[];
+  /**
    * The project orientation snapshot (environment + git + signals + tree),
    * rendered for the system prompt. Captured once at session start — a snapshot
    * in time, like the rest of the startup context. "" if nothing useful.
@@ -387,4 +415,8 @@ export interface Session {
   prefixPrint?: import("../dynamo/cacheBreak.js").PrefixPrint;
   /** Per-call token usage, most recent last. See `CallUsage`. */
   callLog?: CallUsage[];
+  /** State of a running or finished Marathon (goal-mode autonomy) — the objective,
+   *  how far it's gotten, and how it ended, if it has. See `dynamo/marathon.ts`.
+   *  Persisted so a goal survives a restart instead of vanishing mid-run. */
+  marathon?: import("../dynamo/marathon.js").MarathonState;
 }

@@ -104,6 +104,11 @@ export const todoWrite: Tool = {
     // All done → clear the list (a finished list disappears).
     const allDone = parsed.length > 0 && parsed.every((t) => t.status === "completed");
     ctx.todos = allDone ? [] : parsed;
+    // The structured copy for a front end's live checklist. The WHOLE list, sent before
+    // the all-done clear above takes effect, so the last tick can still be drawn. Lead
+    // agent only: a sub-agent inherits `emitEvent`, and its own private list would
+    // otherwise overwrite the one the user is watching.
+    if ((ctx.subagentDepth ?? 0) === 0) ctx.emitEvent?.({ type: "todos", items: parsed });
 
     const inProgress = parsed.filter((t) => t.status === "in_progress").length;
     const notes: string[] = [];

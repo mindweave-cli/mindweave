@@ -25,7 +25,7 @@ import {
   toTurn,
   toUsage,
 } from "./client.js";
-import { FABLE, FABLE_51, HAIKU, MODELS, OPUS, OPUS_48, OPUS_55, SONNET, normalize, price, thinkLevels } from "./manifest.js";
+import { DEFAULT_MODEL, FABLE, FABLE_51, HAIKU, MODELS, OPUS, OPUS_48, OPUS_55, SONNET, SONNET_55, normalize, price, surfaceOf, thinkLevels } from "./manifest.js";
 import type { Effort, ModelRequest, StreamEvent } from "../types.js";
 
 const base: ModelRequest = { system: "SYSTEM", messages: [] };
@@ -405,13 +405,14 @@ test("every advertised model has a price and a normalize that keeps it", () => {
     assert.equal(normalize({ model, thinking: true, effort: "high" }).model, model, `${model} was coerced away`);
   }
   // An id no provider serves falls back rather than reaching the wire.
-  assert.equal(normalize({ model: "claude-not-a-model", thinking: true, effort: "high" }).model, SONNET);
+  assert.equal(normalize({ model: "claude-not-a-model", thinking: true, effort: "high" }).model, DEFAULT_MODEL);
 });
 
 // ── Response conversion ───────────────────────────────────────────────────────
 
 test("toTurn joins text, converts tool_use back to a JSON string, and drops thinking", () => {
   const message = {
+    model: SONNET,
     content: [
       { type: "thinking", thinking: "internal reasoning" },
       { type: "text", text: "Here " },
@@ -622,4 +623,114 @@ test("a user message with images but no text still reaches the model", () => {
   });
   assert.equal(messages.length, 1);
   assert.equal((messages[0]!.content as Anthropic.ContentBlockParam[]).length, 2);
+});
+
+// ── Claude Sonnet 5.5 ────────────────────────────────────────────────────────
+// Thinking is on by default and `disabled` is a 400. "Off" is `between_tools`, accepted at
+// effort high or below and taking no other field. platform.claude.com, "What's new in
+// Claude Sonnet 5.5", checked 2026-10-01.
+
+test("Sonnet 5.5 is the default, offered first, with Sonnet 5 still available", () => {
+  const ids = MODELS.map((m) => m.id);
+  assert.equal(ids[0], SONNET_55, "the first entry is the default");
+  assert.equal(ids[1], SONNET);
+  assert.equal(DEFAULT_MODEL, SONNET_55);
+  assert.equal(MODELS.find((m) => m.id === SONNET_55)!.label, "Claude Sonnet 5.5");
+  // A setting saved on Sonnet 5 stays there: only an UNKNOWN id falls back to the default.
+  assert.equal(normalize({ model: SONNET, thinking: false, effort: "high" }).model, SONNET);
+  assert.equal(normalize({ model: "claude-retired-9", thinking: false, effort: "high" }).model, SONNET_55);
+});
+
+test("Sonnet 5.5 costs what Sonnet 5 costs, cache read included", () => {
+  assert.deepEqual(price(SONNET_55), price(SONNET));
+  assert.deepEqual(
+    { hit: price(SONNET_55).cacheHit, miss: price(SONNET_55).cacheMiss, out: price(SONNET_55).output, write: price(SONNET_55).cacheWrite },
+    { hit: 0.2, miss: 2, out: 10, write: 2.5 },
+  );
+});
+
+test("Sonnet 5.5: no-thinking is `between_tools`, never `disabled`, and rides without a beta header", () => {
+  for (const effort of ["low", "medium", "high"] as Effort[]) {
+    const body = bodyFor(SONNET_55, false, effort);
+    assert.deepEqual(body.thinking, { type: "between_tools" }, effort);
+    assert.deepEqual(body.output_config, { effort });
+    // `between_tools` needs no beta, and takes no `display`, `budget_tokens` or `block_binding`.
+    assert.equal(progressRequestOptions(body).headers, undefined, "between_tools must not send the beta");
+    assert.deepEqual(Object.keys(body.thinking as object), ["type"]);
+  }
+});
+
+test("Sonnet 5.5: thinking-on is adaptive with the progress-update text, and sends the beta", () => {
+  for (const effort of EFFORTS) {
+    const body = bodyFor(SONNET_55, true, effort);
+    assert.deepEqual(body.thinking, { type: "adaptive", display: "updates" }, effort);
+    assert.deepEqual(body.output_config, { effort });
+    assert.deepEqual(progressRequestOptions(body).headers, { "anthropic-beta": PROGRESS_UPDATES_BETA });
+  }
+});
+
+test("Sonnet 5.5 is never sent `disabled` or a token budget, whatever is saved", () => {
+  for (const thinking of [true, false]) {
+    for (const effort of EFFORTS) {
+      // Through `normalize` first, as the engine does: that is the config that reaches the wire.
+      const cfg = normalize({ model: SONNET_55, thinking, effort });
+      const body = bodyFor(SONNET_55, cfg.thinking, cfg.effort);
+      const type = (body.thinking as { type: string }).type;
+      assert.ok(type === "adaptive" || type === "between_tools", `${thinking}/${effort} sent ${type}`);
+      if (type === "between_tools") {
+        assert.ok(!["xhigh", "max"].includes(cfg.effort), `between_tools at ${cfg.effort} is a 400`);
+      }
+    }
+  }
+});
+
+test("normalize keeps Sonnet 5.5's no-thinking at effort high or below", () => {
+  for (const effort of ["xhigh", "max"] as Effort[]) {
+    const cfg = normalize({ model: SONNET_55, thinking: false, effort });
+    assert.equal(cfg.thinking, false);
+    assert.ok(cfg.effort !== "xhigh" && cfg.effort !== "max", `no-thinking at ${effort} stayed ${cfg.effort}`);
+  }
+  // The full ladder is offered: Standard answers without up-front thinking, the rest think.
+  const levels = thinkLevels(SONNET_55);
+  assert.equal(levels[0]!.thinking, false);
+  assert.deepEqual(levels.map((l) => l.effort), ["high", "high", "xhigh", "max"]);
+  for (const level of levels) {
+    const config = { model: SONNET_55, thinking: level.thinking, effort: level.effort };
+    assert.deepEqual(normalize(config), config, `"${level.label}" was altered`);
+  }
+});
+
+test("Sonnet 5.5 shows its between-tool notes as reply text, and Sonnet 5 still drops them", () => {
+  const message = { model: SONNET_55, content: PROGRESS_BLOCKS, stop_reason: "tool_use" } as unknown as Anthropic.Message;
+  assert.equal(toTurn(message).content, EXPECTED_REPLY);
+  assert.equal(toTurn({ ...message, model: SONNET } as Anthropic.Message).content, "Both callers are covered.");
+});
+
+test("Sonnet 5.5 is only ever sent tool_choice auto: forced tool use is a 400", () => {
+  const body = buildBody(
+    {
+      ...base,
+      messages: [{ role: "user", content: "x" }],
+      model: { model: SONNET_55, thinking: true, effort: "high" },
+      tools: [{ type: "function", function: { name: "read", description: "Read a file", parameters: { type: "object", properties: {} } } }],
+    },
+    1000,
+  );
+  assert.deepEqual(body.tool_choice, { type: "auto" });
+  for (const key of ["temperature", "top_p", "top_k"]) assert.ok(!(key in body), `${key} must never be sent`);
+});
+
+test("an unrecognised model name echoed in the response never changes whether reasoning is shown", () => {
+  // The request decides this, not the echo. With the default model being one that shows its
+  // between-tool notes, a response naming something this table does not know would otherwise
+  // inherit that and print reasoning text as the reply.
+  const message = {
+    model: "claude-some-dated-alias-20260101",
+    content: [
+      { type: "thinking", thinking: "private reasoning" },
+      { type: "text", text: "The answer." },
+    ],
+  } as unknown as Anthropic.Message;
+  assert.equal(toTurn(message, surfaceOf(SONNET).progressUpdates).content, "The answer.");
+  assert.equal(toTurn(message, true).content, "private reasoning\n\nThe answer.", "sanity: with updates on, it would show");
 });

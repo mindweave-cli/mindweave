@@ -105,6 +105,10 @@ export const exitPlan: Tool = {
   // It writes nothing, but it is not offered outside planning: there is nothing to
   // exit from in an ordinary turn.
   readOnly: true,
+  // Never alongside other calls: while a plan waits on the user, nothing else
+  // may run or appear. The engine finishes the parallel lane first, and everything
+  // after this waits for the answer.
+  isConcurrencySafe: () => false,
   planOnly: true,
   description:
     "Present your finished plan to the user and ask them to approve it. Call this when " +

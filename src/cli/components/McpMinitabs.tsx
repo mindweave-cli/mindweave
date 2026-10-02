@@ -30,6 +30,7 @@ import { MiniTabPanel as Panel, MiniTabRow as Row, miniTabPosition as position, 
 import type { ConnectionStatus } from "../../mcp/connection.js";
 import type { McpServerConfig } from "../../mcp/config.js";
 import { parseAddSpec, splitArgs, type AddScope, type AddSpec } from "../../mcp/configWrite.js";
+import { ACCENT, GOOD, WARN } from "../theme.js";
 
 const ACTION_REVIEW_BLOCKED = "Review blocked tools";
 const ACTION_SIGN_IN = "Sign in (opens your browser)";
@@ -588,7 +589,7 @@ export function McpMinitabs({
   function FieldRow({ on, pane, children }: { on: boolean; pane: number; children: ReactNode }) {
     return (
       <Box flexShrink={0} width={pane}>
-        <Text color={on ? "cyan" : undefined} bold={on}>{on ? " › " : "   "}</Text>
+        <Text color={on ? ACCENT : undefined} bold={on}>{on ? " › " : "   "}</Text>
         {children}
       </Box>
     );
@@ -637,7 +638,7 @@ export function McpMinitabs({
         hint: "Enter or Esc go back",
         node: (
           <>
-            {line(`Could not sign in to ${s.name}.`, "yellow")}
+            {line(`Could not sign in to ${s.name}.`, WARN)}
             <Box flexShrink={0}><Text> </Text></Box>
             {line(s.error, undefined, true)}
           </>
@@ -645,7 +646,7 @@ export function McpMinitabs({
       };
     }
     if (s.done) {
-      return { rows: 1, hint: "Enter or Esc go back", node: line(s.done, "green") };
+      return { rows: 1, hint: "Enter or Esc go back", node: line(s.done, GOOD) };
     }
     return {
       rows: 3,
@@ -655,7 +656,7 @@ export function McpMinitabs({
           {line(`Waiting for your browser…`)}
           <Box flexShrink={0}><Text> </Text></Box>
           {s.copied
-            ? line("Link copied. Paste it into a browser.", "green")
+            ? line("Link copied. Paste it into a browser.", GOOD)
             : s.url
               ? line("Nothing opened? Press c to copy the link.", undefined, true)
               : line(`Approve ${s.name} in the window that opened.`, undefined, true)}
@@ -711,7 +712,7 @@ export function McpMinitabs({
         hint: stepHint,
         node: (
           <FieldRow on pane={pane}>
-            <Text bold color="cyan">{env ? "env " : "headers "}</Text>
+            <Text bold color={ACCENT}>{env ? "env " : "headers "}</Text>
             <Ghost
               value={env ? w.draft.env : w.draft.headers}
               placeholder={env ? "GITHUB_TOKEN=ghp_xxxx (optional)" : "Authorization: Bearer xyz (optional)"}
@@ -752,7 +753,7 @@ export function McpMinitabs({
           ))}
           {w.error ? (
             <Box flexShrink={0} width={pane} marginTop={1}>
-              <Text color="yellow" wrap="truncate-end">{`  ${w.error}`}</Text>
+              <Text color={WARN} wrap="truncate-end">{`  ${w.error}`}</Text>
             </Box>
           ) : null}
         </>
@@ -784,7 +785,7 @@ export function McpMinitabs({
                 n={from + i + 1}
                 showNumber={false}
                 left={r.label}
-                leftColor={r.add ? "yellow" : undefined}
+                leftColor={r.add ? WARN : undefined}
                 // A status needs a second column the narrowed pane may not have room for.
                 // Dropped rather than clipped to "conn", which says less than nothing.
                 right={paneW >= 46 ? r.detail : undefined}

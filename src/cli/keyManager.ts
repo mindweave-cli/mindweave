@@ -41,7 +41,8 @@ export interface KeyRow {
  * the registry lists (the one a fresh project opens on).
  */
 export function providerRows(env: NodeJS.ProcessEnv = process.env): ProviderRow[] {
-  const rows = allProviders().map((p) => ({
+  // A local runtime (Ollama) has no keys to manage.
+  const rows = allProviders().filter((p) => !p.local).map((p) => ({
     id: p.id,
     label: p.label,
     apiKeyEnv: p.apiKeyEnv,

@@ -1,30 +1,46 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { workingVerb, WORKING_VERBS } from "./workingVerb.js";
+import { VERB_SWAP_MS, workingVerb, WORKING_VERBS } from "./workingVerb.js";
 
-test("the verb is stable for the whole turn", () => {
-  // The status line re-renders once a second for its timer. If the verb were picked
-  // per render it would flicker through the pool while the seconds tick.
+test("the word is steady inside a window, so the once-a-frame clock cannot make it flicker", () => {
   const start = 1_755_000_123_456;
-  const picks = new Set(Array.from({ length: 50 }, () => workingVerb(start)));
+  const picks = new Set(Array.from({ length: 200 }, (_, i) => workingVerb(start, (i * (VERB_SWAP_MS - 1)) / 200)));
   assert.equal(picks.size, 1);
 });
 
-test("different turns get different words often enough to signal a NEW turn", () => {
-  // That signal is the whole point: it says "this is not the last turn still running".
-  const picks = new Set(Array.from({ length: 40 }, (_, i) => workingVerb(1_755_000_000_000 + i * 137)));
-  assert.ok(picks.size >= 5, `expected variety across turns, saw ${picks.size}`);
+test("the word changes through a long turn, and does not repeat for a long time", () => {
+  const start = 1_755_000_123_456;
+  const seen: string[] = [];
+  for (let i = 0; i < 100; i++) seen.push(workingVerb(start, i * VERB_SWAP_MS));
+  assert.equal(new Set(seen).size, 100, "100 windows in a row, 100 different words");
+  for (let i = 1; i < seen.length; i++) assert.notEqual(seen[i], seen[i - 1]);
 });
 
-test("no verb claims progress the harness cannot actually see", () => {
-  // "Almost done" would be a guess wearing a status line's clothes.
+test("the pool is big enough that nobody sees through it", () => {
+  assert.ok(WORKING_VERBS.length >= 300, `only ${WORKING_VERBS.length} words`);
+  assert.equal(new Set(WORKING_VERBS).size, WORKING_VERBS.length, "no duplicates");
+});
+
+test("different turns walk different orders, so a NEW turn reads as new", () => {
+  const picks = new Set(Array.from({ length: 40 }, (_, i) => workingVerb(1_755_000_000_000 + i * 137, 0)));
+  assert.ok(picks.size >= 20, `expected variety across turns, saw ${picks.size}`);
+});
+
+test("the same turn always walks the same order", () => {
+  const a = Array.from({ length: 10 }, (_, i) => workingVerb(1_755_000_123_456, i * VERB_SWAP_MS));
+  const b = Array.from({ length: 10 }, (_, i) => workingVerb(1_755_000_123_456, i * VERB_SWAP_MS));
+  assert.deepEqual(a, b);
+});
+
+test("no word claims progress the harness cannot see, and every one is a plain word", () => {
   for (const v of WORKING_VERBS) {
-    assert.match(v, /ing$/, `${v} must be a present participle`);
-    assert.doesNotMatch(v, /almost|finish|complet|nearly/i, `${v} claims progress nothing measures`);
+    assert.match(v, /^[A-Za-zé-]+ing$/, `${v} must be one present participle`);
+    assert.doesNotMatch(v, /almost|finish|complet|nearly|done/i, `${v} claims progress nothing measures`);
   }
 });
 
-test("a zero or negative start time still yields a real verb", () => {
+test("a zero, negative or missing time still yields a real word", () => {
   assert.ok(WORKING_VERBS.includes(workingVerb(0)));
-  assert.ok(WORKING_VERBS.includes(workingVerb(-5)));
+  assert.ok(WORKING_VERBS.includes(workingVerb(-5, -100)));
+  assert.ok(WORKING_VERBS.includes(workingVerb(1_755_000_000_000, 1e12)));
 });

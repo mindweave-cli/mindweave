@@ -151,6 +151,23 @@ test("resuming a session keeps what it already spent", async () => {
   }
 });
 
+test("a resumed session still knows how full its context is", async () => {
+  // The measured overhead (system prompt, tool schemas, working set) lived only in memory,
+  // so a reopened session counted its transcript alone until its first call: the context
+  // meter read 23% on a session that was already past its compaction bar.
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mw-overhead-"));
+  try {
+    const first = await sessionIn(dir, [call()]);
+    first.contextOverhead = { tokens: 14_500, model: "test-model" };
+    await saveSession(first);
+    const back = await resumeSession(dir, first.id);
+    assert.ok(back, "the session did not resume");
+    assert.deepEqual(back.contextOverhead, { tokens: 14_500, model: "test-model" }, "resume forgot the measured overhead");
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("the engine records the model that produced each call", () => {
   // Separate from the persistence tests above ON PURPOSE. Those build a CallUsage by
   // hand and check it survives the write, which says nothing about whether the engine

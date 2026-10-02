@@ -11,6 +11,10 @@ rather than failing outright, which points at process handling that has only eve
 exercised on Windows. CI runs Windows alone until that is fixed, so a green run means
 something.
 
+The desktop app, [mwcode](https://github.com/mindweave-cli/mwcode), ships for macOS and
+Linux too, with Mindweave and its own Node inside, so that is the way to use it there for
+now.
+
 Making a platform work is the single most useful thing an outside contributor can take
 on, and it is genuinely open. See [CONTRIBUTING.md](CONTRIBUTING.md).
 

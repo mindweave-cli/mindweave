@@ -17,6 +17,10 @@ export function capLines(lines: string[], max: number): string {
   return [...lines.slice(0, max), `  … (${hidden} more line${hidden === 1 ? "" : "s"})`].join("\n");
 }
 
+/** Line budget for `ToolResult.detailFull` — the uncut block a graphical front end
+ *  shows when a row is expanded. Still bounded, so one giant write can't flood it. */
+export const FULL_DETAIL_MAX = 2000;
+
 // ── Scope helpers (pure) — the "what/where/how much" a change touched, so the row
 // isn't just a diff with no sense of range or magnitude. Kept pure + tested.
 
@@ -43,28 +47,28 @@ export function withScope(scope: string, body: string): string {
 }
 
 /** A +/- diff for an edit: the replaced lines removed, the new lines added. */
-export function editDetail(oldStr: string, newStr: string): string {
+export function editDetail(oldStr: string, newStr: string, max = 30): string {
   const lines = [
     ...stripTrailingNewline(oldStr).split("\n").map((l) => `- ${l}`),
     ...stripTrailingNewline(newStr).split("\n").map((l) => `+ ${l}`),
   ];
-  return capLines(lines, 30);
+  return capLines(lines, max);
 }
 
 /** A stacked +/- diff for a sequence of edits (the edit tool), one block per edit. */
-export function multiEditDetail(edits: { oldString: string; newString: string }[]): string {
+export function multiEditDetail(edits: { oldString: string; newString: string }[], max = 30): string {
   const lines: string[] = [];
   for (const e of edits) {
     lines.push(...stripTrailingNewline(e.oldString).split("\n").map((l) => `- ${l}`));
     lines.push(...stripTrailingNewline(e.newString).split("\n").map((l) => `+ ${l}`));
   }
-  return capLines(lines, 30);
+  return capLines(lines, max);
 }
 
 /** A preview of a newly created file — all additions. */
-export function writeDetail(content: string): string {
+export function writeDetail(content: string, max = 20): string {
   if (content === "") return "";
-  return capLines(stripTrailingNewline(content).split("\n").map((l) => `+ ${l}`), 20);
+  return capLines(stripTrailingNewline(content).split("\n").map((l) => `+ ${l}`), max);
 }
 
 const ESC = String.fromCharCode(27);

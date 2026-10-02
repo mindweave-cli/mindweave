@@ -17,7 +17,7 @@ import { promises as fs } from "node:fs";
 import type { Tool, ToolResult } from "./types.js";
 import { recordWrite, relativize, resolvePath } from "./paths.js";
 import { applyEol } from "./eol.js";
-import { editDetail, lineCount, magnitude, withScope } from "./detail.js";
+import { FULL_DETAIL_MAX, editDetail, lineCount, magnitude, withScope } from "./detail.js";
 import { numberedWindow } from "./editWindow.js";
 import { normalizeLf } from "./editCore.js";
 import { prepareEditTarget, unreadError, fail, failQuietly, errText } from "./editTarget.js";
@@ -146,6 +146,7 @@ export const replaceSymbolBody: Tool = {
         `New definition — line-numbered so you can make further edits without re-reading:\n${window}`,
       summary: `replaced ${span.name} in ${shown} · ${scope}`,
       detail: withScope(scope, editDetail(oldBody, args.new_definition)),
+      detailFull: withScope(scope, editDetail(oldBody, args.new_definition, FULL_DETAIL_MAX)),
       detailKind: "diff" as const,
     };
   },

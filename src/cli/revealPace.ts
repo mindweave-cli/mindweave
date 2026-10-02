@@ -85,11 +85,11 @@ export function revealWait({ flush }: PaceInput): number {
  * the one place the pacer could not see.
  *
  * Sealing it on its own beat first lets the sentence land alone and be read before
- * the row arrives under it. That is worth a beat only when a block will actually
- * appear, which is why `narrated` is checked here: the narration budget is one line
- * per TURN, so a second sentence seals to nothing (sealAssistant's `suppressed`) and
- * pausing for it would buy an empty three seconds.
+ * the row arrives under it. This holds for EVERY sentence in a turn, not just the first:
+ * narration used to be capped at one line per turn, so a second sentence sealed to nothing
+ * and was skipped here, and that cap was removed (see sealAssistant). Left in place, this
+ * check made the second and later sentences land in the same paint as their tool row.
  */
-export function narrationPending(s: { openAsstId: number | null; raw: string; narrated: boolean }): boolean {
-  return s.openAsstId !== null && !s.narrated && s.raw.trim().length > 0;
+export function narrationPending(s: { openAsstId: number | null; raw: string; narrated?: boolean }): boolean {
+  return s.openAsstId !== null && s.raw.trim().length > 0;
 }

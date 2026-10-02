@@ -16,6 +16,7 @@
  */
 import { Box, Text } from "ink";
 import type { ReactNode } from "react";
+import { ACCENT } from "../theme.js";
 
 /** Rows visible at once, for a caller with no real budget to pass. Every real caller gets
  *  its budget from the shared footer box instead — see `maxRows` on `MiniTabPanel`. */
@@ -186,10 +187,10 @@ export function MiniTabRow({
   // its usual share first, so a two-column row (a label plus a status) is unchanged.
   const leftWidth = right === undefined ? Math.max(4, inner - prefixWidth - midWidth) : mid === undefined ? 24 : 10;
   const rightWidth = Math.max(4, inner - prefixWidth - leftWidth - midWidth);
-  const labelColor = leftColor ?? (on ? "cyan" : undefined);
+  const labelColor = leftColor ?? (on ? ACCENT : undefined);
   return (
     <Box flexShrink={0} width={inner}>
-      <Text color={on ? "cyan" : undefined} bold={on}>
+      <Text color={on ? ACCENT : undefined} bold={on}>
         {on ? " › " : "   "}
         {showNumber ? `${String(n).padStart(numWidth)}  ` : ""}
       </Text>

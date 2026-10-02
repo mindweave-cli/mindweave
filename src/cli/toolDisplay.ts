@@ -8,6 +8,7 @@
  */
 import { toPathList } from "../tools/pathList.js";
 import { formatDuration } from "../tools/detail.js";
+import { BAD, GOOD } from "./theme.js";
 
 /** Raw tool name → the bold display name shown in the row. */
 const DISPLAY_NAME: Record<string, string> = {
@@ -24,6 +25,7 @@ const DISPLAY_NAME: Record<string, string> = {
   web_fetch: "Fetch",
   web_search: "WebSearch",
   screenshot: "WindowCapture",
+  ui: "App",
   view_image: "Viewed",
   use_skill: "Skill",
   skill: "Skill",
@@ -87,16 +89,68 @@ const GROUPABLE = new Set([
 // line and squiggle, was the case that got hidden. It now stays ungrouped and reports
 // nothing at all when it finds nothing (`quiet`), which removes the wall outright.
 
+/**
+ * Tools the conversation never draws where they happen: the agent finding its way around
+ * (search and the code lookups), its own notes (the task list), loading a tool, and polling a
+ * background command.
+ */
+const UNSHOWN = new Set(["search", "outline", "definition", "references", "relevant", "todo_write", "find_tools", "shells"]);
+const READS = new Set(["read_file", "read_symbol"]);
+
+/** A path as a key: one spelling per file, whatever slashes or case the call used. */
+function pathKey(p: string): string {
+  return p.trim().replace(/\\/g, "/").toLowerCase();
+}
+
+/**
+ * Whether the words a model wrote before these tool calls belong in the conversation (pure).
+ *
+ * Text is shown when it leads to something the user can see: an edit, a command, a first
+ * read of a file. When everything it leads to is invisible (searches, lookups, re-reading a
+ * file already read this turn), the text is narration about nothing on screen, and the
+ * conversation leaves it out. The reply that ends a turn has no calls and is never judged here.
+ *
+ * `readBefore` holds the files already read this turn; the caller adds this step's reads
+ * afterwards with {@link noteReads}.
+ */
+export function narrationShown(calls: { name: string; args: Record<string, unknown> }[], readBefore: ReadonlySet<string>): boolean {
+  return calls.some((c) => {
+    if (UNSHOWN.has(c.name)) return false;
+    if (READS.has(c.name)) {
+      const paths = toPathList(c.args);
+      return paths.length === 0 || paths.some((p) => !readBefore.has(pathKey(p)));
+    }
+    return true;
+  });
+}
+
+/** Record the files these calls read, for the next {@link narrationShown} in the same turn. */
+export function noteReads(calls: { name: string; args: Record<string, unknown> }[], readBefore: Set<string>): void {
+  for (const c of calls) if (READS.has(c.name)) for (const p of toPathList(c.args)) readBefore.add(pathKey(p));
+}
+
+/**
+ * Tools whose calls never become a row at all: the agent finding its way around (search and the
+ * code lookups), its own task list, and loading a tool. Their results are always quiet, so they
+ * used to vanish without being seen only because a row was held back until its result came. Rows
+ * now appear while a call works, so these are left out from the start instead of flashing up and
+ * disappearing.
+ */
+const NEVER_SHOWN = new Set(["search", "outline", "definition", "references", "relevant", "todo_write", "find_tools"]);
+
+/** Whether a tool's calls are never drawn in the conversation. */
+export function neverShown(name: string): boolean {
+  return NEVER_SHOWN.has(name);
+}
+
 /** Whether a tool call should fold into the discovery group rather than its own row. */
 export function isGroupable(name: string): boolean {
   return GROUPABLE.has(name);
 }
 
 /**
- * The action a tool performs, used to colour its row dot. A small blue family
- * (with red reserved for failures) so the transcript reads at a glance — the
- * product's blue/black vision: looking is light, changing is vivid, running is
- * indigo, a failure is red.
+ * The action a tool performs. It decides how a row reads (its verb and what its result
+ * shows) and whether its dot turns green when it succeeds (see `dotColorFor`).
  */
 export type ToolKind =
   | "read"
@@ -134,6 +188,7 @@ const TOOL_KIND: Record<string, ToolKind> = {
   web: "websearch",
   screenshot: "screenshot",
   view_image: "screenshot",
+  ui: "screenshot",
   kill_shell: "run",
   governor: "governor",
   // The MCP family: finding an external server's tools, reading its data, adding one.
@@ -152,26 +207,24 @@ export function toolKind(name: string): ToolKind {
   return TOOL_KIND[name] ?? "meta";
 }
 
-/** Terminal colour per action kind — a blue family, truecolor hex (terminals that
- *  can't render it downsample gracefully). Red is reserved for the error state. */
-export const KIND_COLOR: Record<ToolKind, string> = {
-  read: "#7cc4ff", // light blue — looking at code
-  search: "#4a90d9", // blue — searching / mapping the codebase
-  edit: "#3b82f6", // vivid blue — changing code
-  write: "#38bdf8", // sky — creating a file
-  run: "#6366f1", // indigo — running a command
-  check: "#22d3ee", // cyan — diagnostics / verifying
-  agent: "#a78bfa", // violet — a spawned sub-agent (set apart from the blue tool family)
-  websearch: "#2dd4bf", // teal — reaching outside the machine (web search / fetch)
-  screenshot: "#facc15", // amber — a capture, set apart since it's visual not textual
-  mcp: "#f472b6", // pink — an external server's own tool, not one of ours
-  checkpoint: "#94a3b8", // slate — housekeeping you'd want to notice (a rollback)
-  governor: "#fb923c", // orange — a policy decision, not an ordinary tool result
-  meta: "#60a5fa", // soft blue — bookkeeping (todo, skills, rules)
-};
-
 /** The dot colour for a failed tool / failed test. */
-export const ERROR_COLOR = "#ff5f56";
+export const ERROR_COLOR = BAD;
+/** The dot colour for work that went through. */
+export const OK_COLOR = GOOD;
+
+/** The kinds whose success is worth showing: something was changed, checked or run. */
+const OK_KINDS: ReadonlySet<ToolKind> = new Set(["edit", "write", "check", "run"]);
+
+/**
+ * A row's dot colour. Three states and nothing else: red when it failed, green once an
+ * edit / write / check / command has gone through, and the terminal's own colour (white)
+ * for everything else. Undefined means "leave it uncoloured".
+ */
+export function dotColorFor(kind: ToolKind | undefined, status: "running" | "ok" | "error"): string | undefined {
+  if (status === "error") return ERROR_COLOR;
+  if (status === "ok" && kind !== undefined && OK_KINDS.has(kind)) return OK_COLOR;
+  return undefined;
+}
 
 export interface ToolDisplay {
   name: string;
@@ -239,9 +292,39 @@ export function toolDisplay(name: string, args: Record<string, unknown>): ToolDi
       ...(t ? { meta: `[timeout ${formatDuration(t)}]` } : {}),
     };
   }
+  // The combined `web` tool says which of the two it is doing by its arguments, and the row
+  // names that: a page read shows its address, a search its query. Labelled generically it
+  // read "Web" with nothing after it for every page it opened.
+  if (name === "web") {
+    return str(args.url)
+      ? { name: DISPLAY_NAME.web_fetch!, arg: clip(str(args.url), 48) || undefined, kind }
+      : { name: DISPLAY_NAME.web_search!, arg: clip(str(args.query), 48) || undefined, kind };
+  }
   if (name === "web_fetch") return { name: display, arg: clip(str(args.url), 48) || undefined, kind };
   if (name === "web_search") return { name: display, arg: clip(str(args.query), 48) || undefined, kind };
   if (name === "screenshot") return { name: display, arg: str(args.window) || undefined, kind };
+  // Named by what it does to the app: Look(localhost:5173), Click(#4), Type("halo"), Key(Enter).
+  if (name === "ui") {
+    const action = str(args.action);
+    const target = typeof args.target === "number" || str(args.target) ? `#${String(args.target)}` : str(args.name) ? `"${clip(str(args.name), 32)}"` : "";
+    if (Array.isArray(args.steps) && args.steps.length) {
+      const n = args.steps.length;
+      return { name: "Steps", arg: `${n} step${n === 1 ? "" : "s"}`, kind };
+    }
+    if (action === "click") return { name: "Click", arg: target || undefined, kind };
+    if (action === "hover") return { name: "Hover", arg: target || undefined, kind };
+    if (action === "type") return { name: "Type", arg: clip(str(args.text), 40) ? `"${clip(str(args.text), 40)}"` : undefined, kind };
+    if (action === "key") return { name: "Key", arg: [str(args.key), target].filter(Boolean).join(" ") || undefined, kind };
+    if (action === "scroll") return { name: "Scroll", arg: str(args.direction) || "down", kind };
+    if (action === "back") return { name: "Back", kind };
+    if (action === "wait") return { name: "Wait", arg: clip(str(args.text) || str(args.gone), 40) ? `"${clip(str(args.text) || str(args.gone), 40)}"` : undefined, kind };
+    if (action === "resize") return { name: "Resize", arg: args.width && args.height ? `${String(args.width)}×${String(args.height)}` : "reset", kind };
+    if (action === "inspect") return { name: "Inspect", arg: target || undefined, kind };
+    if (action === "close") return { name: "Close", kind };
+    const url = str(args.url).replace(/^https?:\/\//i, "").replace(/\/$/, "");
+    const port = args.port !== undefined && args.port !== null && String(args.port) ? `port ${String(args.port)}` : "";
+    return { name: "Look", arg: clip(url, 48) || [port, str(args.window)].filter(Boolean).join(" · ") || undefined, kind };
+  }
   if (name === "spawn_subagent") return { name: display, arg: clip(str(args.task), 48) || undefined, kind };
 
   // `paths` is a LIST — read_file takes several files in one call, and the row has to

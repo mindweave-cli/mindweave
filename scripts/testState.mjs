@@ -42,3 +42,10 @@ if (!process.env.MINDWEAVE_STATE_DIR) {
 if (!process.env.MINDWEAVE_OAUTH_BACKOFF_MS) {
   process.env.MINDWEAVE_OAUTH_BACKOFF_MS = "1";
 }
+
+// A command that starts an app or server waits a few real seconds to see it come up (see
+// BackgroundShells.settle). The tests that start such commands only want the shell id back, so the
+// wait is off here; the tests of the wait itself set it explicitly.
+if (process.env.MINDWEAVE_READY_WINDOW_MS === undefined) {
+  process.env.MINDWEAVE_READY_WINDOW_MS = "0";
+}

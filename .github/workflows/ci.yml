@@ -38,10 +38,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 20 is the floor declared in package.json engines; 22 is current LTS. Both
-        # run so a change needing a newer API fails here rather than for a user on
-        # the minimum supported version.
-        node: [20, 22]
+        # 24 is the floor declared in package.json engines: current LTS, the Node the
+        # desktop app's Electron embeds, and it has the built-in WebSocket the page route
+        # of `ui` talks over. "current" is the newest release, so a change that breaks
+        # on it fails here first. Both run so a change needing a newer API fails here
+        # rather than for a user on the minimum supported version.
+        node: ["24", "current"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

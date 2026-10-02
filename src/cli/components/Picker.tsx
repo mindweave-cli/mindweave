@@ -17,6 +17,7 @@ import { Box, Text, useInput } from "ink";
 import { clipRows } from "../wrap.js";
 import { matchesWords, wordsOf } from "../commandArgs.js";
 import { stripMouse } from "../mouse.js";
+import { ACCENT } from "../theme.js";
 
 export interface PickerItem {
   /** The main line shown for the row. */
@@ -212,7 +213,7 @@ export function Picker({
           return (
             <Box key={idx} width={rowWidth} flexShrink={0}>
               <Box flexGrow={1} flexShrink={1} overflow="hidden">
-                <Text color={activeRow ? "cyan" : undefined} bold={activeRow} wrap="truncate-end">
+                <Text color={activeRow ? ACCENT : undefined} bold={activeRow} wrap="truncate-end">
                   {activeRow ? "› " : "  "}
                   {item.label}
                 </Text>
@@ -228,7 +229,7 @@ export function Picker({
         }
         return (
           <Box key={idx} width={rowWidth} flexShrink={0}>
-            <Text color={activeRow ? "cyan" : undefined} bold={activeRow}>
+            <Text color={activeRow ? ACCENT : undefined} bold={activeRow}>
               {activeRow ? "› " : "  "}
               {item.label.padEnd(labelWidth)}
             </Text>
@@ -262,7 +263,7 @@ export function Picker({
           // the box's height.
           <Box width={rowWidth}>
             <Text wrap="truncate-start">
-              <Text color="cyan">{filter}</Text>
+              <Text color={ACCENT}>{filter}</Text>
               <Text dimColor>{count === 0 ? "  · no matches · ⌫ edit · Esc back" : "  · ↑/↓ move · Enter select · ⌫ edit · Esc back"}</Text>
             </Text>
           </Box>

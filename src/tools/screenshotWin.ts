@@ -40,6 +40,7 @@ import { spawn } from "node:child_process";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DESK_CS, HIDDEN_MARK, hiddenDesktopName, windowArgs } from "./hiddenDesktop.js";
 
 /** One capturable top-level window. */
 export interface WindowInfo {
@@ -53,7 +54,7 @@ export interface WindowInfo {
 const PS_TIMEOUT_MS = 20_000;
 
 const SCRIPT = String.raw`
-param([string]$Mode = "list", [string]$Handle = "", [string]$Out = "")
+param([string]$Mode = "list", [string]$Handle = "", [string]$Out = "", [string]$Desktop = "", [string]$Hidden = "")
 $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.Drawing
 
@@ -121,7 +122,12 @@ public static class MwCapture {
         return GetWindowRect(h, out r);
     }
 
-    public static List<string> List() {
+    // The hidden desktop's windows are marked, so a capture is sent back there.
+    public static string ListOn(string desk) {
+        return MwDesk.On(desk, () => string.Join("\n", List("${HIDDEN_MARK}").ToArray()));
+    }
+
+    public static List<string> List(string mark) {
         var found = new List<string>();
         IntPtr fg = GetForegroundWindow();
         EnumWindows(delegate(IntPtr h, IntPtr l) {
@@ -149,13 +155,19 @@ public static class MwCapture {
             }
             // The leading marker is how the caller knows which window the user is
             // actually looking at, so it can name it when asking permission.
-            found.Add((h == fg ? "*" : "-") + h.ToInt64().ToString() + "\t" + title);
+            found.Add((h == fg && mark.Length == 0 ? "*" : "-") + mark + h.ToInt64().ToString() + "\t" + title);
             return true;
         }, IntPtr.Zero);
         return found;
     }
 
-    public static string Capture(IntPtr h, string path) {
+    public static string CaptureOn(string desk, IntPtr h, string path) {
+        return MwDesk.On(desk, () => Capture(h, path, string.IsNullOrEmpty(desk)));
+    }
+
+    // screen: whether a blank PrintWindow may fall back to copying the screen. Never for a
+    // window on the hidden desktop: the screen is the USER's, and that window is not on it.
+    public static string Capture(IntPtr h, string path, bool screen) {
         RECT r;
         if (!Bounds(h, out r)) return "ERR could not measure the window";
         int w = r.Right - r.Left, ht = r.Bottom - r.Top;
@@ -168,6 +180,7 @@ public static class MwCapture {
                 g.ReleaseHdc(hdc);
             }
             if (!drew || Blank(bmp)) {
+                if (!screen) return "ERR the window drew nothing to capture";
                 using (var g = Graphics.FromImage(bmp)) {
                     g.CopyFromScreen(r.Left, r.Top, 0, 0, new Size(w, ht));
                 }
@@ -186,20 +199,23 @@ public static class MwCapture {
             && b.GetPixel(b.Width - 2, b.Height - 2).A == 0;
     }
 }
+${DESK_CS}
 "@
 
 # Before any measurement, or every rectangle is in the wrong coordinate space.
 [MwCapture]::Dpi() | Out-Null
 
 if ($Mode -eq "list") {
-    [MwCapture]::List() | ForEach-Object { Write-Output $_ }
+    [MwCapture]::List("") | ForEach-Object { Write-Output $_ }
+    # The windows of apps started for testing, which are never on the screen.
+    if ($Hidden -and [MwDesk]::Exists($Hidden)) { Write-Output ([MwCapture]::ListOn($Hidden)) }
     exit 0
 }
 
 if ($Mode -eq "capture") {
     $h = if ($Handle -eq "foreground") { [MwCapture]::GetForegroundWindow() } else { [IntPtr][Int64]$Handle }
     if ($h -eq [IntPtr]::Zero) { Write-Output "ERR no such window"; exit 1 }
-    $r = [MwCapture]::Capture($h, $Out)
+    $r = [MwCapture]::CaptureOn($Desktop, $h, $Out)
     Write-Output $r
     if ($r.StartsWith("ERR")) { exit 1 }
     exit 0
@@ -271,7 +287,7 @@ export function parseWindowList(stdout: string): WindowInfo[] {
     if (tab <= 0) continue;
     const marked = line.slice(0, tab).trim();
     const title = line.slice(tab + 1).trim();
-    const match = /^([*-])(\d+)$/.exec(marked);
+    const match = new RegExp(`^([*-])(${HIDDEN_MARK}?\\d+)$`).exec(marked);
     if (!match || !title) continue;
     windows.push({ handle: match[2]!, title, foreground: match[1] === "*" });
   }
@@ -284,7 +300,7 @@ export function parseWindowList(stdout: string): WindowInfo[] {
  * title (a custom title bar) kept and labelled by its process rather than dropped.
  */
 export async function listWindows(signal?: AbortSignal): Promise<WindowInfo[]> {
-  return parseWindowList(await runScript(["-Mode", "list"], signal));
+  return parseWindowList(await runScript(["-Mode", "list", "-Hidden", hiddenDesktopName()], signal));
 }
 
 /** Capture one window to `outPath`. `handle` may be the literal "foreground". */
@@ -293,7 +309,8 @@ export async function captureWindow(
   outPath: string,
   signal?: AbortSignal,
 ): Promise<{ width: number; height: number }> {
-  const out = await runScript(["-Mode", "capture", "-Handle", handle, "-Out", outPath], signal);
+  const target = windowArgs(handle);
+  const out = await runScript(["-Mode", "capture", "-Handle", target.handle, "-Out", outPath, ...target.desktop], signal);
   const match = /OK\s+(\d+)\s+(\d+)/.exec(out);
   if (!match) throw new Error(firstLine(out) || "the capture produced no image");
   return { width: Number(match[1]), height: Number(match[2]) };

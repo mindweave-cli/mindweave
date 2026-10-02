@@ -147,11 +147,14 @@ test("the tool list is rebuilt per STEP, so a searched tool is callable at once"
   assert.match(call, /stepTools\(\)/, "each step must send the CURRENT tool list");
 });
 
+// autocompact is a thin wrapper (fires onCompactionStart/onCompactionEnd around the
+// real work) so a front end can show a "compacting…" state; the gated logic these two
+// tests pin actually lives in summarizeAndSplice, which it calls.
 test("the summarizer's reply is gated before it can replace the transcript", () => {
   // Silent when broken: an accepted bad summary looks identical to a good one, and
   // the conversation it replaced is already gone.
-  const body = engineSource.match(/async function autocompact\([\s\S]*?\n\}/)?.[0];
-  assert.ok(body, "autocompact not found — did it move?");
+  const body = engineSource.match(/async function summarizeAndSplice\([\s\S]*?\n\}/)?.[0];
+  assert.ok(body, "summarizeAndSplice not found — did it move?");
   assert.match(body, /usableSummary\(turn\.content, turn\.stop\)/, "the stop reason must be part of the decision");
   assert.doesNotMatch(body, /const \{ content \}/, "destructuring content alone discards the stop reason");
 });
@@ -159,7 +162,7 @@ test("the summarizer's reply is gated before it can replace the transcript", () 
 test("EVERY summarizer rejection counts toward the circuit breaker", () => {
   // A rejection that doesn't count means a doomed summarizer is called on every step
   // forever, which is the runaway the breaker exists to stop.
-  const body = engineSource.match(/async function autocompact\([\s\S]*?\n\}/)?.[0];
+  const body = engineSource.match(/async function summarizeAndSplice\([\s\S]*?\n\}/)?.[0];
   assert.ok(body);
   // Pin the property, not a count: BOTH ways out — a thrown error and a reply that
   // came back unusable — have to go through the same failure path.
@@ -167,8 +170,54 @@ test("EVERY summarizer rejection counts toward the circuit breaker", () => {
   // screen, and freezing the exact spelling would fail every time that wording improved
   // while still passing if the call vanished from one of the two paths.
   assert.match(body, /if \(!usable\) return void fail\(/, "an unusable reply must count as a failure");
-  assert.match(body, /\} catch [\s\S]{0,20}?\{\s*\n\s*return void fail\(/, "a thrown error must count as a failure");
+  // The one exception is the user pressing Esc: a call they stopped did not fail, and
+  // counting it would let a few stops switch compaction off for the session. The guard
+  // must be that exact check and nothing broader, so every other throw still counts.
+  assert.match(
+    body,
+    /\} catch [\s\S]{0,20}?\{\s*\n(?:\s*\/\/[^\n]*\n)*\s*if \(options\.signal\?\.aborted\) return;\s*\n[\s\S]{0,700}return void fail\(/,
+    "a thrown error must count as a failure (only a user's stop is exempt)",
+  );
+  // The one legitimate branch in between (a clearer message for a known unfixable
+  // refusal, see the agentic-harness test) still has to end in `fail(`, never a bare
+  // return — that's what would silently skip the breaker for that one case.
+  const catchBlock = body.match(/\} catch [\s\S]*$/)?.[0] ?? "";
+  assert.doesNotMatch(catchBlock, /\n\s*return;\s*\n/, "no bare return in the catch block besides the signal-aborted guard");
   assert.doesNotMatch(body, /if \(!summary\) return;/, "a bare return skips the breaker");
+});
+
+test("the summarizer loads ITS OWN model's driver before calling it", () => {
+  // Silent when broken, and confusing when it breaks: `activeDriver()` is a plain
+  // global set by the last `ensureDriver` call, not scoped to this session. A
+  // sub-agent (or any other background aux call) running a DIFFERENT model in
+  // between leaves it pointed at that provider — this call would then hand THAT
+  // provider its own model string, which the provider correctly refuses as one it
+  // has never heard of. Real failure seen live: "Unknown Model, please check the
+  // model code." on an OpenRouter model, from every retry, because the global had
+  // been left on a different provider entirely.
+  const body = engineSource.match(/async function summarizeAndSplice\([\s\S]*?\n\}/)?.[0];
+  assert.ok(body);
+  assert.match(
+    body,
+    /await ensureDriver\(model\.model\);[\s\S]{0,40}activeDriver\(\)/,
+    "ensureDriver(model.model) must run immediately before activeDriver() is used",
+  );
+});
+
+test("an agentic-harness-only refusal gets an honest explanation, not the raw provider JSON", () => {
+  // Confirmed live against the real model: attaching real tool schemas (withAuxModel's
+  // retry) does NOT get past this one — OpenRouter's own error names the cause as
+  // `"failed_routing_step":"Gate Free Endpoints by Agentic Harness"`, a gate on the
+  // CALLING APP's identity that no request shape can satisfy. Surfacing the raw JSON
+  // here would read as a Mindweave bug; this is a model limit outside Mindweave's control.
+  const body = engineSource.match(/async function summarizeAndSplice\([\s\S]*?\n\}/)?.[0];
+  assert.ok(body);
+  assert.match(
+    body,
+    /if \(isAgenticOnlyRefusal\(error\)\)/,
+    "the agentic-harness-only refusal must be checked before falling back to the raw provider message",
+  );
+  assert.match(body, /won't serve Mindweave's background calls/, "the explanation must say plainly that this is a model limit");
 });
 
 test("microcompaction's result is never discarded on a counter nobody remembered", () => {

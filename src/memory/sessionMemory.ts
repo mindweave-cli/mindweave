@@ -18,9 +18,11 @@
  * The pure parts (the update trigger, rendering, bounding) are unit-tested; the update
  * itself is one cheap model call, degrade-safe (a failure keeps the last good notes).
  */
+import { withAuxModel } from "../dynamo/auxModel.js";
 import type { Session } from "./types.js";
 import { estimateEntriesTokens, estimateTokens, formatTranscriptForSummary } from "./compaction.js";
-import { activeDriver } from "../drivers/registry.js";
+import { activeDriver, ensureDriver } from "../drivers/registry.js";
+import { toolSchemas } from "../tools/registry.js";
 
 const env = (name: string, fallback: number): number => {
   const v = Number(process.env[name]);
@@ -52,7 +54,7 @@ export const SESSION_MEMORY_SECTION_TOKENS = env("MINDWEAVE_SESSION_MEMORY_SECTI
  *  the content beneath each. "Current State" is first-class: it's what lets the model
  *  pick up cleanly after a compaction. */
 export const SESSION_MEMORY_TEMPLATE = `# Session Title
-_A short and distinctive 5-10 word descriptive title for the session. Super info dense, no filler_
+_A short and distinctive 3-6 word title for the session, like a commit subject ("Fix SQL injection in login"). No project name, no filler_
 
 # Current State
 _What is actively being worked on right now? Pending tasks not yet completed. Immediate next steps._
@@ -141,22 +143,35 @@ export function boundSessionMemory(notes: string, maxTokens: number = SESSION_ME
  * persists the notes file, keeping the engine filesystem-pure. Degrade-safe: on any
  * failure the previous notes are kept untouched.
  */
-export async function updateSessionMemory(session: Session): Promise<boolean> {
+export async function updateSessionMemory(session: Session, signal?: AbortSignal): Promise<boolean> {
   const recent = session.transcript.slice(-RECENT_ENTRIES);
   if (recent.length === 0) return false;
   const current = session.sessionMemory?.trim() || SESSION_MEMORY_TEMPLATE;
   try {
-    const { content } = await activeDriver().toolTurn({
-      system: UPDATE_SYSTEM,
-      messages: [
-        {
-          role: "user",
-          content:
-            `CURRENT NOTES:\n${current}\n\n` +
-            `RECENT CONVERSATION:\n${formatTranscriptForSummary(recent)}\n\n${UPDATE_REQUEST}`,
-        },
-      ],
-      model: { ...session.modelConfig, thinking: false },
+    // With reasoning off where the model allows it; see dynamo/auxModel.ts.
+    // `ensureDriver` first: `activeDriver()` is a plain global, and a sub-agent (or
+    // another background aux call) running its own model in between leaves it
+    // pointed at THAT provider — this call would then hand ITS model string to the
+    // wrong provider's API. See the matching fix + comment in dynamo/engine.ts's
+    // summarizeAndSplice, which hit the exact same failure shape.
+    //
+    // `withTools`: a real (read-only) tool set, attached only if the model already
+    // refused a bare call — some free models serve only tool-shaped requests.
+    const { content } = await withAuxModel(session.modelConfig, async (model, withTools) => {
+      await ensureDriver(model.model);
+      return activeDriver().toolTurn({
+        system: UPDATE_SYSTEM,
+        messages: [
+          {
+            role: "user",
+            content:
+              `CURRENT NOTES:\n${current}\n\n` +
+              `RECENT CONVERSATION:\n${formatTranscriptForSummary(recent)}\n\n${UPDATE_REQUEST}`,
+          },
+        ],
+        model,
+        ...(withTools ? { tools: toolSchemas({ readOnlyOnly: true }) } : {}),
+      }, { signal }); // Esc reaches this call too; a slow model must not hold a stop open
     });
     const notes = content.trim();
     if (!notes) return false;

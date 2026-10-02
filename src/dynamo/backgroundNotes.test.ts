@@ -310,3 +310,26 @@ test("a turn that was already at the root says nothing about it", async () => {
   const all = requests[0]!.messages.map((m) => m.content ?? "").join("\n");
   assert.doesNotMatch(all, /previous turn had moved into/);
 });
+
+test("an app opening a port wakes the agent with where it is, and that nothing is wrong", () => {
+  const note = backgroundEventNote({ info: ended({ status: "running", finishedAt: null, listening: [1430, 9222] }), kind: "opened", tail: "Running `target\debug\gamo.exe`", wake: true, ports: [9222] });
+  assert.match(note ?? "", /opened port 9222\./);
+  assert.match(note ?? "", /call ui with that port/);
+  assert.match(note ?? "", /do not restart it/);
+  const up = backgroundEventNote({ info: ended({ status: "running", finishedAt: null, listening: [5173] }), kind: "ready", tail: "", wake: true });
+  assert.match(up ?? "", /is up and running \(listening on port 5173\)/);
+});
+
+// ── after a compaction: what is still running ────────────────────────────────
+
+test("liveStateNote lists what is still running, and nothing when nothing is", async () => {
+  const { liveStateNote } = await import("./engine.js");
+  assert.equal(liveStateNote([], null), null);
+  const now = 1_000_000;
+  const shell = ended({ id: 1, status: "running", finishedAt: null, command: "npm run tauri dev", startedAt: now - 12 * 60_000, listening: [1430, 9222] });
+  const note = liveStateNote([shell], 'The ui tool still has "Gamo" (127.0.0.1:1430) open, as you left it.', now) ?? "";
+  assert.match(note, /^\[Still running after the compaction/);
+  assert.match(note, /#1 \(`npm run tauri dev`\): running for 12 min, listening on port 1430, 9222\./);
+  assert.match(note, /The ui tool still has "Gamo"/);
+  assert.match(note, /Do not start any of these again/);
+});

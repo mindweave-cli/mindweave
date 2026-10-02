@@ -23,15 +23,18 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { isAbsolute, resolve } from "node:path";
 import { Box, Static, Text, measureElement, useApp, useInput, useStdout, type DOMElement } from "ink";
-import { compactNow, contextUsed, respond } from "../dynamo/engine.js";
-import type { SteeredMessage } from "../dynamo/engine.js";
-import { contextPressure, sharpContextWindow, autoCompactThreshold } from "../dynamo/contextWindow.js";
+import { compactNow, contextUsed, effectiveAutoCompactThreshold, respond } from "../dynamo/engine.js";
+import type { RespondOptions, SteeredMessage } from "../dynamo/engine.js";
+import type { MarathonOptions } from "../dynamo/marathon.js";
+import { contextPressure, sharpContextWindow } from "../dynamo/contextWindow.js";
 import { contextBudget, formatBudget } from "../dynamo/contextBudget.js";
+import { contextView, resetContextOverride, setContextOverride } from "../core/contextSettings.js";
 import { createSession, resumeSession, reloadProjectMemory } from "../memory/session.js";
 import { saveSession, listSessions } from "../memory/store.js";
 import { stopChassis } from "../alternator/lane.js";
 import { loadSkillBody, substituteSkillArgs } from "../governor/skills.js";
 import { appendForbidden, appendForbiddenCommand } from "../governor/write.js";
+import { stopUi } from "../tools/ui.js";
 import { addRoot, removeRoot } from "../tools/workspace.js";
 import { discoverRelatedRoots } from "../tools/workspaceDiscover.js";
 import { rootLabel, rootsOf, relativize } from "../tools/paths.js";
@@ -45,8 +48,9 @@ import { providerRows, keyRowsFor, nextSlotFor } from "./keyManager.js";
 import { keysFor } from "./keyStore.js";
 import { TrustGate } from "./components/TrustGate.js";
 import { rootBreadth, breadthWarning, trustPersists, isTrusted, rememberTrust } from "./trust.js";
-import { projectDir } from "../memory/store.js";
+import { checkpointDir, projectDir } from "../memory/store.js";
 import { parseUndoArg, undoNotice } from "../tools/checkpoints.js";
+import { rewindPoints, rewindTo, pasteSlot, reloadAgentState, type RewindMode, type RewindPoint, type RewindResult } from "../memory/rewind.js";
 import { DEFAULT_MODEL_CONFIG, thinkLevels, thinkLabel, modelLabel, modelsOfProvider, providerOf, usableFallback, needsKeySetup, withModel, saveModelConfig, refreshModels, DISCOVERY_TTL_MS, type ModelConfig } from "../dynamo/model.js";
 import { allProviders, manifestForModel, modelsOf } from "../drivers/registry.js";
 import { orderProviders, orderModels } from "./pickerOrder.js";
@@ -63,11 +67,9 @@ import { versionLabel, appVersion } from "./version.js";
 import { checkForUpdate } from "./updateCheck.js";
 import {
   ANALYTICS_EXPLANATION,
-  analyticsEnabled,
   sendAnalyticsPing,
-  setAnalyticsEnabled,
-  startupStatusLine,
 } from "./analytics.js";
+import { APP_EXPLANATION, APP_PAGE_URL, appAnnouncement, openInBrowser } from "./desktopApp.js";
 import { PromptInput } from "./components/PromptInput.js";
 import { Picker } from "./components/Picker.js";
 import { ApprovalBox } from "./components/ApprovalBox.js";
@@ -79,9 +81,14 @@ import { applyScreenMode } from "./screenShell.js";
 import { saveScreenMode } from "./screenStore.js";
 import { needsMeasure, pruneHeights } from "./blockHeights.js";
 import { BASE_COMMANDS } from "./commands.js";
+import { dismissMarathon } from "../core/turnRunner.js";
+import { describeMarathonEvent, resumeMarathon, startMarathon, type MarathonEvent } from "../dynamo/marathon.js";
+import { MarathonBox } from "./components/MarathonBox.js";
+import { isFinished, isLive, marathonBoxHeight, marathonUiReduce, type MarathonUi } from "./marathonUi.js";
 import { manualCommand, refusalReason } from "./selfUpdate.js";
 import { currentInstall, requestRestart, runUpdate } from "./updateRunner.js";
 import { enableMouse, readMouse, readWheel, stripMouse } from "./mouse.js";
+import { wheelLines, wheelStart, type WheelState } from "./wheelAccel.js";
 import { applySelection, ctrlCShouldCopy, isEmpty, selectionText, type Selection } from "./selection.js";
 import { latestScreen, repaintOverlay, setFrameOverlay } from "./framebuffer/overlay.js";
 import { requestFullRepaint } from "./framebuffer/writer.js";
@@ -91,18 +98,20 @@ import { growFill, INLINE_LIVE_RESERVE, NO_FILL } from "./startupFill.js";
 import { setRowsBelowCaret } from "./exitCursor.js";
 import { caretCell } from "./caretPark.js";
 import { countNewReplies, hitsPill, pillBounds, scrollPill, type PillBounds } from "./scrollPill.js";
-import { virtualWindow } from "./virtualWindow.js";
+import { SCROLLBACK_BLOCKS, virtualWindow } from "./virtualWindow.js";
 import { perf, perfEnabled } from "./perfLog.js";
-import { isGroupMember, groupSettled, planGroupReveal, planStandaloneReveal, resultQueued, STANDALONE_HOLD_MS } from "./groupReveal.js";
+import { newPacer, nextHoldAt, nextMove, takeImmediate, takePaced, type Pacer, type PaceFlags } from "./revealQueue.js";
 import { drain as drainQueue, popAll as popAllQueued, queueMessage, takeSteerable, visibleQueue, type Queued } from "./messageQueue.js";
 import { routeCommand, parseCommandLine, unknownCommandMessage } from "./commandRoute.js";
 import { resolveChoice, splitModelArg } from "./commandArgs.js";
 import { carryAcrossFreshSession } from "./sessionCarry.js";
-import { toolDisplay, isGroupable, KIND_COLOR } from "./toolDisplay.js";
+import { fitBanner } from "./bannerFit.js";
+import { neverShown, toolDisplay, isGroupable, narrationShown, noteReads } from "./toolDisplay.js";
 import { workingVerb } from "./workingVerb.js";
+import { PulseDot } from "./components/PulseDot.js";
 import { narrationPending, revealWait } from "./revealPace.js";
 import { summarizeTask, formatTokens, type TaskUsage } from "../dynamo/pricing.js";
-import { meterReset, meterDelta, meterTick, meterValue, type MeterState } from "../dynamo/liveMeter.js";
+import { meterReset, meterDelta, meterUsage, meterTick, meterValue, type MeterState } from "../dynamo/liveMeter.js";
 import type { Usage } from "../drivers/types.js";
 import type { ShellInfo } from "../tools/backgroundShells.js";
 import { addServerToConfig, configPathFor, parseAddSpec, removeServerFromConfig, resolveConfigPath, splitArgs, type AddSpec } from "../mcp/configWrite.js";
@@ -110,6 +119,7 @@ import { mapPromptArguments, promptCommand, promptUsage } from "../mcp/prompts.j
 import type { Entry, Session, SessionMeta } from "../memory/types.js";
 import { DEFAULT_MODE, modeById, modeFromFlags, nextMode, type ModeId } from "./modes.js";
 import { ApprovalChannel } from "./approvalChannel.js";
+import { ACCENT, WARN } from "./theme.js";
 
 const MINDWEAVE_DOCS_URL = "https://mindweave.dev";
 
@@ -117,16 +127,20 @@ const MINDWEAVE_DOCS_URL = "https://mindweave.dev";
  *  hurrying, short enough that a session sees the whole set rather than one of them. */
 const TIP_ROTATE_MS = 12_000;
 
+/** Two Esc presses this close together, on an empty box, open /rewind. */
+const DOUBLE_ESC_MS = 600;
+
 /** Commands whose whole job is to open a surface in the box under the input. Written out
  *  in full, because only a bare invocation opens anything: given an argument each of these
  *  acts directly and there is no surface to hold the frame for. */
 const OVERLAY_COMMANDS = new Set([
-  "/analytics",
+  "/app",
   "/continue",
   "/key",
   "/mcp",
   "/model",
   "/provider",
+  "/rewind",
   "/shells",
   "/think",
 ]);
@@ -186,7 +200,6 @@ function orderedModelsOf(providerId: string) {
  * prompt, carrying the promise resolver the blocked tool is awaiting.
  */
 type Overlay =
-  | { kind: "analytics" }
   | { kind: "sessions"; items: SessionMeta[] }
   | { kind: "resumeMode"; meta: SessionMeta }
   | { kind: "provider" }
@@ -195,6 +208,10 @@ type Overlay =
   | { kind: "think" }
   | { kind: "screen" }
   | { kind: "shells"; items: ShellInfo[] }
+  /** `/rewind`: your messages, newest first; then the one picked, to confirm. */
+  | { kind: "app" }
+  | { kind: "rewind"; items: RewindPoint[] }
+  | { kind: "rewindConfirm"; point: RewindPoint }
   | {
       kind: "approval";
       question: string;
@@ -389,6 +406,11 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
   // PromptInput's own state, so App is not re-rendered by it and would otherwise
   // keep sizing the chat against a footer that no longer exists — leaving the
   // menu clipped off the bottom of the frame with nothing to correct it.
+  // The Marathon panel: null when there is no run and none is armed. It sits in the
+  // measured footer, so it pushes the chat up instead of overlapping it.
+  const [marathonUi, setMarathonUi] = useState<MarathonUi | null>(null);
+  const marathonUiRef = useRef<MarathonUi | null>(null);
+  marathonUiRef.current = marathonUi;
   const [, bumpFooter] = useState(0);
   const onMenuChange = useCallback(() => bumpFooter((t) => t + 1), []);
   // Turn timing for the status line: when the current turn started, how long the
@@ -412,8 +434,14 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
   // reads the current value there.
   const meter = useRef<MeterState>(meterReset());
   const liveTokens = useCallback(() => meterValue(meter.current), []);
+  const lastMeterTick = useRef(0);
   const advanceTokens = useCallback(() => {
-    meter.current = meterTick(meter.current);
+    // By the time actually elapsed since the last tick, not by tick count: the clock runs at the
+    // display's pace and a late tick must move the figure further, not the same distance.
+    const now = performance.now();
+    const dt = lastMeterTick.current ? now - lastMeterTick.current : LIVE_TICK_MS;
+    lastMeterTick.current = now;
+    meter.current = meterTick(meter.current, dt);
   }, []);
   // Aborts the in-flight turn when the user presses Esc (created fresh per turn).
   const abortRef = useRef<AbortController | null>(null);
@@ -559,7 +587,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
       // gone whatever we do; reprinting all of it costs about 1.7ms a block, measured, so
       // a long session spent a third of a second on a blank screen printing scrollback
       // nobody asked to see. A couple of screens is all that can be looked at anyway.
-      reprintFrom.current = Math.max(0, committed.length - INLINE_REPRINT_BLOCKS);
+      reprintFrom.current = Math.max(0, stateRef.current.committed.length - INLINE_REPRINT_BLOCKS);
       // Blank rows so the conversation lands at the BOTTOM of the screen rather than the
       // top. A terminal prints from wherever the cursor is, which after leaving the
       // alternate screen is wherever the shell left it — usually near the top, with the
@@ -598,6 +626,8 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
   // holds them stays on screen for the gap between the command list closing and the
   // surface appearing. See `OVERLAY_COMMANDS`.
   const [opening, setOpening] = useState(false);
+  /** A message handed back to the input box to edit (a rewind). A new object each time. */
+  const [fill, setFill] = useState<{ text: string } | undefined>(undefined);
 
   // The approval channel handed to tools: a forbidden-path tool calls this to ask
   // the user Yes/No/other, and we render it as an overlay that resolves the promise.
@@ -671,9 +701,13 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
   // it WAS a diff did not, so every resumed edit rendered as dim plain lines. Anything
   // added to a row's appearance has to be stored here too, or the claim above quietly
   // stops being true again.
+  // What compaction took out is drawn too (memory/earlier.ts), so a resumed chat is the whole conversation.
+  const withEarlier = (session: Session): Entry[] => [...(session.earlier ?? []), ...session.transcript];
   function showResumed(transcript: Entry[]) {
+    const readThisTurn = new Set<string>(); // for narrationShown, as live
     for (const e of transcript) {
       if (e.role === "user") {
+        if (!e.synthetic) readThisTurn.clear();
         // Engine nudges ride as `user` messages so the model reads them as instruction,
         // but they are ours, not the person's. Replaying one draws it as a `>` prompt
         // the user never typed — seen live as "> That was 3 sentences between tool
@@ -686,15 +720,18 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
         // re-announce each tool call exactly as streamRespond does.
         // Same cut as the live path: prose that precedes tool calls is narration,
         // and a resumed chat must not print the essays the live one trimmed away.
-        if (e.content.trim()) {
-          const intermediate = (e.toolCalls?.length ?? 0) > 0;
+        const calls = (e.toolCalls ?? []).map((c) => ({ name: c.name, args: parseToolArgs(c.arguments) }));
+        const shown = calls.length === 0 || narrationShown(calls, readThisTurn);
+        noteReads(calls, readThisTurn);
+        if (shown && e.content.trim()) {
+          const intermediate = calls.length > 0;
           dispatch({ type: "say", text: intermediate ? trimNarration(e.content) : e.content });
         }
         for (const call of e.toolCalls ?? []) {
           // The spawn itself is drawn by its sub-agent block live, never as a raw row.
           // Replaying it as one puts a `● SpawnSubagent(...)` in a resumed transcript
           // that was not in the live one.
-          if (call.name === "spawn_subagent") continue;
+          if (call.name === "spawn_subagent" || neverShown(call.name)) continue;
           const d = toolDisplay(call.name, parseToolArgs(call.arguments));
           dispatch({
             type: "toolStart",
@@ -884,7 +921,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
     if (widthBefore.current === width) return;
     widthBefore.current = width;
     if (shell !== "inline") return;
-    reprintFrom.current = Math.max(0, committed.length - INLINE_REPRINT_BLOCKS);
+    reprintFrom.current = Math.max(0, stateRef.current.committed.length - INLINE_REPRINT_BLOCKS);
     startFill.current = Math.max(0, rows - INLINE_LIVE_RESERVE);
     setStaticEpoch((n) => n + 1);
   }, [width, shell]);
@@ -906,7 +943,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
       session.current = s;
       setReady(true);
       if (resumeSessionId && s.id === resumeSessionId) {
-        showResumed(s.transcript);
+        showResumed(withEarlier(s));
         note(`— updated to v${appVersion()}, continuing —`);
       }
       // The project may have a model saved from a different provider than the
@@ -914,12 +951,22 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
       const cur = session.current;
       if (!cur) return;
       const need = missingKeyFor(cur.modelConfig.model);
-      if (!need) return;
+      if (!need) {
+        // The model the project saved can run. Setup may still be open: it was decided before a local
+        // runtime (Ollama) had been asked whether it runs, and with the saved model already usable the
+        // branch below that closes it never ran, so every launch after the first showed "add a key"
+        // to anyone whose only provider is local.
+        setSetupOpen(false);
+        return;
+      }
       // A saved config can outlive the key that made it usable. Rather than open
       // straight into an inescapable prompt, fall back to a provider we can actually
       // run and say so — the user can always pick again with /provider.
       const fallback = usableFallback(cur.modelConfig.model, hasApiKey);
       if (fallback) {
+        // Setup may already be open: it is decided before a local runtime (Ollama) has been
+        // asked whether it runs. Something runnable was found, so there is nothing to set up.
+        setSetupOpen(false);
         void switchTo(fallback, providerOf(fallback).label).then(() =>
           note(`no ${need.label} key yet — using ${providerOf(fallback).label} instead. /provider to change.`),
         );
@@ -931,10 +978,10 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
     });
   }, []);
 
-  // Anonymous usage ping — on by default. The status line shows every launch, not just
-  // the first one; the full explanation lives in the /analytics box itself.
+  // The usage ping is paused for now (see analytics.ts). What every session starts with instead is
+  // the pointer to the desktop app, shown every launch.
   useEffect(() => {
-    note(startupStatusLine());
+    note(appAnnouncement());
     sendAnalyticsPing(appVersion());
   }, []);
 
@@ -986,11 +1033,28 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
   // and a keypress that both stopped the turn and silently emptied the queue would be
   // two decisions on one key. So mid-turn Esc is declined here and the interrupt
   // handler above has it alone. ↑ has no such conflict and always pops.
+  // Esc twice on an empty box while nothing runs opens /rewind. The first press is
+  // remembered here because this is the one place an idle Esc arrives with the box's text.
+  const lastIdleEsc = useRef(0);
+  const openRewind = useRef<() => void>(() => {});
+  openRewind.current = () => {
+    setOpening(true);
+    void handleCommand("/rewind").finally(() => setOpening(false));
+  };
   const popQueue = useCallback(
     (input: string, cursor: number, via: "up" | "escape") => {
       if (via === "escape" && busy) return undefined;
       const popped = popAllQueued(queueRef.current, input, cursor);
-      if (!popped) return undefined;
+      if (!popped) {
+        if (via === "escape" && input.trim() === "") {
+          const now = Date.now();
+          if (now - lastIdleEsc.current < DOUBLE_ESC_MS) {
+            lastIdleEsc.current = 0;
+            openRewind.current();
+          } else lastIdleEsc.current = now;
+        }
+        return undefined;
+      }
       queueRef.current = [];
       setQueued([]);
       return popped;
@@ -1065,6 +1129,8 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
         // a dev server). Aborting the turn alone left those alive, so the app still opened.
         const mgr = session.current?.toolContext.backgroundShells;
         for (const sh of mgr?.running() ?? []) mgr?.kill(sh.id, "user");
+        // And the app it was testing, with its live view and any hidden browser.
+        if (session.current) void stopUi(session.current.toolContext);
         flush.current = true; // drain the rest of the queue immediately
         // A held-but-unsettled group (see pump()) waits for the NEXT enqueued
         // action to notice anything changed — nothing schedules a timer while
@@ -1079,6 +1145,15 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
       }
     },
     { isActive: busy && overlay === null },
+  );
+
+  // Esc on an armed Marathon box takes it down again (nothing has started). Once a run is
+  // going, Esc is the ordinary stop above and the run becomes resumable instead.
+  useInput(
+    (_input, key) => {
+      if (key.escape) setMarathonUi(null);
+    },
+    { isActive: !busy && overlay === null && marathonUi?.phase === "armed" },
   );
 
   // shift-tab cycles the interaction mode (Lightning ⇄ Architect). Active whenever
@@ -1115,6 +1190,9 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
   // counter kept climbing — and every one of those phantom lines then had to be
   // scrolled back down before the view moved at all. A flick or two past the top bought
   // a second of a wheel that did nothing, which reads as the app having frozen.
+  /** The wheel gesture in progress, for scroll acceleration (wheelAccel.ts). */
+  const wheelRef = useRef<WheelState>(wheelStart());
+
   const scrollBy = useCallback((lines: number) => {
     // Repaint the whole next frame. A scroll can move a row out from under the
     // framebuffer's model (see requestFullRepaint), which is what left a transcript row
@@ -1437,7 +1515,12 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
         // Content moves out from under a selection when the view scrolls, so the
         // highlight would be sitting on text that is no longer the text it copied.
         clearSelection();
-        const lines = notches.reduce((n, dir) => n + (dir === "up" ? WHEEL_LINES : -WHEEL_LINES), 0);
+        // Signed notch count, then the distance for it: the faster the wheel is turning,
+        // the further each notch goes (wheelAccel.ts). A slow notch is still three lines.
+        const net = notches.reduce((n, dir) => n + (dir === "up" ? 1 : -1), 0);
+        const step = wheelLines(wheelRef.current, net, performance.now());
+        wheelRef.current = step.state;
+        const lines = step.lines;
         // The wheel is how anyone actually scrolls, so in the inline shell it is what
         // opens the reading view. Turning it UP is the gesture: the reader is going back
         // through the conversation and wants the prompt to stay where they can type into
@@ -1517,6 +1600,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
   );
 
   function endTurn() {
+    releaseLiveGates();
     if (turnStart.current != null) setLastMs(Date.now() - turnStart.current);
     // Settle every tool row this turn produced into its past-tense verb. The single
     // funnel for a turn ending (normal completion, error, interrupt), so no row is
@@ -1716,55 +1800,38 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
   const pumpTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const streamDone = useRef(false);
   const flush = useRef(false); // Esc → drain the rest with no pacing
-  // Whether a "tools" group is currently visible (already revealed and still
-  // open). Tracked at this layer — not read from transcript state — because the
-  // decision it drives (does the NEXT grouped toolStart need to be held) has to
-  // be made before that action is even dispatched.
-  const groupOpen = useRef(false);
-  // When the row currently at the front of the queue began waiting for its own result,
-  // and the timer that gives up on it. See the hold in pump().
-  const heldStart = useRef<{ toolId: string; at: number } | null>(null);
+  // What is waiting, which rows on screen are still working, and whether a read row is open.
+  // The rules live in revealQueue.ts, which the tests replay; this only drives them.
+  const pacer = useRef<Pacer>(newPacer(revealQ.current));
+  // Commands wait for their own row (RespondOptions.beforeLiveTool): call id -> the engine's
+  // "go". Released when the row reaches the screen, and ALWAYS released on Esc, at the end of
+  // the queue and at the end of a turn, because a gate nobody opens is a turn that never ends.
+  const liveGates = useRef(new Map<string, () => void>());
+  // Every tool row that has reached the screen this turn, so a gate asked for after its row
+  // is already up opens at once.
+  const shownRows = useRef(new Set<string>());
   const holdTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // A new block appears (paced); a token (silent), a tool resolution (in place), a
-  // discovery call folding into an ALREADY-OPEN group, or a sub-agent's nested
-  // activity (folds into / resolves its rail in place) is not.
-  //
-  // Both kinds of tool start are paced AND held: pump() waits for the matching
-  // toolEnd so the row arrives complete, then reveals the pair on the beat. (It used
-  // to show instantly as a bare header and then patch in place; that was the
-  // two-stage reveal the hold mechanism exists to remove.) Holding and pacing are
-  // separate questions — one is about the block being whole, the other about when a
-  // whole block is allowed on screen — and a standalone row used to answer only the
-  // first, which is why a burst of edits landed together however calm the rest of
-  // the turn was.
-  const isPaced = (a: Action) => {
-    if (a.type === "toolStart") return a.group ? !groupOpen.current : true;
-    return (
-      a.type !== "token" &&
-      a.type !== "toolEnd" &&
-      a.type !== "toolProgress" &&
-      a.type !== "subToolStart" &&
-      a.type !== "subToolEnd" &&
-      a.type !== "subagentEnd"
-    );
-  };
+  function releaseLiveGates() {
+    for (const go of liveGates.current.values()) go();
+    liveGates.current.clear();
+  }
+  /** Start a fresh pacer over an empty queue (a new turn, a cleared conversation). */
+  function resetPacer() {
+    releaseLiveGates();
+    shownRows.current.clear();
+    if (holdTimer.current) clearTimeout(holdTimer.current);
+    holdTimer.current = null;
+    revealQ.current = [];
+    pacer.current = newPacer(revealQ.current);
+  }
 
   function enqueueReveal(a: Action) {
     revealQ.current.push(a);
-    // A result arriving is exactly what the hold below is waiting for, so its deadline is
-    // cancelled rather than waited out — otherwise every quick tool would sit out the
-    // full grace before its pair could be shown.
-    if (holdTimer.current) {
-      clearTimeout(holdTimer.current);
-      holdTimer.current = null;
-    }
     if (!pumpTimer.current) pump();
   }
 
-  // Reveal the next block on the beat (a minimum since the last reveal, not an added
-  // delay), then stamp the clock and carry on draining. Every paced path in pump()
-  // goes through here, so the tempo is decided in exactly one place.
+  // Reveal the next block on the beat, then stamp the clock and carry on draining. Every
+  // paced path in pump() goes through here, so the tempo is decided in exactly one place.
   function schedulePaced(reveal: () => void) {
     const wait = revealWait({ flush: flush.current });
     pumpTimer.current = setTimeout(() => {
@@ -1780,144 +1847,75 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
     }, wait);
   }
 
-  function pump() {
-    // Apply immediate actions at once: silent tokens, in-place resolves, and a
-    // discovery call folding into a group that's already on screen.
-    while (revealQ.current.length > 0 && !isPaced(revealQ.current[0]!)) {
-      const a = revealQ.current.shift()!;
-      if (a.type === "token") applySilent(a);
-      else {
-        // An in-place resolve grows a row into its result, shifting everything below it —
-        // the same de-sync risk a reveal carries, so heal the banner on the same frame.
-        requestFullRepaint();
-        dispatch(a);
-      }
-      // A group stays open once shown; anything that isn't part of it (a
-      // standalone tool, narration, a sub-agent) closes it, mirroring exactly
-      // what the transcript reducer's own closeToolGroup does on the same actions.
-      if (a.type === "toolStart" && a.group) groupOpen.current = true;
-      else if (a.type !== "toolEnd") groupOpen.current = false;
+  /** Apply a run of actions as one paint; streamed text alone is applied without one. */
+  function applyNow(actions: Action[]) {
+    if (actions.length === 0) return;
+    if (actions.every((a) => a.type === "token")) {
+      for (const a of actions) applySilent(a);
+      return;
     }
-    if (revealQ.current.length === 0) {
+    // A command's row going on screen is its "go": it starts now, so its timer starts now, and
+    // it stays visibly running for at least a moment even if it ends in a blink.
+    const now = Date.now();
+    for (const a of actions) {
+      if (a.type !== "toolStart") continue;
+      shownRows.current.add(a.toolId);
+      const go = liveGates.current.get(a.toolId);
+      if (go) {
+        liveGates.current.delete(a.toolId);
+        a.at = now;
+        go();
+      }
+    }
+    // A row resolving in place grows into its result and shifts everything below it — the
+    // same de-sync risk a reveal carries, so the banner is healed on the same frame.
+    requestFullRepaint();
+    applyBatch(actions);
+  }
+
+  function pace(): PaceFlags {
+    return {
+      flushing: flush.current,
+      streamDone: streamDone.current,
+      narrationPending: narrationPending(stateRef.current),
+      now: Date.now(),
+    };
+  }
+
+  function pump() {
+    // A beat already scheduled keeps its time, unless Esc asked for everything now.
+    if (pumpTimer.current) {
+      if (!flush.current) return;
+      clearTimeout(pumpTimer.current);
+      pumpTimer.current = null;
+    }
+    if (flush.current) releaseLiveGates();
+    applyNow(takeImmediate(pacer.current, pace()));
+    const move = nextMove(pacer.current);
+    // A row on screen is still working: its result, when it comes, re-enters here through
+    // enqueueReveal. The beat for the next block starts only after that. A result that is
+    // already here but held (a command shorter than its minimum running time) needs a timer,
+    // because nothing else will arrive to wake the pump.
+    if (move === "wait") {
+      const at = nextHoldAt(pacer.current);
+      if (at !== null && !holdTimer.current) {
+        holdTimer.current = setTimeout(() => {
+          holdTimer.current = null;
+          pump();
+        }, Math.max(0, at - Date.now()));
+      }
+      return;
+    }
+    if (move === "idle") {
+      // Nothing is queued, so a command still waiting for its row has no row coming: let it run.
+      releaseLiveGates();
       if (streamDone.current) {
         streamDone.current = false;
         endTurn();
       }
       return;
     }
-    const front = revealQ.current[0]!;
-
-    // Narration waiting in front of a tool call gets the beat to itself. `toolStart`
-    // seals the open assistant block as part of its own action, so without this the
-    // sentence and the row it introduces reach the terminal in the SAME paint and
-    // land as one clump — the pacer's blind spot, since nothing was ever queued for
-    // the text. Sealing it first lets the sentence be read before the row appears
-    // under it. Only when a block will actually result (see narrationPending): the
-    // narration budget is one line per turn, and pausing for a sentence that seals
-    // to nothing would be an empty beat, which is a stall rather than a rhythm.
-    if (front.type === "toolStart" && narrationPending(stateRef.current)) {
-      schedulePaced(() => {
-        dispatch({ type: "sealNarration" });
-        groupOpen.current = false;
-      });
-      return;
-    }
-
-    // A tool's opening call is HELD — not dispatched, not scheduled, nothing shown —
-    // until its result is queued behind it, so the row never appears bare and then
-    // sprouts a body a second later. Holding costs nothing that was worth having:
-    // the header alone names a call whose result is the entire point of showing it,
-    // and the footer's live timer is what says work is happening. There is no
-    // time-based fallback (see groupReveal.ts): every later enqueueReveal re-enters
-    // pump, which re-checks. Esc sets `flush`, and `streamDone` releases the hold
-    // unconditionally — once the stream is over no further event can arrive, so a
-    // call whose end never came (an abort mid-flight) must still be shown rather
-    // than stranding the queue and the turn with it.
-    //
-    // Then the whole held burst reveals in ONE paint, on the beat. Painting per
-    // action would show the block assembling itself (header, then a running row,
-    // then the resolved row): Ink's root is a legacy React root, so every dispatch
-    // flushes synchronously and each one is a frame the terminal actually shows.
-    if (front.type === "toolStart") {
-      const isNewGroup = front.group && !groupOpen.current;
-      if (isNewGroup) {
-        if (planGroupReveal(groupSettled(revealQ.current.slice(1)), flush.current) === "hold") return;
-      } else {
-        // A standalone row is held for its own result, but only for so long.
-        //
-        // Held with no limit, a  row was invisible for the ten
-        // minutes the build took: the last thing on screen stayed the tool before it, and
-        // an agent working steadily was indistinguishable from one that had hung. It was
-        // reported as a hang. It was not one — the command ran, the timeout fired, the
-        // shell was backgrounded, all of it correct and none of it visible.
-        if (heldStart.current?.toolId !== front.toolId) {
-          heldStart.current = { toolId: front.toolId, at: Date.now() };
-        }
-        const heldForMs = Date.now() - heldStart.current.at;
-        const plan = planStandaloneReveal({
-          resultQueued: resultQueued(front.toolId, revealQ.current),
-          flushing: flush.current,
-          streamDone: streamDone.current,
-          heldForMs,
-        });
-        if (plan === "hold") {
-          // Re-enter when the deadline passes. Its OWN timer, not the pacing one: the
-          // result arriving must be able to cancel this and reveal the pair at once, and
-          // clearing the pacing timer instead would drop the beat.
-          if (!holdTimer.current) {
-            holdTimer.current = setTimeout(() => {
-              holdTimer.current = null;
-              pump();
-            }, Math.max(0, STANDALONE_HOLD_MS - heldForMs));
-          }
-          return;
-        }
-      }
-      schedulePaced(() => {
-        // Measured HERE, not when the beat was scheduled: the queue keeps growing
-        // while we wait, and a group's burst can gain members in that window. A span
-        // measured early would leave the stragglers behind to open a second group,
-        // splitting one burst across two blocks.
-        if (isNewGroup) {
-          // A group folds into ONE row ("Read 8 files"), so its whole burst is a single
-          // block and reveals together by design.
-          let take = 0;
-          while (take < revealQ.current.length && isGroupMember(revealQ.current[take]!)) take++;
-          applyBatch(revealQ.current.splice(0, take));
-        } else {
-          // This call and its OWN result — never the span between them. The engine emits
-          // every toolStart of a batch before running any of it, so when those calls run
-          // concurrently the matching end sits behind the other calls' starts. Taking a
-          // contiguous span from the front swallowed all of them into this one paint:
-          // eight rows appearing at once, however calm the beat before it was. Each of
-          // those calls is its own block and waits its own beat; only the pair is atomic,
-          // so a row still arrives carrying its result rather than sprouting one later.
-          const endIdx = revealQ.current.findIndex((x) => x.type === "toolEnd" && x.toolId === front.toolId);
-          if (endIdx === -1) {
-            applyBatch(revealQ.current.splice(0, 1));
-          } else {
-            // The end first: it sits at the higher index, so removing it cannot shift
-            // the start out from under the shift() that follows.
-            const endAction = revealQ.current.splice(endIdx, 1)[0]!;
-            const startAction = revealQ.current.shift()!;
-            applyBatch([startAction, endAction]);
-          }
-        }
-        // Resolved either way — the action that closes the block follows next.
-        groupOpen.current = false;
-      });
-      return;
-    }
-
-    // Every remaining paced block (a sealed reply, a sub-agent start, notes) reveals
-    // on the same beat.
-    schedulePaced(() => {
-      const a = revealQ.current.shift();
-      if (a) {
-        dispatch(a);
-        if (a.type !== "toolEnd") groupOpen.current = a.type === "toolStart" && !!a.group;
-      }
-    });
+    schedulePaced(() => applyNow(takePaced(pacer.current, pace())));
   }
 
   /**
@@ -1985,26 +1983,19 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
     return out;
   }
 
-  async function streamRespond(s: Session) {
+  async function streamRespond(s: Session, run?: (options: MarathonOptions) => Promise<unknown>) {
     startTurn();
     // Pick up an edit the model made to MINDWEAVE.md, but only if one actually happened
     // — this is a no-op otherwise. Re-reading unconditionally used to look free and was
     // not: it rewrites the system prompt string, which discards the entire cached prefix
     // (base prompt, tool schemas, project snapshot) at 1.25x rewrite cost.
     await reloadProjectMemory(s).catch(() => {});
-    revealQ.current = [];
+    resetPacer();
     lastRevealAt.current = 0;
     streamDone.current = false;
     flush.current = false;
-    // A hold belongs to one turn. Left standing, its deadline fires into the next one and
-    // pumps a queue that has nothing to do with it.
-    heldStart.current = null;
-    if (holdTimer.current) {
-      clearTimeout(holdTimer.current);
-      holdTimer.current = null;
-    }
     try {
-      await respond(s, {
+      const turnOptions: RespondOptions = {
         // Messages typed while this turn runs reach it here, at each step boundary,
         // rather than waiting for it to end and starting another one.
         steer: () => steerRunningTurn(s),
@@ -2025,21 +2016,25 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
             meter.current = meterDelta(meter.current, e.delta.length);
           } else if (e.type === "replyReset") {
             enqueueReveal({ type: "resetReply" });
+          } else if (e.type === "narration") {
+            // Words that led only to unseen tools (searches, re-reads) are not shown at all.
+            if (!e.shown) enqueueReveal({ type: "resetReply" });
           } else if (e.type === "tool" && e.phase === "start") {
-            // The spawn call itself is rendered by its sub-agent block, not a raw row.
-            if (e.name === "spawn_subagent") return;
+            // The spawn call itself is rendered by its sub-agent block, not a raw row;
+            // loading a tool is never shown at all (see mcpSearch.ts).
+            if (e.name === "spawn_subagent" || neverShown(e.name)) return;
             const d = toolDisplay(e.name, e.args);
             if (e.agent) {
               // A sub-agent's own tool call — fold it into that worker's nested rail.
               enqueueReveal({ type: "subToolStart", agentId: e.agent, toolId: e.id, name: d.name, arg: d.arg, action: d.kind });
             } else {
-              enqueueReveal({ type: "toolStart", toolId: e.id, name: d.name, arg: d.arg, meta: d.meta, action: d.kind, group: isGroupable(e.name), ...(d.covers ? { covers: d.covers } : {}) });
+              enqueueReveal({ type: "toolStart", toolId: e.id, name: d.name, arg: d.arg, meta: d.meta, action: d.kind, group: isGroupable(e.name), at: Date.now(), ...(d.covers ? { covers: d.covers } : {}) });
             }
           } else if (e.type === "tool" && e.phase === "progress") {
             // A worker's own calls fold into its rail, which has no room for output.
             if (!e.agent) enqueueReveal({ type: "toolProgress", toolId: e.id, text: e.text });
           } else if (e.type === "tool" && e.phase === "end") {
-            if (e.name === "spawn_subagent") return;
+            if (e.name === "spawn_subagent" || neverShown(e.name)) return;
             if (e.agent) {
               enqueueReveal({ type: "subToolEnd", agentId: e.agent, toolId: e.id, ok: !e.error, summary: e.summary });
             } else {
@@ -2069,7 +2064,12 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
             enqueueReveal({ type: "subagentStart", agentId: e.id, task: e.task, readOnly: e.readOnly });
           } else if (e.type === "subagent" && e.phase === "end") {
             enqueueReveal({ type: "subagentEnd", agentId: e.id, ok: !e.error, summary: e.summary });
+          } else if (e.type === "todos") {
+            setMarathonUi((ui) => marathonUiReduce(ui, { type: "todos", items: e.items }));
           } else if (e.type === "usage") {
+            // The live figure swaps this call's streamed estimate for its real output size
+            // (tool arguments never stream as text, so the estimate alone runs far behind).
+            meter.current = meterUsage(meter.current, e.completionTokens);
             // Keep each call's real usage; fold into the context+cost summary shown
             // once the turn ends. The model id drives cache-aware pricing.
             usageSamples.current.push({
@@ -2087,11 +2087,23 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
           }
         },
         signal: abortRef.current?.signal,
+        // A command starts only once its row is on screen, so the row's running state is the
+        // real work, one thing at a time, instead of a replay of something long finished.
+        beforeLiveTool: (id) =>
+          new Promise<void>((resolve) => {
+            if (flush.current || abortRef.current?.signal.aborted || shownRows.current.has(id)) return resolve();
+            liveGates.current.set(id, resolve);
+            if (!pumpTimer.current) pump();
+          }),
         // Persist after every step so a hard crash / PC shutdown mid-turn loses at
         // most the current in-flight step — not the whole turn. (The finally below
         // still saves on clean/aborted exits.)
         persist: () => saveSession(s),
-      });
+      };
+      // A Marathon run drives the very same turns, so every event above draws identically
+      // whether one turn or a hundred of them produced it.
+      if (run) await run(turnOptions);
+      else await respond(s, turnOptions);
       enqueueReveal({ type: "finishReply" });
     } catch (error) {
       enqueueReveal({ type: "finishReply" });
@@ -2113,6 +2125,35 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
       streamDone.current = true;
       if (!pumpTimer.current) pump(); // ensure we drain to endTurn even if idle now
     }
+  }
+
+  /**
+   * Run a Marathon through this screen's own turn pipeline. It is the same `respond` loop
+   * as any message, driven by `startMarathon`/`resumeMarathon`, so every tool row, token and
+   * question draws exactly as it does in a normal turn. The box is fed by its events.
+   */
+  async function driveMarathon(s: Session, go: (options: MarathonOptions) => Promise<unknown>) {
+    const onMarathon = (event: MarathonEvent) => {
+      setMarathonUi((ui) => marathonUiReduce(ui, { type: "event", event }));
+      // The outcome is worth one line in the conversation; the box carries the rest.
+      if (event.type === "finished") enqueueReveal({ type: "note", text: describeMarathonEvent(event) });
+    };
+    try {
+      await streamRespond(s, (options) => go({ ...options, onMarathon }));
+    } finally {
+      // However it ended (an error included), the box must not keep spinning for a run that is gone.
+      setMarathonUi((ui) => (ui && isLive(ui) ? { ...ui, phase: "paused", line: "Stopped" } : ui));
+    }
+  }
+
+  /** The armed box's next message: it becomes the goal. */
+  async function beginMarathon(s: Session, text: string) {
+    const { content, displayText, notes, images } = await prepareMessage(s, text);
+    dispatch({ type: "user", text: displayText });
+    for (const n of notes) note(n);
+    await driveMarathon(s, (options) =>
+      startMarathon(s, content, { ...options, ...(images.length > 0 ? { goalImages: images } : {}) }),
+    );
   }
 
   // When a background shell finishes while Mindweave is idle, kick a turn so the model
@@ -2161,7 +2202,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
     }
 
     note(`— continuing${compactFirst ? " (compacted)" : ""}: ${sessionTitle(meta)} —`);
-    showResumed(resumed.transcript);
+    showResumed(withEarlier(resumed));
   }
 
   /**
@@ -2204,30 +2245,121 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
     // The files the old conversation edited are still edited, and its checkpoints are
     // the only record of what they were before.
     carryAcrossFreshSession(s.toolContext, fresh.toolContext);
+    // The history moves with it on disk too, so it still works after a restart and the
+    // old session no longer claims turns the new one can undo.
+    fresh.toolContext.checkpoints?.persistTo(checkpointDir(fresh.cwd, fresh.id));
     session.current = fresh;
-    if (wipeScreen) {
-      // The chips are keyed per conversation; a stale one would expand into a message
-      // the new session never saw.
-      pasteStore.current.clear();
-      setScrollUp(0);
-      // Anything the pacer is still holding belongs to the conversation being cleared.
-      // Left in place it would paint into the empty screen a moment later, which looks
-      // exactly like the clear having failed.
-      revealQ.current = [];
-      lastRevealAt.current = 0;
-      streamDone.current = false;
-      flush.current = false;
-      // The status line still reads "Cooked for 1m 23s" from a turn that is no longer
-      // on screen or in the model's context.
-      setTaskUsage(null);
-      setLastMs(null);
-      dispatch({ type: "clear" });
-    }
+    if (wipeScreen) wipeChat();
     note(
       killed > 0
         ? `— started a fresh session (stopped ${killed} background command${killed === 1 ? "" : "s"}) —`
         : "— started a fresh session —",
     );
+  }
+
+  /** Clear the chat off the screen, and everything that would paint into it afterwards. */
+  function wipeChat() {
+    // The chips are keyed per conversation; a stale one would expand into a message
+    // the new session never saw.
+    pasteStore.current.clear();
+    setScrollUp(0);
+    // Anything the pacer is still holding belongs to the conversation being cleared.
+    // Left in place it would paint into the empty screen a moment later, which looks
+    // exactly like the clear having failed.
+    resetPacer();
+    lastRevealAt.current = 0;
+    streamDone.current = false;
+    flush.current = false;
+    // The status line still reads "Cooked for 1m 23s" from a turn that is no longer
+    // on screen or in the model's context.
+    setTaskUsage(null);
+    setLastMs(null);
+    dispatch({ type: "clear" });
+  }
+
+  /** "2 files +12 −3 · 1 rule": what the turns since this message changed. */
+  function changeSummary(p: RewindPoint): string {
+    const parts: string[] = [];
+    if (p.files > 0) parts.push(`${p.files} file${p.files === 1 ? "" : "s"} +${p.added} −${p.removed}`);
+    const state = stateSummary(p.state);
+    if (state) parts.push(state);
+    return parts.join(" · ");
+  }
+  function stateSummary(state: Partial<Record<string, number>>): string {
+    const noun: Record<string, [string, string]> = {
+      memory: ["memory", "memories"], rule: ["rule", "rules"], skill: ["skill", "skills"],
+      permission: ["permission list", "permission lists"], mcp: ["MCP config", "MCP configs"],
+    };
+    return Object.entries(state)
+      .filter(([, n]) => (n ?? 0) > 0)
+      .map(([k, n]) => `${n} ${noun[k]![n === 1 ? 0 : 1]}`)
+      .join(", ");
+  }
+
+  /** The choices a rewind offers, each saying exactly what it does and what it cannot. */
+  function rewindChoices(p: RewindPoint): { label: string; description: string; mode: RewindMode | null }[] {
+    const hasFiles = p.files > 0 || Object.keys(p.state).length > 0;
+    const what = changeSummary(p);
+    const caveat = [
+      p.ranShell ? "Commands the agent ran are not undone." : "",
+      !hasFiles && session.current?.toolContext.checkpoints?.wasResumed() ? "Changes from before this session was reopened stay." : "",
+    ].filter(Boolean).join(" ");
+    const choices: { label: string; description: string; mode: RewindMode | null }[] = [];
+    if (hasFiles) {
+      choices.push({ label: "Conversation and files", description: `The chat goes back to before this message, which returns to the input box. Puts back ${what}. ${caveat}`.trim(), mode: "both" });
+    }
+    choices.push({ label: "Conversation only", description: `The chat goes back to before this message, which returns to the input box.${hasFiles ? " Files stay as they are now." : ""} ${caveat}`.trim(), mode: "conversation" });
+    if (hasFiles) {
+      choices.push({ label: "Files only", description: `Puts back ${what}. The conversation stays, and the agent is told. ${caveat}`.trim(), mode: "files" });
+    }
+    choices.push({ label: "Cancel", description: "Keep everything as it is.", mode: null });
+    return choices;
+  }
+
+  async function applyRewind(point: RewindPoint, mode: RewindMode) {
+    const s = session.current;
+    if (!s) return;
+    const r = await rewindTo(s, point.at, mode);
+    if (!r) {
+      say("That message isn't in the conversation any more.");
+      return;
+    }
+    // Files only: the conversation stays on screen as it is; only the report is new.
+    if (mode !== "files") {
+      wipeChat();
+      showResumed(withEarlier(s));
+    }
+    reportRewind(s, r);
+    if (mode !== "files") setFill({ text: refillText(r) });
+  }
+
+  function reportRewind(s: Session, r: RewindResult) {
+    const rel = (p: string) => relativize(s.toolContext, p);
+    const list = (ps: string[]) => ps.map(rel).join(", ");
+    const took: string[] = [];
+    if (r.restored.length) took.push(`put back ${r.restored.length} file${r.restored.length === 1 ? "" : "s"}`);
+    const state: Record<string, number> = {};
+    for (const { kind } of r.restoredState) state[kind] = (state[kind] ?? 0) + 1;
+    const stateLine = stateSummary(state);
+    if (stateLine) took.push(`took back ${stateLine}`);
+    const head = r.mode === "files" ? "— files rolled back to before your message" : "— rewound to before your message";
+    note(`${head}${took.length ? `; ${took.join("; ")}` : ""} —`);
+    if (r.conflicts.length) note(`left alone, changed since: ${list(r.conflicts)}`, { error: true });
+    if (r.failed.length) note(`could not be put back: ${list(r.failed)}`, { error: true });
+    if (r.skipped.length) note(`too large to have been kept, still changed: ${list(r.skipped)}`, { error: true });
+    if (r.notRestored.length) note(`changed before this session was reopened, so still changed: ${list(r.notRestored)}`, { error: true });
+    if (r.ranShell) note("commands the agent ran are not undone");
+  }
+
+  /** The message as the input box holds one: pastes as their chips, attachments as handles. */
+  function refillText(r: RewindResult): string {
+    let text = r.message.template;
+    r.message.pastes.forEach((paste, i) => {
+      text = text.split(pasteSlot(i)).join(registerPaste(paste));
+    });
+    const attached = [...r.message.files, ...r.message.images].map((p) => `"${p}"`).join(" ");
+    if (attached) text = `${text}${text ? " " : ""}${dropHandles.current.register(attached)}`;
+    return text;
   }
 
   // Apply the resume-mode pick for a chosen session: compact & continue / as-is / fresh.
@@ -2277,6 +2409,11 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
     if (!s || !provider) return;
     if (providerOf(s.modelConfig.model).id === provider.id) {
       note(`already on ${provider.label} · ${modelLabel(s.modelConfig.model)}`);
+      return;
+    }
+    // A local runtime (Ollama) has no key to ask for: it has to be running, with a model pulled.
+    if (provider.local && !hasApiKey(provider.apiKeyEnv)) {
+      note(`${provider.label} isn't running here, or has no models yet. Start it and pull a model, then pick it again. ${provider.keysUrl}`);
       return;
     }
     const target = modelsOf(provider)[0];
@@ -2351,10 +2488,18 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
       setOverlay({ kind: "resumeMode", meta: o.items[index]! });
       return;
     }
+    if (o.kind === "rewind") {
+      setOverlay({ kind: "rewindConfirm", point: o.items[index]! });
+      return;
+    }
     setOverlay(null);
-    if (o.kind === "analytics") {
-      setAnalyticsEnabled(index === 0);
-      note(`Analytics turned ${index === 0 ? "on" : "off"}.`);
+    if (o.kind === "rewindConfirm") {
+      const mode = rewindChoices(o.point)[index]?.mode;
+      if (mode) void applyRewind(o.point, mode);
+      return;
+    }
+    if (o.kind === "app") {
+      note(openInBrowser(APP_PAGE_URL) ? "Opened the download page in your browser." : `Could not open a browser. The page is ${APP_PAGE_URL}`);
     } else if (o.kind === "resumeMode") void applyResume(o.meta, index);
     else if (o.kind === "provider") void applyProvider(index);
     else if (o.kind === "model") void applyModel(index, o.providerId);
@@ -2506,8 +2651,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
       return;
     }
 
-    // /analytics — the anonymous usage ping. Bare opens the on/off switch, the same
-    // fixed box every other setting uses; an argument acts directly, same as /model.
+    // /analytics — the usage count, paused for now: it explains why and offers no switch.
     // /feedback — a message to the maintainer, from inside the app. No account, no issue
     // tracker, no mail client: the whole point is that it costs the sender nothing. What
     // leaves the machine is decided in cli/feedback.ts and shown here before it goes.
@@ -2551,16 +2695,9 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
     }
 
     if (name === "/analytics") {
-      const verb = arg.trim().toLowerCase();
-      if (verb === "on" || verb === "off") {
-        setAnalyticsEnabled(verb === "on");
-        note(`Analytics turned ${verb}.`);
-        return;
-      }
-      if (verb) {
-        return say("/analytics on|off, or bare to open the switch.");
-      }
-      setOverlay({ kind: "analytics" });
+      // Counting is paused (see analytics.ts), so there is nothing to choose: the command only
+      // explains why. Whatever follows it on the line gets the same answer.
+      note(ANALYTICS_EXPLANATION);
       return;
     }
 
@@ -2631,6 +2768,47 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
         say(text);
         return;
       }
+
+      // /context limit [<tokens>|reset] [global] — the same override Settings > Usage >
+      // Context sets in mwcode; see core/contextSettings.ts for the shared logic.
+      if (/^limit\b/.test(arg.trim())) {
+        const rest = arg.trim().slice("limit".length).trim();
+        const global = /(^|\s)global(\s|$)/i.test(rest);
+        const cleaned = rest.replace(/(^|\s)global(\s|$)/i, " ").trim();
+        const scope = global ? "global" : "project";
+
+        if (/^reset$/i.test(cleaned)) {
+          await resetContextOverride(s, scope, s.governance.forbidden.root);
+          note(`cleared the ${global ? "all-projects" : "project"} context limit.`);
+        } else if (cleaned) {
+          const n = Number(cleaned.replace(/[,_]/g, ""));
+          if (!Number.isFinite(n) || n <= 0) {
+            say("Give a token count, e.g. /context limit 200000, or /context limit 200000 global.");
+            return;
+          }
+          const result = await setContextOverride(s, scope, n, s.governance.forbidden.root);
+          if (!result.ok) {
+            say(result.error);
+            return;
+          }
+        }
+
+        const view = await contextView(s, s.governance.forbidden.root);
+        const sourceLabel =
+          view.effective.source === "project"
+            ? "this project's own limit"
+            : view.effective.source === "global"
+              ? "your all-projects limit"
+              : `Mindweave's default for ${view.model}`;
+        say(
+          `Compacts at ${formatTokens(view.effective.tokens)} — ${sourceLabel}.\n\n` +
+            `  ${view.recommendation.note}\n\n` +
+            `  /context limit <tokens> sets it for this project, add "global" for every project.\n` +
+            `  /context limit reset clears it back to the default (add "global" to clear that scope).`,
+        );
+        return;
+      }
+
       // Only a measurement taken against the CURRENT model is passed through; a figure
       // carried over from another provider's tool serialisation would be the largest
       // single error in the table, and the table is meant to settle arguments.
@@ -2639,10 +2817,55 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
       const budget = contextBudget(s.transcript, overhead);
       note("context breakdown:");
       say(
-        `${formatBudget(budget, sharpContextWindow(s.modelConfig.model), autoCompactThreshold(s.modelConfig.model))}
+        `${formatBudget(budget, sharpContextWindow(s.modelConfig.model), effectiveAutoCompactThreshold(s))}
 
-  /context project shows what Mindweave read about this directory at startup.`,
+  /context project shows what Mindweave read about this directory at startup.
+  /context limit shows or sets your own compaction limit.`,
       );
+      return;
+    }
+
+    // /app — the desktop app. One screen with one choice: Enter opens the download page in the
+    // user's browser. It is a screen rather than a bare link so nothing opens by surprise.
+    if (name === "/app") {
+      setOverlay({ kind: "app" });
+      return;
+    }
+
+    // /rewind — go back to before one of your messages: the conversation AND the files
+    // its turns changed, with the message handed back to edit. See memory/rewind.ts.
+    if (name === "/rewind") {
+      const items = rewindPoints(s);
+      if (items.length === 0) {
+        say("Nothing to rewind to yet. Send a message first.");
+        return;
+      }
+      setOverlay({ kind: "rewind", items });
+      return;
+    }
+
+    // /marathon — hand over a goal and let it run on its own. Bare arms the box (the next
+    // message is the goal) or carries on a run that was stopped; `clear` takes a run down;
+    // with text it starts straight away. Questions are asked at the start only.
+    if (name === "/marathon") {
+      const rest = arg.trim();
+      if (rest === "clear") {
+        await dismissMarathon(s); // saved too, so it stays closed when the session is reopened
+        setMarathonUi(null);
+        note("marathon cleared.");
+        return;
+      }
+      if (rest) {
+        await beginMarathon(s, rest);
+        return;
+      }
+      if (s.marathon?.status === "running") {
+        const state = s.marathon;
+        setMarathonUi((ui) => marathonUiReduce(ui, { type: "restore", goal: state.goal, turn: state.turnsSpent, todos: state.todos ?? [] }));
+        await driveMarathon(s, (options) => resumeMarathon(s, options));
+        return;
+      }
+      setMarathonUi((ui) => marathonUiReduce(ui, { type: "arm" }));
       return;
     }
 
@@ -2660,7 +2883,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
         // as nothing having happened — say which.
         say(
           cp?.wasResumed()
-            ? "Nothing to undo here — undo history isn't carried across restarts. Changes from the earlier run are still on disk."
+            ? "Nothing to undo here. This session has no saved undo history, so changes from its earlier runs stay as they are."
             : "Nothing to undo — no file changes have been made yet this session.",
         );
         return;
@@ -2695,6 +2918,9 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
       // separate note/say text lines — same restored/conflict/failed/skipped facts,
       // rendered the same way an edit's diff or a command's output is.
       if (restored.length > 0) {
+        // A memory, rule, skill or MCP server can be among them; the live session has to
+        // match what is on disk again.
+        await reloadAgentState(s, restored);
         // The files on disk are back to their pre-turn state; drop them from the read
         // ledger so the model must re-read before it can edit them again.
         for (const p of restored) s.toolContext.reads.delete(p);
@@ -3103,6 +3329,14 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
     const s = session.current;
     if (!s) return;
 
+    // /marathon armed the box: this message is the goal.
+    if (marathonUiRef.current?.phase === "armed") {
+      await beginMarathon(s, trimmed);
+      return;
+    }
+    // A finished run's box has said its piece; the next ordinary message takes it down.
+    if (marathonUiRef.current && isFinished(marathonUiRef.current)) setMarathonUi(null);
+
     // The chat shows the typed line — `@mentions` stay visible, a dragged/dropped
     // file path collapses to just its name — never the file dump. The model gets
     // the full content via resolved <attached_file> blocks, and each attachment
@@ -3207,7 +3441,10 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
     // above where you are scrolled to, reads as the app having ignored you.
     setScrollUp(0);
     setHistory((h) => (h[h.length - 1] === text ? h : [...h, text]));
-    if (busy) {
+    // Also when something is already queued, busy or not: a turn ends, the next queued message is
+    // about to be sent, and for one render `busy` reads false. A message typed in that moment used to
+    // go straight out and arrive BEFORE the ones that had been waiting.
+    if (busy || queueRef.current.length > 0) {
       queueRef.current.push(queueMessage(text, { interrupting: interrupting.current }));
       setQueued([...queueRef.current]);
       return;
@@ -3301,20 +3538,39 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
     }
     if (!overlay) return null;
     const cur = session.current;
-    if (overlay.kind === "analytics") {
-      const enabled = analyticsEnabled();
-      const items = [
-        { label: "On" + (enabled ? "  ✓" : ""), description: "sends the ping" },
-        { label: "Off" + (!enabled ? "  ✓" : ""), description: "sends nothing" },
-      ];
+    if (overlay.kind === "app") {
       return (
         <Picker
-          title="Anonymous usage analytics"
-          note={ANALYTICS_EXPLANATION}
-          items={items}
+          title="Mindweave desktop app"
+          note={APP_EXPLANATION}
+          items={[{ label: "Open the download page", description: "opens your default browser" }]}
           width={width}
           maxRows={maxRows}
-          initialIndex={enabled ? 0 : 1}
+          initialIndex={0}
+          onSelect={onOverlaySelect}
+          onCancel={onOverlayCancel}
+        />
+      );
+    }
+    if (overlay.kind === "rewind") {
+      const items = overlay.items.map((p) => ({
+        label: p.text,
+        description: [timeAgo(p.at), changeSummary(p)].filter(Boolean).join(" · "),
+      }));
+      return (
+        <Picker title="Rewind to before which message?" items={items} width={width} maxRows={maxRows} rightAlignDescription onSelect={onOverlaySelect} onCancel={onOverlayCancel} />
+      );
+    }
+    if (overlay.kind === "rewindConfirm") {
+      const p = overlay.point;
+      const quoted = p.text.length > 48 ? `${p.text.slice(0, 47)}…` : p.text;
+      return (
+        <Picker
+          title={`Rewind to before “${quoted}”?`}
+          items={rewindChoices(p).map(({ label, description }) => ({ label, description }))}
+          describeSelection
+          width={width}
+          maxRows={maxRows}
           onSelect={onOverlaySelect}
           onCancel={onOverlayCancel}
         />
@@ -3362,8 +3618,10 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
         const n = modelsOf(p).length;
         const models = `${n} model${n === 1 ? "" : "s"}`;
         // Say up front which ones you can actually run — finding out at the next
-        // request is the worse place to learn it.
-        const key = hasApiKey(p.apiKeyEnv) ? "key set" : `needs ${p.apiKeyEnv}`;
+        // request is the worse place to learn it. A local runtime has no key: it runs or not.
+        const key = p.local
+          ? hasApiKey(p.apiKeyEnv) ? "running on this machine" : n > 0 ? "not running" : "not running, or no models pulled"
+          : hasApiKey(p.apiKeyEnv) ? "key set" : `needs ${p.apiKeyEnv}`;
         const here = p.id === active ? ` · on ${activeLabel}` : "";
         return { label: p.label + (p.id === active ? "  ✓" : ""), description: `${models} · ${key}${here}` };
       });
@@ -3500,6 +3758,10 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
   // authority for the frame: no min or max against the polled state, which can lag a
   // resize, and a live syscall never can.
   const liveRows = liveTerminalSize(stdout).rows;
+  // The header is fitted to the width RIGHT NOW as well. Fitted to the debounced width, for the
+  // moment after a narrowing resize it was laid out for the old, wider window and wrapped its
+  // words over two rows.
+  const liveCols = liveTerminalSize(stdout).columns;
   // The FULL height, so the footer sits on the very last row with nothing below it.
   //
   // This was `liveRows - 1` for a real reason that no longer applies. Ink's own renderer
@@ -3587,10 +3849,9 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
    */
   const frameTop = readingInline ? Math.max(0, rows - frameHeight) : 0;
   pillHit.current = pill !== null && pillRow.current !== null ? pillBounds(pill, width, frameTop + pillRow.current) : null;
-  // Only the blocks that can still be reached are worth laying out. Yoga lays
-  // out every child on every render — including one caused by a keystroke — so
-  // an unbounded transcript makes typing slower the longer you have been
-  // talking. This is generous enough to scroll through comfortably.
+  // The whole conversation stays reachable: the cap is only a safety valve (see
+  // SCROLLBACK_BLOCKS). Blocks outside the window cost one number each here and nothing
+  // in Yoga, which only ever sees the window and its spacers.
   const rendered = allBlocks.length > SCROLLBACK_BLOCKS ? allBlocks.slice(-SCROLLBACK_BLOCKS) : allBlocks;
   const offset = allBlocks.length - rendered.length;
 
@@ -3686,7 +3947,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
             (confirmed with a bare Ink render) instead of the clean bottom-clip
             flexShrink:0 actually gives. */}
         {/* Persistent status line: spinner + timer while working,
-            "✻ Cooked for 1m 23s · N tokens" once finished. */}
+            "● Cooked for 1m 23s · N tokens" once finished. */}
         <Box flexShrink={0}>
           <StatusLine busy={busy} startedAt={turnStart.current} lastMs={lastMs} usage={taskUsage} received={liveTokens} advance={advanceTokens} />
         </Box>
@@ -3695,6 +3956,14 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
         <Box flexShrink={0}>
           <QueuedBar queued={queued} />
         </Box>
+
+        {/* The Marathon panel: pinned right above the input, passive (it never takes a key),
+            and part of the measured footer so the chat is sized around it. */}
+        {marathonUi ? (
+          <Box flexShrink={0}>
+            <MarathonBox ui={marathonUi} width={width} cap={shell === "inline" ? 4 : 7} />
+          </Box>
+        ) : null}
 
         {/* The input box is always here; an open overlay (a picker) renders in its
             menu slot below it, so choosing something keeps the same frame instead of
@@ -3705,7 +3974,9 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
               onSubmit={onSend}
               opening={opening}
               disabled={false}
-              placeholder={busy ? "type to queue a message…" : "say something…"}
+              placeholder={
+                marathonUi?.phase === "armed" ? "describe the goal…" : busy ? "type to queue a message…" : "say something…"
+              }
               width={width}
               history={history}
               completions={completions}
@@ -3725,6 +3996,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
               placeCursor={shell === "inline"}
               onQueuePop={popQueue}
               overlay={overlayView}
+              fill={fill}
             />
           ) : (
             <Box paddingX={1}>
@@ -3744,7 +4016,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
           // with the manual way out once it is about to fire on its own.
           <Box flexShrink={0}>
             {ctxWarn.percentLeft <= 5 ? (
-              <Text color="yellow">{"  context low · /compact to summarize now"}</Text>
+              <Text color={WARN}>{"  context low · /compact to summarize now"}</Text>
             ) : (
               <Text dimColor>{`  ${ctxWarn.percentLeft}% until auto-compact`}</Text>
             )}
@@ -4077,7 +4349,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
           the command palette), which is the harmless direction to lose content
           in, and only for the one frame until the real footerHeight lands. */}
       <Box flexShrink={0}>
-        <Banner width={width} mode={mode} modelConfig={session.current?.modelConfig} busy={busy} />
+        <Banner width={liveCols} mode={mode} modelConfig={session.current?.modelConfig} busy={busy} />
       </Box>
 
       {/* flexGrow:1 + minHeight:1, NOT a computed height: the footer takes what it
@@ -4105,7 +4377,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
 function InlineHeader() {
   return (
     <Box marginBottom={1}>
-      <Text bold color="yellow">Mindweave</Text>
+      <Text bold color={ACCENT}>Mindweave</Text>
       <Text dimColor>{" "}{versionLabel()}</Text>
     </Box>
   );
@@ -4137,20 +4409,15 @@ const INLINE_MENU_ROWS = 3;
 
 /** Lines PageUp/PageDown move per press. */
 const PAGE_LINES = 10;
-/** Lines one wheel notch moves. Three is the usual terminal step, and a flick
- *  sends several reports, so it accumulates into a natural glide. */
-const WHEEL_LINES = 3;
-/** How much of the transcript stays scrollable. Every rendered block is laid out
- *  on every render, so this bounds what typing costs in a long conversation. */
-const SCROLLBACK_BLOCKS = 150;
 /** Blocks reprinted when the inline shell is entered. Two screens or so: enough to look
  *  back over, few enough that the reprint is not a visible pause. */
 /** How long the INLINE shell waits for a drag to settle before re-reading the size.
  *  The full-screen shell does not wait — see useTerminalSize. */
 const RESIZE_SETTLE_MS = 150;
 /** How often the size is polled, for Windows consoles where the resize event may never
- *  fire at all (nodejs/node#13197). Two integer reads; an unchanged size costs nothing. */
-const RESIZE_POLL_MS = 250;
+ *  fire at all (nodejs/node#13197). Two integer reads; an unchanged size costs nothing. 80ms keeps
+ *  the frame laid out for the old width (a header wrapping over two rows) to a single blink. */
+const RESIZE_POLL_MS = 80;
 
 const INLINE_REPRINT_BLOCKS = 40;
 
@@ -4191,7 +4458,7 @@ function Shuttle({ busy }: { busy: boolean }) {
     return () => clearInterval(id);
   }, [busy, stops]);
 
-  if (!busy) return <Text dimColor>{"─".repeat(SHUTTLE_CELLS)}</Text>;
+  if (!busy) return <Text dimColor wrap="truncate-end">{"─".repeat(SHUTTLE_CELLS)}</Text>;
 
   // Fold the counter back on itself so the shuttle returns instead of wrapping.
   const pos = step < stops ? step : stops * 2 - 2 - step;
@@ -4201,11 +4468,25 @@ function Shuttle({ busy }: { busy: boolean }) {
     const right = cell * 2 + 1 >= pos && cell * 2 + 1 < pos + SHUTTLE_SPAN;
     track += left && right ? "━" : left ? "╾" : right ? "╼" : "─";
   }
-  return <Text color="yellow">{track}</Text>;
+  return <Text color={ACCENT} dimColor wrap="truncate-end">{track}</Text>;
 }
 
-export function Banner({ width, mode, modelConfig, busy }: { width: number; mode: ModeId; modelConfig?: ModelConfig; busy: boolean }) {
+export function Banner({ width: given, mode, modelConfig, busy }: { width: number; mode: ModeId; modelConfig?: ModelConfig; busy: boolean }) {
   const m = modeById(mode);
+  // Re-fitted the moment the window changes. On a resize Ink lays the existing frame out again at
+  // the new width before anything re-renders, so a header fitted to the old width wrapped for that
+  // first frame. Listening here re-renders it straight away, and `wrap="truncate-end"` below keeps
+  // even that first frame on one row.
+  const { stdout } = useStdout();
+  const [liveWidth, setLiveWidth] = useState(given);
+  useEffect(() => {
+    const on = () => setLiveWidth(liveTerminalSize(stdout).columns);
+    stdout.on("resize", on);
+    return () => {
+      stdout.off("resize", on);
+    };
+  }, [stdout]);
+  const width = Math.min(given, liveWidth);
   // The release name, not the raw semver — the version stays available through
   // --help and the update-check note; this bar is read constantly during a working
   // turn and has no room to spare for a number nobody is reading it for.
@@ -4216,34 +4497,32 @@ export function Banner({ width, mode, modelConfig, busy }: { width: number; mode
   // (it is the same one the mode uses everywhere else); the model gets the teal of the
   // "reaching outside the machine" family; and the effort level is plain white, the
   // brightest thing in the row, because it is what changes most often.
-  const modeText = `${m.name.toUpperCase()} MODE ON`;
-  const modelText = modelConfig ? modelLabel(modelConfig.model) : "";
-  const effortText = modelConfig ? thinkLabel(modelConfig).toUpperCase() : "";
-  const right = modelConfig ? `${modeText} | ${modelText} | ${effortText}` : modeText;
-  // The title row gets a 1-col inset (same idea as the box's own paddingX),
-  // but the rule spans the FULL width, edge to edge — same as the box's
-  // border below it, so the two anchor the screen the same way instead of
-  // the header floating in from the sides while the box touches both edges.
-  const innerWidth = Math.max(1, width - 2);
-  const gap = Math.max(1, innerWidth - left.length - 1 - SHUTTLE_CELLS - right.length);
+  // Fitted to ONE row whatever the width, model or mode (see bannerFit.ts): left to the layout,
+  // a header too long for the window broke its words over two rows.
+  const fit = fitBanner(Math.max(1, width - 2), {
+    title: left,
+    mode: m.name.toUpperCase(),
+    model: modelConfig ? modelLabel(modelConfig.model) : "",
+    effort: modelConfig ? thinkLabel(modelConfig).toUpperCase() : "",
+    shuttle: SHUTTLE_CELLS,
+  });
+  const status = [fit.model, fit.effort].filter(Boolean);
   return (
-    <Box flexDirection="column" marginBottom={1}>
+    <Box flexDirection="column">
       <Box paddingX={1}>
-        <Text bold color="yellow">{left}</Text>
-        <Text>{" "}</Text>
-        <Shuttle busy={busy} />
-        <Text>{" ".repeat(gap)}</Text>
-        <Text dimColor color={m.color}>{modeText}</Text>
-        {modelConfig ? (
-          <>
+        {fit.title ? <Text bold color={ACCENT} wrap="truncate-end">{fit.title}</Text> : null}
+        {fit.title && fit.showShuttle ? <Text>{" "}</Text> : null}
+        {fit.showShuttle ? <Shuttle busy={busy} /> : null}
+        <Text wrap="truncate-end">{" ".repeat(fit.gap)}</Text>
+        <Text dimColor color={m.color} wrap="truncate-end">{fit.mode}</Text>
+        {status.map((part, i) => (
+          <Text key={i} wrap="truncate-end">
             <Text dimColor>{" | "}</Text>
-            <Text color={KIND_COLOR.websearch}>{modelText}</Text>
-            <Text dimColor>{" | "}</Text>
-            <Text>{effortText}</Text>
-          </>
-        ) : null}
+            <Text>{part}</Text>
+          </Text>
+        ))}
       </Box>
-      <Text dimColor>{"─".repeat(width)}</Text>
+      <Text dimColor wrap="truncate-end">{"─".repeat(width)}</Text>
     </Box>
   );
 }
@@ -4333,13 +4612,22 @@ export function useTerminalSize(defer: boolean): { columns: number; rows: number
         read();
         return;
       }
-      debounce = setTimeout(read, RESIZE_SETTLE_MS);
+      debounce = setTimeout(() => {
+        debounce = undefined;
+        read();
+      }, RESIZE_SETTLE_MS);
     };
     stdout.on("resize", onResize);
+    // The poll must never restart a settle wait already running: it fires more often than the
+    // inline shell's settle delay, so restarting it would postpone the read for ever.
+    const onPoll = () => {
+      if (!deferRef.current) read();
+      else if (!debounce) onResize();
+    };
     // The poll exists for Windows, where the event cannot be relied on at all. It goes
     // through the same handler, so it inherits whichever policy the shell is using, and
     // the identical-size check above makes a poll that finds nothing free.
-    const poll = setInterval(onResize, RESIZE_POLL_MS);
+    const poll = setInterval(onPoll, RESIZE_POLL_MS);
 
     // The size read at THIS exact instant can be stale too: entering alt-screen
     // (a raw escape code written before Ink even mounts, see altScreen.ts) makes
@@ -4422,9 +4710,12 @@ function StatusLine({
   advance: () => void;
 }) {
   // The render clock while busy: it advances the elapsed timer AND steps the eased token
-  // counter one frame. 50ms, which is what makes the number read as counting rather than
-  // as jumping — at 1Hz it moved once a second in whatever lump had arrived, which is a
-  // stutter, not an animation. Nothing else re-renders with it: the tick is this
+  // counter one frame. It runs at about the display's pace (16ms): the number reads as counting
+  // rather than as jumping, and the working dot moves smoothly. It was 50ms (20 frames a
+  // second), which was the slowest-looking thing on a screen that could draw three times as
+  // often, and at 1Hz before that it moved once a second in whatever lump had arrived, which
+  // is a stutter, not an animation. A tick costs about a millisecond now that unchanged rows
+  // are not rebuilt (see inkOutputPatch.ts). Nothing else re-renders with it: the tick is this
   // component's own state and the figure is read through a getter, so the cost is one
   // small subtree per frame.
   const [, tick] = useState(0);
@@ -4441,7 +4732,7 @@ function StatusLine({
   if (busy && startedAt != null) {
     // `< Scampering… < 45s · ↓ 1.8k tokens >` — the reference shape. The angle brackets
     // are what make it read as a live gauge rather than a sentence, and the verb is
-    // held for the whole turn (see workingVerb) so the line does not flicker between
+    // swapped every few seconds (see workingVerb) and steady inside each, so the line does not flicker between
     // words while the seconds tick.
     const secs = Math.floor((Date.now() - startedAt) / 1000);
     // OUTPUT tokens for THIS task, estimated from what has streamed back. It is the task's
@@ -4453,7 +4744,7 @@ function StatusLine({
     label = (
       <Text>
         {" "}
-        {workingVerb(startedAt)}…{"  "}
+        {workingVerb(startedAt, Date.now() - startedAt)}…{"  "}
         <Text dimColor>{"< "}{fmtElapsed(secs)}{got > 0 ? ` · ↓ ${formatTokens(got)} tokens` : ""}{" >"}</Text>
       </Text>
     );
@@ -4477,7 +4768,8 @@ function StatusLine({
   // no line at all, rather than a marker floating with nothing beside it.
   if (!busy && label === null) return null;
 
-  const dot = busy ? <Text color="cyan">●</Text> : <Text dimColor>●</Text>;
+  // Working: the accent green breathing on the same clock as the tool rows' dots. Done: still and dim.
+  const dot = busy ? <PulseDot tone="green" /> : <Text dimColor>●</Text>;
 
   // No marginTop: the footer owns the gap above itself now, so that it survives this
   // component rendering nothing at all. Two would read as a hole.
@@ -4489,8 +4781,8 @@ function StatusLine({
   );
 }
 
-/** The working line's render clock. See StatusLine's tick. */
-const LIVE_TICK_MS = 50;
+/** The working line's render clock, in milliseconds. See StatusLine's tick. */
+const LIVE_TICK_MS = 16;
 
 function fmtElapsed(s: number): string {
   return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
@@ -4533,7 +4825,7 @@ function BackgroundBar({ shells }: { shells: ShellInfo[] }) {
     .join(" • ");
   return (
     <Box>
-      <Text color="yellow">{"[BG] "}</Text>
+      <Text color={WARN}>{"[BG] "}</Text>
       <Text dimColor wrap="truncate-end">{`${shells.length} running: ${cmds}`}</Text>
     </Box>
   );

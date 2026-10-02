@@ -325,7 +325,10 @@ test("the resize poll goes through the shared handler, not straight to the read"
   // `resizePolicy.probe.test.tsx` drives that behaviourally rather than by reading source.
   const { readFile } = await import("node:fs/promises");
   const app = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
-  assert.match(app, /setInterval\(\s*onResize\s*,/, "the poll bypasses the shared handler again");
+  // The poll runs `onPoll`, which hands a deferring shell to the shared handler (and never
+  // restarts a settle wait already running, or the read would be postponed for ever).
+  assert.match(app, /setInterval\(\s*onPoll\s*,/, "the poll no longer goes through onPoll");
+  assert.match(app, /const onPoll = \(\) => \{[\s\S]{0,160}onResize\(\)/, "onPoll bypasses the shared handler again");
   assert.doesNotMatch(app, /setInterval\(\s*read\s*,/, "the poll reads the size directly again");
 });
 

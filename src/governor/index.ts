@@ -14,7 +14,7 @@
  * mechanical enforcement; the rules and skill catalog are rendered into the
  * system prompt by the engine.
  */
-import { projectDir } from "../memory/store.js";
+import { projectDir, stateRoot } from "../memory/store.js";
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import { loadRules } from "./rules.js";
@@ -31,25 +31,101 @@ async function readStateFile(stateDir: string, name: string): Promise<string> {
   }
 }
 
-/** Load all governance for the project rooted at `cwd`. Always succeeds (empties). */
+/**
+ * Where one scope's permission files live: the project's state dir, or the universal
+ * one (`~/.mindweave`) whose lists apply in every project.
+ */
+export function governanceDir(cwd: string, scope: GovernanceScope): string {
+  return scope === "global" ? stateRoot() : projectDir(cwd);
+}
+export type GovernanceScope = "project" | "global";
+
+/** The deny-lists and Sentinel allowances of ONE scope, unmerged, for a settings screen. */
+export async function loadPermissionLists(cwd: string, scope: GovernanceScope) {
+  const dir = governanceDir(cwd, scope);
+  const [paths, commands, mcpTools, sentinel] = await Promise.all([
+    readStateFile(dir, "forbidden.md"),
+    readStateFile(dir, "forbidden-commands.md"),
+    readStateFile(dir, "forbidden-mcp-tools.md"),
+    readStateFile(dir, "sentinel-allow.md"),
+  ]);
+  return {
+    paths: parseForbidden(paths),
+    commands: parseForbiddenCommands(commands),
+    mcpTools: parseForbiddenMcpTools(mcpTools),
+    sentinelAllow: parseForbiddenCommands(sentinel),
+  };
+}
+
+const unique = (list: string[]): string[] => [...new Set(list)];
+
+const CONTEXT_FILE = "context.json";
+
+/** One scope's auto-compaction override, or null if unset/unreadable/invalid. */
+export async function loadContextOverride(cwd: string, scope: GovernanceScope): Promise<number | null> {
+  try {
+    const raw = JSON.parse(await fs.readFile(join(governanceDir(cwd, scope), CONTEXT_FILE), "utf8")) as {
+      autoCompactTokens?: unknown;
+    };
+    const n = raw.autoCompactTokens;
+    return typeof n === "number" && Number.isFinite(n) && n > 0 ? Math.round(n) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Set or clear one scope's auto-compaction override. `tokens: null` clears it. */
+export async function saveContextOverride(cwd: string, scope: GovernanceScope, tokens: number | null): Promise<void> {
+  const dir = governanceDir(cwd, scope);
+  const file = join(dir, CONTEXT_FILE);
+  if (tokens === null) {
+    await fs.rm(file, { force: true });
+    return;
+  }
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(file, JSON.stringify({ autoCompactTokens: Math.round(tokens) }, null, 2), "utf8");
+}
+
+/**
+ * Load all governance for the project rooted at `cwd`. Always succeeds (empties).
+ *
+ * The deny-lists and Sentinel allowances are the universal layer plus the project's,
+ * merged: something forbidden everywhere is forbidden here too, and a project can only
+ * add to it. Rules and skills stay per project.
+ */
 export async function loadGovernance(cwd: string): Promise<Governance> {
   const stateDir = projectDir(cwd);
-  const [rules, skills, forbiddenText, forbiddenCmdText, forbiddenMcpText] = await Promise.all([
-    loadRules(stateDir),
-    loadSkillCatalog(stateDir),
-    readStateFile(stateDir, "forbidden.md"),
-    readStateFile(stateDir, "forbidden-commands.md"),
-    readStateFile(stateDir, "forbidden-mcp-tools.md"),
-  ]);
+  const [projectRules, projectSkills, globalRules, globalSkills, global, project, globalContext, projectContext] =
+    await Promise.all([
+      loadRules(stateDir),
+      loadSkillCatalog(stateDir),
+      loadRules(stateRoot()),
+      loadSkillCatalog(stateRoot()),
+      loadPermissionLists(cwd, "global"),
+      loadPermissionLists(cwd, "project"),
+      loadContextOverride(cwd, "global"),
+      loadContextOverride(cwd, "project"),
+    ]);
+  // Rules and skills for every project come first; a project's own of the same name
+  // replaces the universal one, so a project can override a general habit.
+  const byName = <T extends { name: string }>(general: T[], own: T[]): T[] => {
+    const ownNames = new Set(own.map((x) => x.name));
+    return [...general.filter((x) => !ownNames.has(x.name)), ...own];
+  };
+  const rules = byName(globalRules, projectRules);
+  const skills = byName(globalSkills, projectSkills);
+  const sentinelAllow = unique([...global.sentinelAllow, ...project.sentinelAllow]);
   return {
     rules,
     skills,
     forbidden: {
-      patterns: parseForbidden(forbiddenText),
-      commands: parseForbiddenCommands(forbiddenCmdText),
-      mcpTools: parseForbiddenMcpTools(forbiddenMcpText),
+      patterns: unique([...global.paths, ...project.paths]),
+      commands: unique([...global.commands, ...project.commands]),
+      mcpTools: unique([...global.mcpTools, ...project.mcpTools]),
       root: cwd,
     },
+    ...(sentinelAllow.length ? { sentinelAllow } : {}),
+    ...(projectContext !== null ? { contextAutoCompactTokens: projectContext } : globalContext !== null ? { contextAutoCompactTokens: globalContext } : {}),
   };
 }
 

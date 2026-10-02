@@ -1,12 +1,13 @@
 /**
- * analytics.ts — anonymous usage count, on by default, one file to swap the backend.
+ * analytics.ts — the anonymous usage count, PAUSED while a better one is built.
  *
- * The payload is `{ id, version }` and nothing else — no code, no keys, no paths, no
- * provider, no tokens. `id` is a random uuid generated once per machine and kept in
- * ~/.mindweave/analytics.json alongside the on/off flag. The whole thing is a single
- * POST to a plain HTTP endpoint, so the backend behind ANALYTICS_ENDPOINT can be
- * replaced later — a different language, a different host — without this file, or the
- * CLI, changing at all.
+ * Nothing is sent, for anyone, whatever an older install saved in its settings file. The
+ * on/off switch is kept so the commands and screens that mention it keep working, but it
+ * cannot be turned on: `setAnalyticsEnabled(true)` is refused and says why.
+ *
+ * It used to send `{ id, version }`, a random uuid made once per machine plus the version
+ * number, to a plain HTTP endpoint. To bring it back, flip `ANALYTICS_PAUSED` and change
+ * what is sent in one place; the callers do not need to change.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -18,6 +19,14 @@ import { stateRoot } from "../memory/store.js";
  * has a real domain — nothing else here needs to change.
  */
 const DEFAULT_ENDPOINT = "https://mindweavedev.netlify.app/.netlify/functions/ping";
+
+/** The counting is switched off for everyone until the replacement exists. */
+export const ANALYTICS_PAUSED = true;
+
+/** What to tell someone who tries to turn it on while it is paused. */
+export const ANALYTICS_PAUSED_MESSAGE =
+  "Analytics is off and cannot be turned on for now. We are building a better way to count " +
+  "how many people use Mindweave, and nothing is sent in the meantime.";
 
 function endpoint(): string {
   return process.env.MINDWEAVE_ANALYTICS_URL?.trim() || DEFAULT_ENDPOINT;
@@ -59,32 +68,32 @@ function config(): AnalyticsConfig {
 }
 
 export function analyticsEnabled(): boolean {
-  return config().enabled;
-}
-
-export function setAnalyticsEnabled(on: boolean): void {
-  const cfg = config();
-  cfg.enabled = on;
-  writeConfig(cfg);
+  return !ANALYTICS_PAUSED && config().enabled;
 }
 
 /**
- * The full transparency explanation — shown every time the /analytics box opens, not
- * just once. The startup line only ever says on/off; this is where someone actually
- * reads what it does and where to check it themselves.
+ * Switch the count on or off. Returns whether it is on afterwards, which while paused is
+ * always false: a request to turn it on is ignored and the saved setting is left alone.
+ */
+export function setAnalyticsEnabled(on: boolean): boolean {
+  if (ANALYTICS_PAUSED) return false;
+  const cfg = config();
+  cfg.enabled = on;
+  writeConfig(cfg);
+  return cfg.enabled;
+}
+
+/**
+ * What /analytics prints: why usage counting is off for now. Nothing is sent, and there is no
+ * switch to flip while it is paused.
  */
 export const ANALYTICS_EXPLANATION =
-  "Sends a random id + the version number, nothing else. Fully open: the code that " +
-  "sends it is in the repo, and the numbers it produces are public on the site.\n" +
-  "github.com/mindweave-cli/Mindweave · https://mindweavedev.netlify.app/";
-
-/** Shown once per launch, every launch — not a one-time notice. */
-export function startupStatusLine(): string {
-  return `Analytics: ${analyticsEnabled() ? "on" : "off"} — /analytics for details.`;
-}
+  "Usage counting is off for now, and nothing is sent. We are building a better way to count " +
+  "how many people use Mindweave. When it is ready it will stay off until you turn it on.";
 
 /** Fire-and-forget. Never throws, never delays startup. */
 export function sendAnalyticsPing(version: string): void {
+  if (ANALYTICS_PAUSED) return;
   const cfg = config();
   if (!cfg.enabled) return;
   void fetch(endpoint(), {

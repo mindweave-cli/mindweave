@@ -140,7 +140,9 @@ const PRICES: Record<string, ModelPrice> = {
   [GLM_52]: { cacheHit: 0.26, cacheMiss: 1.4, output: 4.4 },
   [GLM_5]: { cacheHit: 0.2, cacheMiss: 1, output: 3.2 },
   [GLM_47]: { cacheHit: 0.11, cacheMiss: 0.6, output: 2.2 },
-  [GLM_47_FLASHX]: { cacheHit: 0.014, cacheMiss: 0.07, output: 0.4 },
+  // Cached input $0.01, not the 20% of input the other lines follow (docs.z.ai pricing,
+  // checked 2026-09-23).
+  [GLM_47_FLASHX]: { cacheHit: 0.01, cacheMiss: 0.07, output: 0.4 },
 };
 
 /** Cache-aware list price for a model, falling back to the default model's. */

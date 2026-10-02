@@ -63,7 +63,16 @@ const VENDOR_PREFIXES = [
   "gpt-",
 ];
 
-const MODEL_ID = new RegExp(`\\b(${VENDOR_PREFIXES.join("|")})[a-z0-9./-]*\\d[a-z0-9./-]*\\b`, "i");
+/**
+ * Ids that carry NO version digit, which the shape pattern requires, and so have to be
+ * named: DeepSeek's canonical name for its Flash model is just `deepseek-flash`.
+ */
+const DIGITLESS_IDS = ["deepseek-flash"];
+
+const MODEL_ID = new RegExp(
+  `\\b(${VENDOR_PREFIXES.join("|")})[a-z0-9./-]*\\d[a-z0-9./-]*\\b|\\b(${DIGITLESS_IDS.join("|")})\\b`,
+  "i",
+);
 
 /**
  * Every model id an installed provider actually serves.

@@ -49,6 +49,7 @@ export function formatHelp(sections: readonly HelpSection[]): string {
     "Also\n" +
       "  @path             attach a file to your message (Tab completes the path)\n" +
       "  Esc               stop what's running\n" +
+      "  Esc Esc           on an empty box, rewind to an earlier message\n" +
       // The input stays live while a turn runs and the placeholder says so, so
       // QUEUEING is discoverable. Getting back OUT of the queue is not: nothing on
       // screen mentions it until something is already queued, and by then a user who

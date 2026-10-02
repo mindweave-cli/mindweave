@@ -31,6 +31,7 @@
 import { useState } from "react";
 import { Box, Text, useInput } from "ink";
 import { clipRows } from "../wrap.js";
+import { ACCENT } from "../theme.js";
 
 /** Rows the question may occupy before it is cut (wrapping included). */
 const MAX_QUESTION_ROWS = 4;
@@ -163,12 +164,12 @@ export function ApprovalBox({
         const on = i === sel;
         return (
           <Box key={i} width={inner} flexShrink={0}>
-            <Text color={on ? "cyan" : undefined} bold={on}>
+            <Text color={on ? ACCENT : undefined} bold={on}>
               {on ? " › " : "   "}
               {`[${i + 1}] `}
             </Text>
             <Box width={Math.max(4, inner - 7)}>
-              <Text color={on ? "cyan" : undefined} bold={on} wrap="truncate-end">
+              <Text color={on ? ACCENT : undefined} bold={on} wrap="truncate-end">
                 {label}
               </Text>
             </Box>
@@ -178,12 +179,12 @@ export function ApprovalBox({
 
       {freeText ? (
         <Box width={inner} flexShrink={0}>
-          <Text color={onText ? "cyan" : undefined} bold={onText}>
+          <Text color={onText ? ACCENT : undefined} bold={onText}>
             {onText ? " › " : "   "}
             {`[${shown.length + 1}] `}
           </Text>
           <Box width={Math.max(4, inner - 7)}>
-            <Text color={onText ? "cyan" : undefined} bold={onText} wrap="truncate-end">
+            <Text color={onText ? ACCENT : undefined} bold={onText} wrap="truncate-end">
               {/* The label until it is being used, then what is being typed. The caret
                   is a plain block rather than the prompt's blinking one: this row is
                   transient and a second animation under the chat reads as noise. */}

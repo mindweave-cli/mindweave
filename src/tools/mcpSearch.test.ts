@@ -147,3 +147,12 @@ test("an empty query is refused rather than matching everything", async () => {
   const r = await findTools.execute({ query: "  " }, ctxWith());
   assert.equal(r.isError, true);
 });
+
+test("loading a tool is never shown: every result is quiet, found or not", async () => {
+  const ctx = { cwd: process.cwd(), reads: new Map(), todos: [] } as unknown as ToolContext;
+  const found = await findTools.execute({ query: "screenshot" }, ctx);
+  assert.equal(found.quiet, true);
+  assert.match(found.output, /screenshot/, "the model still gets the schema");
+  const none = await findTools.execute({ query: "zzzz-no-such-capability" }, ctx);
+  assert.equal(none.quiet, true);
+});

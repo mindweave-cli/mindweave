@@ -179,6 +179,15 @@ test("Cerebras is the one provider with NO cache discount, and says so", () => {
   assert.equal(typeof cerebrasProvider.cacheSplit, "function");
 });
 
+test("every Cerebras model in the lineup has its own price row, not the fallback", () => {
+  // Rows match by substring. A fragment that misses the real id ("qwen3" against the
+  // served "qwen-3.8-27b") billed that model at the fallback rate without a word.
+  const fallback = cerebras.price("no-such-model-anywhere");
+  for (const choice of cerebras.MODELS) {
+    assert.notEqual(cerebras.price(choice.id), fallback, `${choice.id} fell through to the fallback price`);
+  }
+});
+
 test("Groq discounts cached input by half, not by the usual ninety percent", () => {
   const p = groq.price("openai/gpt-oss-120b");
   assert.ok(Math.abs(p.cacheHit - p.cacheMiss / 2) < 1e-9, `expected half, got ${p.cacheHit} of ${p.cacheMiss}`);

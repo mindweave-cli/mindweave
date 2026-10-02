@@ -14,7 +14,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { meterReset, meterDelta, meterTick, meterValue, meterSettled } from "./liveMeter.js";
+import { meterReset, meterDelta, meterTick, meterValue, meterSettled, meterUsage } from "./liveMeter.js";
 
 /** Run the render clock until the counter catches up, with a bound so a non-converging
  *  easing fails the test instead of hanging it. */
@@ -74,9 +74,46 @@ test("a turn starts from zero", () => {
 });
 
 test("the figure never counts the prompt", () => {
-  // Guards the specific regression: only meterDelta, fed by streamed output, may move
-  // this number. There is deliberately no way to hand it an input-token count.
+  // Guards the specific regression: only output may move this number. It takes streamed
+  // characters (meterDelta) and a finished call's reported OUTPUT tokens (meterUsage); there is
+  // deliberately no way to hand it an input-token count, and the state has no field for one.
   const empty = meterReset();
   assert.equal(meterValue(settle(empty).state), 0, "a turn that produced no output must read 0");
-  assert.deepEqual(Object.keys(empty).sort(), ["chars", "shownChars"]);
+  assert.deepEqual(Object.keys(empty).sort(), ["chars", "doneChars", "shownChars"]);
+});
+
+test("a finished call's real output size replaces its streamed estimate, so tool-heavy work is counted", () => {
+  // The model streamed 40 chars of prose but wrote a 4000-char edit into a tool call: nothing
+  // streamed for that, so the estimate says 10 tokens while the call really produced ~1010.
+  let s = meterReset();
+  s = meterDelta(s, 40);
+  s = meterUsage(s, 1010);
+  for (let i = 0; i < 200; i++) s = meterTick(s);
+  assert.equal(meterValue(s), 1010, "the real figure is what the counter arrives at");
+  assert.ok(meterSettled(s));
+  // the next call streams on top of it
+  s = meterDelta(s, 400);
+  for (let i = 0; i < 200; i++) s = meterTick(s);
+  assert.equal(meterValue(s), 1110);
+});
+
+test("an estimate that ran ahead of the real figure is never counted back down", () => {
+  let s = meterReset();
+  s = meterDelta(s, 4000); // ~1000 tokens estimated
+  for (let i = 0; i < 200; i++) s = meterTick(s);
+  assert.equal(meterValue(s), 1000);
+  s = meterUsage(s, 600); // the call really produced less
+  const after = meterValue(meterTick(s));
+  assert.ok(after >= 1000, "the shown figure holds rather than dropping");
+});
+
+test("the counter closes the same distance in the same time whatever the tick length", () => {
+  let slow = meterDelta(meterReset(), 4000);
+  let fast = slow;
+  // 400ms of the counter chasing, as 8 ticks of 50ms or as 25 ticks of 16ms.
+  for (let i = 0; i < 8; i++) slow = meterTick(slow, 50);
+  for (let i = 0; i < 25; i++) fast = meterTick(fast, 16);
+  assert.ok(Math.abs(slow.shownChars - fast.shownChars) <= slow.shownChars * 0.1, `${slow.shownChars} vs ${fast.shownChars}`);
+  assert.ok(fast.shownChars <= 4000, "never past the real total");
+  assert.equal(meterTick(meterReset(), 16).shownChars, 0, "nothing to chase, nothing moves");
 });

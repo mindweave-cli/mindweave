@@ -20,18 +20,34 @@ import { stripMouse } from "../mouse.js";
 import { useState } from "react";
 import { useInput } from "ink";
 import { initialRow, type SetupRow, type SetupView } from "../keySetup.js";
+import { ACCENT, GOOD } from "../theme.js";
 
-/** Rows visible at once, so the screen fits a small terminal. */
 /**
- * How many providers fit alongside everything else on the screen.
+ * How the first-run screen uses the terminal height: how many providers to list, and
+ * whether the welcome tips fit alongside them.
  *
- * Derived from the terminal height rather than fixed, because the first launch also
- * carries a welcome and four tips — measured, a fixed nine overflowed a 30-row window by
- * a line, and the line it lost was the bottom of the list.
+ * Every provider is listed whenever the terminal is tall enough, because a list that shows
+ * nine of sixteen reads as "these are the ones it supports" and a user holding a key for
+ * one of the other seven concludes it does not. The tips are the first thing to give way,
+ * since the list is what the screen is for. Only a terminal too short for the whole list
+ * scrolls, and then it says what is above and below the window.
+ *
+ * The line counts were measured: title, subtitle, the prompt, the spacing, Continue and
+ * the footer are CHROME; the first run adds a one-line note about local models, and the
+ * tips add four more.
  */
-function windowFor(rows: number, hasTips: boolean): number {
-  const chrome = hasTips ? 22 : 18;
-  return Math.max(4, Math.min(9, rows - chrome));
+const CHROME = 18;
+const LOCAL_NOTE_LINES = 1;
+const TIP_LINES = 4;
+
+export function layoutFor(rows: number, count: number, firstRun: boolean): { win: number; tips: boolean } {
+  const base = CHROME + (firstRun ? LOCAL_NOTE_LINES : 0);
+  const tips = firstRun && rows - base - TIP_LINES >= count;
+  const room = rows - base - (tips ? TIP_LINES : 0);
+  // One line is held back while scrolling: the window can show "more above" and "more below"
+  // at once, and the screen must not exceed the terminal, since Continue sits at the bottom.
+  const win = room >= count ? count : Math.max(4, room - 1);
+  return { win, tips };
 }
 
 export interface KeySetupProps {
@@ -117,7 +133,7 @@ export function KeySetup({ view, rows, version, envPath, docsUrl, onSaveKey, onC
           Paste your <Text bold>{entering.label}</Text> API key:
         </Text>
         <Box marginTop={1}>
-          <Text bold color="cyan">{"  key › "}</Text>
+          <Text bold color={ACCENT}>{"  key › "}</Text>
           <TextInput
             value={value}
             // Mouse reports arrive at a focused field as TYPED TEXT once wheel reporting is
@@ -147,7 +163,8 @@ export function KeySetup({ view, rows, version, envPath, docsUrl, onSaveKey, onC
     );
   }
 
-  const win = windowFor(rows, view.readyCount === 0);
+  const firstRun = view.readyCount === 0;
+  const { win, tips } = layoutFor(rows, view.rows.length, firstRun);
   const start = windowStart(sel, rowCount, win);
   return (
     <FirstRunFrame
@@ -158,23 +175,24 @@ export function KeySetup({ view, rows, version, envPath, docsUrl, onSaveKey, onC
           ? "Welcome — a coding agent that runs in your terminal, on your own key."
           : `Ready: ${view.rows.filter((r) => r.ready).map((r) => r.label).join(", ")}. Add more, or continue.`
       }
-      tips={view.readyCount === 0 ? FIRST_RUN_TIPS : undefined}
+      tips={tips ? FIRST_RUN_TIPS : undefined}
     >
       <Text>Add a key for whichever provider you already use — one is enough.</Text>
       <Box marginTop={1} flexDirection="column">
+        {start > 0 ? <Text dimColor>{`   … ${start} more above`}</Text> : null}
         {view.rows.slice(start, start + win).map((row, i) => {
           const index = start + i;
           const on = index === sel;
           return (
             <Box key={row.id}>
-              <Text color={on ? "cyan" : undefined} bold={on}>
+              <Text color={on ? ACCENT : undefined} bold={on}>
                 {on ? " › " : "   "}
                 {`${String(index + 1).padStart(2)}  `}
               </Text>
               <Box width={16}>
-                <Text color={on ? "cyan" : undefined} bold={on} wrap="truncate-end">{row.label}</Text>
+                <Text color={on ? ACCENT : undefined} bold={on} wrap="truncate-end">{row.label}</Text>
               </Box>
-              <Text color={row.ready ? "green" : undefined} dimColor={!row.ready}>
+              <Text color={row.ready ? GOOD : undefined} dimColor={!row.ready}>
                 {row.ready ? "✓ key added" : row.envVar}
               </Text>
             </Box>
@@ -183,8 +201,9 @@ export function KeySetup({ view, rows, version, envPath, docsUrl, onSaveKey, onC
         {start + win < view.rows.length ? (
           <Text dimColor>{`   … ${view.rows.length - start - win} more below`}</Text>
         ) : null}
+        {firstRun ? <Text dimColor>{"   Using a model on your own computer? Ollama needs no key. Start it and Mindweave finds it."}</Text> : null}
         <Box marginTop={1}>
-          <Text color={onContinueRow ? "cyan" : undefined} bold={onContinueRow} dimColor={!view.canContinue}>
+          <Text color={onContinueRow ? ACCENT : undefined} bold={onContinueRow} dimColor={!view.canContinue}>
             {onContinueRow ? " › " : "   "}
             {view.canContinue ? "Continue →  start chatting" : "Continue →  (add a key first)"}
           </Text>

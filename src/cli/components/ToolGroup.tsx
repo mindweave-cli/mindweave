@@ -1,34 +1,70 @@
 /**
- * ToolGroup — one consolidated row for a burst of file reads, plus the calls
- * it made listed beneath it.
+ * ToolGroup — one row for a run of consecutive reads, with what was read listed beneath it.
  *
- *   ● Read 2 files
- *     ⎿ views.py  42 lines
- *     ⎿ auth.py   128 lines
+ *   ● Read 6 files
+ *     ⎿ views.py, models.py, urls.py
+ *       forms.py, admin.py, tests.py
  *
- * The block appears ONCE, already carrying its list — it is not dispatched until
- * its calls have resolved (App's pump holds it). The only thing that ever changes
- * afterwards is the verb, which settles from "Reading" to "Read" when the turn
- * ends. A bare "Reading 2 files…" header that later grows a body is exactly the
- * transition this design exists to remove, so nothing here may key off `done`.
+ * The row opens with the first read and every read after it joins, however the model split
+ * them into calls. While any of them is still working the dot pulses and the header is in the
+ * present tense ("Reading 4 files"); when the last one is done the dot goes still and the verb
+ * settles. Three names to a line, the branch on the first line only, so a burst of reads takes a
+ * couple of lines instead of one per file.
  *
- * It used to render the header ALONE, on the theory that the count told the
- * story and the individual calls were detail nobody reads. It didn't: "Explored
- * 2 items" names neither the files nor what was found, so it occupied a row
- * while answering nothing. The calls are listed now, collapsed and capped.
+ * White only, like every tool row. A read that failed says so beside its name.
  *
- * What is grouped narrowed at the same time. Searches (grep/glob) left the group
- * and became their own block, because a search's pattern and its hits are the
- * whole point of it. The pure code-intel lookups (outline/definition/references/
- * relevant) went the other way and are hidden entirely — they are how the agent
- * navigates, not something done TO the project. See isGroupable.
+ * What is grouped is narrow (see isGroupable): reads, and the background-shell status checks a
+ * model polls while it waits. Searches and the code lookups are never drawn at all.
  */
 import { Box, Text } from "ink";
-import { KIND_COLOR, ERROR_COLOR } from "../toolDisplay.js";
-import { collapseAdjacent } from "../toolItems.js";
+import { PulseDot } from "./PulseDot.js";
 import type { ToolGroupItem } from "../transcript.js";
 
 const DOT = "●";
+const BRANCH = "⎿";
+/** Names on one line of the list. */
+export const NAMES_PER_LINE = 3;
+/** Lines of names shown before the rest are counted instead. */
+export const GROUP_MAX_ROWS = 6;
+
+/** The names one item contributes: each file a read covered, or the call itself otherwise. Pure. */
+export function itemNames(it: ToolGroupItem): string[] {
+  const failed = it.status === "error" ? " (failed)" : "";
+  if (it.kind === "read" && it.arg) {
+    const files = (it.covers ?? 1) > 1 ? it.arg.split(/,\s*/) : [it.arg];
+    return files.filter(Boolean).map((f) => f + failed);
+  }
+  const word = it.name.toLowerCase();
+  return [(it.arg ? `${word} ${it.arg}` : word) + failed];
+}
+
+/** Every distinct name in the group, in order, with how many times it came up. Pure. */
+export function groupNames(items: ToolGroupItem[]): { name: string; count: number }[] {
+  const names: { name: string; count: number }[] = [];
+  for (const it of items) {
+    for (const name of itemNames(it)) {
+      const same = names.find((n) => n.name === name);
+      if (same) same.count++;
+      else names.push({ name, count: 1 });
+    }
+  }
+  return names;
+}
+
+/**
+ * The list under the header (pure): names in order, a repeat of the same name folded into
+ * `name ×N`, three to a line, capped at `maxRows` lines with the rest counted.
+ */
+export function groupLines(items: ToolGroupItem[], perLine = NAMES_PER_LINE, maxRows = GROUP_MAX_ROWS): string[] {
+  const names = groupNames(items);
+  const shown = names.map((n) => (n.count > 1 ? `${n.name} ×${n.count}` : n.name));
+  const lines: string[] = [];
+  for (let i = 0; i < shown.length; i += perLine) lines.push(shown.slice(i, i + perLine).join(", "));
+  if (lines.length <= maxRows) return lines;
+  const kept = lines.slice(0, maxRows);
+  const rest = shown.length - maxRows * perLine;
+  return [...kept, `… ${rest} more`];
+}
 
 export function ToolGroup({
   items,
@@ -37,70 +73,35 @@ export function ToolGroup({
   tightTop,
 }: {
   items: ToolGroupItem[];
-  /** Is the turn that made these calls still running? Chooses the verb, nothing else. */
+  /** Is the turn that made these calls still running? A row from an ended turn never pulses. */
   live?: boolean;
   columns: number;
   tightTop?: boolean;
 }) {
-  // THINGS, not calls. `read_file` takes a list of paths, so one call can read several
-  // files, and counting calls made a burst of three files announce itself as
-  // "Reading 1 file" directly above its own row saying "Read 3 files" — the header
-  // contradicting its contents, with the header the one that was wrong.
-  const n = items.reduce((total, it) => total + (it.covers ?? 1), 0);
-  const anyError = items.some((it) => it.status === "error");
-  // Named for what it actually did when it's all one kind of work, which after
-  // the narrowing above is the common case: a burst of reads says "Read 3 files".
+  const working = !!live && items.some((it) => it.status === "running");
   const allReads = items.every((it) => it.kind === "read");
+  // Files, not calls: one call can read several files, and a file read twice is still one file
+  // (the list shows it as `name ×2`).
+  const n = allReads ? groupNames(items).length : items.reduce((total, it) => total + (it.covers ?? 1), 0);
   const noun = allReads ? (n === 1 ? "file" : "files") : n === 1 ? "item" : "items";
-  const verb = live ? (allReads ? "Reading" : "Exploring") : allReads ? "Read" : "Explored";
-  const header = `${verb} ${n} ${noun}`;
-
-  // The discovery dot takes the group's dominant action colour (reads vs searches),
-  // red if any call in it failed. It is NOT dimmed while the turn runs: this block
-  // is only ever rendered once its calls have resolved, so there is no unresolved
-  // state to signal, and dimming would be a second thing changing under the user.
-  const dotColor = anyError ? ERROR_COLOR : KIND_COLOR[dominantKind(items)];
-  const collapsed = collapseAdjacent(items);
-  const rows = collapsed.slice(0, GROUP_MAX_ROWS);
-  const hidden = collapsed.length - rows.length;
+  const verb = working ? (allReads ? "Reading" : "Checking") : allReads ? "Read" : "Checked";
+  const lines = groupLines(items);
   const content = Math.max(8, columns - 5);
 
   return (
     <Box marginTop={tightTop ? 0 : 1} flexDirection="column">
       <Box flexDirection="row">
-        <Box minWidth={2}>
-          <Text color={dotColor}>{DOT}</Text>
-        </Box>
-        <Text bold>{header}</Text>
+        <Box minWidth={2}>{working ? <PulseDot glyph={DOT} /> : <Text>{DOT}</Text>}</Box>
+        <Text bold>{`${verb} ${n} ${noun}`}</Text>
       </Box>
-      {rows.map((row) => (
-        <Box key={row.item.toolId} flexDirection="row" width={columns}>
-          <Text dimColor>{"  ⎿ "}</Text>
+      {lines.map((line, i) => (
+        <Box key={i} flexDirection="row" width={columns}>
+          <Text dimColor>{i === 0 ? `  ${BRANCH} ` : "    "}</Text>
           <Box width={content}>
-            <Text color={row.anyError ? "red" : undefined} dimColor={!row.anyError} wrap="truncate-end">
-              {row.label}
-              {/* The count only. The note is NOT appended here: itemLabel already
-                  RETURNS the note for a resolved item, so appending it printed the
-                  whole result twice ("Read src/a.ts (195 lines)  read src/a.ts
-                  (195 lines)"), which only escaped notice because the duplicate
-                  fell past the truncation edge on a narrow terminal. */}
-              {row.count > 1 ? `  ×${row.count}` : ""}
-            </Text>
+            <Text dimColor wrap="truncate-end">{line}</Text>
           </Box>
         </Box>
       ))}
-      {hidden > 0 ? <Text dimColor>{`    … ${hidden} more`}</Text> : null}
     </Box>
   );
-}
-
-/** Rows listed under a finished discovery group before the rest are summarised.
- *  Exported so viewport.ts's height estimate uses the same cap this renders. */
-export const GROUP_MAX_ROWS = 6;
-
-/** The most common action in a discovery burst — used to colour its dot. Defaults
- *  to "search" (the family reads/greps/maps all belong to). */
-function dominantKind(items: ToolGroupItem[]): "read" | "search" {
-  const reads = items.filter((it) => it.kind === "read").length;
-  return reads > items.length / 2 ? "read" : "search";
 }

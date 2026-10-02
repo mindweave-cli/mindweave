@@ -4,6 +4,8 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import {
   shouldUpdateSessionMemory,
   renderSessionMemory,
@@ -11,6 +13,22 @@ import {
   SESSION_MEMORY_TEMPLATE,
 } from "./sessionMemory.js";
 import { estimateTokens } from "./compaction.js";
+
+const sessionMemorySource = readFileSync(fileURLToPath(new URL("./sessionMemory.ts", import.meta.url)), "utf8");
+
+test("the notes writer loads ITS OWN model's driver before calling it", () => {
+  // Same failure shape as dynamo/engine.ts's summarizeAndSplice (see its own test for
+  // the full story): `activeDriver()` is a plain global, not scoped to this session, so
+  // this background call has to (re-)load its own model's driver immediately before
+  // using it rather than trust whatever a sub-agent left the global pointed at.
+  const body = sessionMemorySource.match(/export async function updateSessionMemory\([\s\S]*?\n\}/)?.[0];
+  assert.ok(body, "updateSessionMemory not found — did it move?");
+  assert.match(
+    body,
+    /await ensureDriver\(model\.model\);[\s\S]{0,40}activeDriver\(\)/,
+    "ensureDriver(model.model) must run immediately before activeDriver() is used",
+  );
+});
 
 test("no update until the session warms past the init bar", () => {
   assert.equal(shouldUpdateSessionMemory(1_000, 0, false), false);

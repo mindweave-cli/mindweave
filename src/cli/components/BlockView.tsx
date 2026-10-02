@@ -14,8 +14,8 @@
 import { memo } from "react";
 import { Box, Text } from "ink";
 import { renderMarkdown } from "../markdown.js";
-import { wrapAnsi } from "../wrap.js";
-import { KIND_COLOR } from "../toolDisplay.js";
+import { wrapAnsi, visibleWidth } from "../wrap.js";
+import { BAD, USER_BG, USER_FG } from "../theme.js";
 import { compactionLines } from "../compaction.js";
 import { ToolLine } from "./ToolLine.js";
 import { ToolGroup } from "./ToolGroup.js";
@@ -42,17 +42,42 @@ function WrappedText({ text, width, color }: { text: string; width: number; colo
   );
 }
 
+/**
+ * Your own message: a grey band the full width of the conversation, white text inside it.
+ *
+ * It used to be coloured text (cyan), which was the loudest thing on screen and still read
+ * as just another kind of output. A band marks the turn without colouring the words, the
+ * way the app draws your message on its own surface. Every row is padded to the full width
+ * so the band is one even block rather than ragged ends, with a column of padding on each
+ * side so the text does not touch its right edge. The ">" sits in the first column, exactly where the
+ * agent's dot does, and the words start in the same column as the agent's words, so the two
+ * kinds of message line up down the screen.
+ */
+function UserBand({ text, columns }: { text: string; columns: number }) {
+  const width = Math.max(10, columns);
+  const inner = Math.max(4, width - 3); // the "> " gutter, then one space at the right edge
+  const rows = wrapAnsi(text, inner);
+  return (
+    <Box marginTop={1} flexDirection="column" width={width}>
+      {rows.map((line, i) => {
+        const body = line === "" ? "" : line;
+        const pad = Math.max(0, inner - visibleWidth(body));
+        return (
+          <Text key={i} backgroundColor={USER_BG} color={USER_FG} wrap="truncate-end">
+            {`${i === 0 ? ">" : " "} ${body}${" ".repeat(pad)} `}
+          </Text>
+        );
+      })}
+    </Box>
+  );
+}
+
 function BlockViewInner({ block, columns, tightTop }: { block: Block; columns: number; tightTop?: boolean }) {
   const textWidth = Math.max(8, columns - 4);
 
   switch (block.kind) {
     case "user":
-      return (
-        <Box marginTop={1} flexDirection="row">
-          <Box minWidth={2}><Text color="cyan">{">"}</Text></Box>
-          <WrappedText text={block.text} width={textWidth} color="cyan" />
-        </Box>
-      );
+      return <UserBand text={block.text} columns={columns} />;
 
     case "assistant": {
       if (!block.text) return null;
@@ -109,15 +134,15 @@ function BlockViewInner({ block, columns, tightTop }: { block: Block; columns: n
     case "error":
       return (
         <Box marginTop={1} flexDirection="row">
-          <Box minWidth={2}><Text color="red">{"●"}</Text></Box>
-          <WrappedText text={block.text} width={textWidth} color="red" />
+          <Box minWidth={2}><Text color={BAD}>{"●"}</Text></Box>
+          <WrappedText text={block.text} width={textWidth} color={BAD} />
         </Box>
       );
 
     case "completion":
       return (
         <Box marginTop={1} flexDirection="row">
-          <Box minWidth={2}><Text dimColor>{"✻"}</Text></Box>
+          <Box minWidth={2}><Text dimColor>{"●"}</Text></Box>
           <Text dimColor>{block.text}</Text>
         </Box>
       );
@@ -142,13 +167,13 @@ function BlockViewInner({ block, columns, tightTop }: { block: Block; columns: n
       return (
         <Box marginTop={1} flexDirection="column">
           <Box flexDirection="row">
-            <Box minWidth={2}><Text color={KIND_COLOR.governor}>{"●"}</Text></Box>
+            <Box minWidth={2}><Text>{"●"}</Text></Box>
             <Text bold>{block.title}</Text>
           </Box>
           {block.body.split("\n").flatMap((line, i) =>
             wrapAnsi(line, railWidth).map((row, j) => (
               <Box key={`${i}-${j}`} flexDirection="row" width={columns}>
-                <Text color={KIND_COLOR.governor} dimColor>{"  │ "}</Text>
+                <Text dimColor>{"  │ "}</Text>
                 <Box width={railWidth}>
                   <Text wrap="truncate-end">{row}</Text>
                 </Box>

@@ -24,6 +24,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { writeFileAtomic } from "../tools/atomicWrite.js";
 import { collapsePastes } from "./pastedText.js";
+import { sessionTitle } from "./sessionTitle.js";
 import type { Entry, Session, SessionMeta } from "./types.js";
 
 /** Turn a project path into a single safe directory name (e.g. `D:\proj` → `D--proj`). */
@@ -70,6 +71,12 @@ export function transcriptPath(projectCwd: string, id: string): string {
   return join(sessionDir(projectCwd), `${id}.jsonl`);
 }
 
+/** What compaction took out of a session's transcript, kept for redrawing the chat
+ *  (see memory/earlier.ts). Appended to, never rewritten. */
+function earlierPath(projectCwd: string, id: string): string {
+  return join(sessionDir(projectCwd), `${id}.earlier.jsonl`);
+}
+
 /** Sidecar file holding a session's maintained "session memory" notes. */
 function notesPath(projectCwd: string, id: string): string {
   return join(sessionDir(projectCwd), `${id}.notes.md`);
@@ -82,6 +89,18 @@ export async function loadSessionNotes(projectCwd: string, id: string): Promise<
   } catch {
     return "";
   }
+}
+
+/** Where a session's undo history is kept on disk (see Checkpoints.persistTo). */
+export function checkpointDir(projectCwd: string, id: string): string {
+  return join(sessionDir(projectCwd), `${id}.checkpoints`);
+}
+
+/** Delete a session's notes sidecar. Saving only ever writes notes that exist, so notes
+ *  that stopped being true (a rewind took back the turns they describe) have to be
+ *  removed on purpose, or a resume would load them again. */
+export async function clearSessionNotes(projectCwd: string, id: string): Promise<void> {
+  await fs.rm(notesPath(projectCwd, id), { force: true }).catch(() => {});
 }
 
 function metaPath(projectCwd: string, id: string): string {
@@ -149,14 +168,24 @@ export async function saveSession(session: Session): Promise<boolean> {
     // the one thing still written the unsafe way.
     await writeFileAtomic(transcriptPath(session.cwd, session.id), lines + "\n");
 
+    // What compaction took out since the last save, added to the end of its own file.
+    // Appended rather than rewritten: it only ever grows, and it can grow large.
+    if (session.earlierUnsaved && session.earlierUnsaved.length > 0) {
+      const gone = session.earlierUnsaved;
+      await fs.appendFile(earlierPath(session.cwd, session.id), gone.map((e) => JSON.stringify(e)).join("\n") + "\n");
+      session.earlierUnsaved = undefined;
+    }
+
     // Extra roots = everything on the tool context beyond the primary (session.cwd).
     const extraRoots = (session.toolContext.roots ?? []).filter((r) => r !== session.cwd);
+    const title = sessionTitle(session.sessionMemory);
     const meta: SessionMeta = {
       id: session.id,
       cwd: session.cwd,
       createdAt: session.createdAt,
       updatedAt: Date.now(),
       firstPrompt: clip(firstUserText(session.transcript)),
+      ...(title ? { title } : {}),
       lastPrompt: clip(lastUserText(session.transcript)),
       entryCount: session.transcript.length,
       // Unconditional: a session with no model recorded is one whose behaviour cannot
@@ -170,11 +199,14 @@ export async function saveSession(session: Session): Promise<boolean> {
       // totals above are identical whether a turn made one expensive call or six cheap
       // ones, and that difference is the whole answer.
       ...(session.callLog && session.callLog.length > 0 ? { callLog: session.callLog } : {}),
+      ...(session.contextOverhead ? { contextOverhead: session.contextOverhead } : {}),
       // Deferred tools the model surfaced this session, so a resume re-advertises them
       // instead of stripping a tool it was mid-use of (see registry.toolSchemas).
       ...(session.toolContext.activatedTools && session.toolContext.activatedTools.size > 0
         ? { activatedTools: [...session.toolContext.activatedTools] }
         : {}),
+      // Only once a Marathon has actually been started on this session.
+      ...(session.marathon ? { marathon: session.marathon } : {}),
     };
     await writeFileAtomic(metaPath(session.cwd, session.id), JSON.stringify(meta, null, 2));
 
@@ -190,8 +222,17 @@ export async function saveSession(session: Session): Promise<boolean> {
 
 /** Load a session's transcript from disk, or null if it isn't there / is unreadable. */
 export async function loadTranscript(projectCwd: string, id: string): Promise<Entry[] | null> {
+  return readEntries(transcriptPath(projectCwd, id));
+}
+
+/** What compaction took out of a session (see memory/earlier.ts), or [] if nothing was. */
+export async function loadEarlier(projectCwd: string, id: string): Promise<Entry[]> {
+  return (await readEntries(earlierPath(projectCwd, id))) ?? [];
+}
+
+async function readEntries(path: string): Promise<Entry[] | null> {
   try {
-    const raw = await fs.readFile(transcriptPath(projectCwd, id), "utf8");
+    const raw = await fs.readFile(path, "utf8");
     const entries: Entry[] = [];
     for (const line of raw.split("\n")) {
       const trimmed = line.trim();
@@ -238,6 +279,11 @@ export async function listSessions(projectCwd: string): Promise<SessionMeta[]> {
       // restarted copy to pick up), and a third of one real project's list was these,
       // each reading "0 msgs" in /continue and each counted as an earlier session.
       if (meta.entryCount === 0) continue;
+      // Saved before titles were recorded: its notes may already have one.
+      if (!meta.title) {
+        const title = sessionTitle(await loadSessionNotes(projectCwd, meta.id));
+        if (title) meta.title = title;
+      }
       metas.push(meta);
     } catch {
       // Skip unreadable/corrupt meta files.

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { toolKind, toolDisplay, KIND_COLOR, UNKNOWN_TOOL } from "./toolDisplay.js";
+import { toolKind, toolDisplay, dotColorFor, ERROR_COLOR, OK_COLOR, UNKNOWN_TOOL, narrationShown, noteReads } from "./toolDisplay.js";
 import { TOOLS } from "../tools/registry.js";
 import { toPathList } from "../tools/pathList.js";
 
@@ -22,11 +22,17 @@ test("an unknown tool name still falls back to meta", () => {
   assert.equal(toolKind("something_nobody_registered"), "meta");
 });
 
-test("every ToolKind used by toolKind() has a KIND_COLOR entry", () => {
+test("a row's dot is red when it failed, green when work went through, and plain otherwise", () => {
   const kinds = ["read", "search", "edit", "write", "run", "check", "agent", "websearch", "screenshot", "mcp", "checkpoint", "governor", "meta"] as const;
   for (const k of kinds) {
-    assert.ok(KIND_COLOR[k], `${k} needs a KIND_COLOR entry`);
+    assert.equal(dotColorFor(k, "error"), ERROR_COLOR, `${k} failing is red`);
+    assert.equal(dotColorFor(k, "running"), undefined, `${k} still running is not coloured`);
   }
+  for (const k of ["edit", "write", "check", "run"] as const) assert.equal(dotColorFor(k, "ok"), OK_COLOR, `${k} done is green`);
+  for (const k of ["read", "search", "agent", "websearch", "screenshot", "mcp", "checkpoint", "governor", "meta"] as const) {
+    assert.equal(dotColorFor(k, "ok"), undefined, `${k} done stays plain: only changes and runs are green`);
+  }
+  assert.equal(dotColorFor(undefined, "ok"), undefined);
 });
 
 test("mcp__server__tool parses back into MCPServer(server) for the header", () => {
@@ -171,4 +177,31 @@ test("the display and the tool agree about every shape", () => {
     const claimed = d.covers ?? (d.arg ? 1 : 0);
     assert.equal(claimed, files.length, `the row claims ${claimed} for ${JSON.stringify(args)}, the tool reads ${files.length}`);
   }
+});
+
+test("the combined web tool names what it is doing: the page it reads, or what it searches for", () => {
+  const read = toolDisplay("web", { url: "https://www.steamgriddb.com/api/v2", prompt: "auth" });
+  assert.equal(read.name, "Fetch");
+  assert.equal(read.arg, "https://www.steamgriddb.com/api/v2");
+  const search = toolDisplay("web", { query: "SteamGridDB API v2" });
+  assert.equal(search.name, "WebSearch");
+  assert.equal(search.arg, "SteamGridDB API v2");
+});
+
+test("words before only unseen tools are left out; before a visible tool they stay", () => {
+  const none = new Set<string>();
+  assert.equal(narrationShown([{ name: "search", args: { pattern: "x" } }], none), false);
+  assert.equal(narrationShown([{ name: "search", args: {} }, { name: "outline", args: { path: "a.ts" } }], none), false);
+  assert.equal(narrationShown([{ name: "todo_write", args: {} }], none), false);
+  assert.equal(narrationShown([{ name: "search", args: {} }, { name: "edit", args: { path: "a.ts" } }], none), true);
+  assert.equal(narrationShown([{ name: "run_command", args: { command: "npm test" } }], none), true);
+});
+
+test("a first read of a file is visible; reading it again in the same turn is not", () => {
+  const read = new Set<string>();
+  const first = [{ name: "read_file", args: { paths: ["src/Main.js"] } }];
+  assert.equal(narrationShown(first, read), true);
+  noteReads(first, read);
+  assert.equal(narrationShown([{ name: "read_file", args: { path: "src\\main.js", offset: 200 } }], read), false);
+  assert.equal(narrationShown([{ name: "read_file", args: { paths: ["src/main.js", "src/other.js"] } }], read), true);
 });

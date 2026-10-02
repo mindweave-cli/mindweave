@@ -50,7 +50,7 @@ import type {
   TurnOptions,
   Usage,
 } from "../types.js";
-import { BUFFERED_OUTPUT_TOKENS, DEFAULT_MODEL } from "./manifest.js";
+import { BUFFERED_OUTPUT_TOKENS, DEFAULT_MODEL, canSkipReasoning } from "./manifest.js";
 
 const MODEL = process.env.MINDWEAVE_MODEL ?? DEFAULT_MODEL;
 
@@ -63,11 +63,14 @@ const MAX_TOKENS_STREAM = 64_000;
 const MAX_TOKENS_BUFFERED = BUFFERED_OUTPUT_TOKENS;
 
 let client: OpenAI | null = null;
+/** The key `client` was built with. A different live key (switched with /key, or by the
+ *  app's key manager) rebuilds it; the old code kept the first key for the whole process. */
+let clientKey: string | undefined;
 
 /** The shared SDK client, or a clear setup error if no key is configured yet. */
 async function api(): Promise<OpenAI> {
-  if (!client) {
-    const apiKey = process.env.OPENAI_API_KEY;
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!client || apiKey !== clientKey) {
     if (!apiKey) {
       throw new Error(
         "No OPENAI_API_KEY found. Add your key to the global config so Mindweave works " +
@@ -83,6 +86,7 @@ async function api(): Promise<OpenAI> {
     // here means a session behaves the same way whichever provider it is pointed at,
     // and that an SDK upgrade changing its default cannot quietly change ours.
     client = new OpenAIClient({ apiKey, maxRetries: RETRY_MAX_ATTEMPTS - 1, defaultHeaders: { "User-Agent": clientId() } });
+    clientKey = apiKey;
   }
   return client;
 }
@@ -204,7 +208,9 @@ export function buildBody(req: ModelRequest, maxTokens: number): Responses.Respo
     max_output_tokens: maxTokens,
     // Reasoning is ONE dial here: `none` is the off switch rather than a separate
     // flag, so the shared thinking/effort pair collapses into a single rung.
-    reasoning: { effort: cfg?.thinking ? (cfg.effort as "high") : "none" },
+    // Astra and GPT-6.1 Sol have no `none`; `normalize` keeps them thinking, and a stray
+    // no-thinking config still gets the lightest rung rather than a refused request.
+    reasoning: { effort: cfg?.thinking ? (cfg.effort as "high") : canSkipReasoning(cfg?.model ?? MODEL) ? "none" : "low" },
     store: false,
   };
 

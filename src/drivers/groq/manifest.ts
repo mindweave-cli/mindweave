@@ -80,8 +80,11 @@ export function thinkLevels(model: ModelId): ThinkLevel[] {
  * so `cacheHit` is half of `cacheMiss` throughout rather than a tenth.
  */
 const PRICES: [fragment: string, price: ModelPrice][] = [
-  ["gpt-oss-120b", { cacheHit: 0.075, cacheMiss: 0.15, output: 0.75 }],
-  ["gpt-oss-20b", { cacheHit: 0.05, cacheMiss: 0.1, output: 0.5 }],
+  // console.groq.com/docs/models, checked 2026-09-23.
+  ["gpt-oss-120b", { cacheHit: 0.075, cacheMiss: 0.15, output: 0.6 }],
+  ["gpt-oss-20b", { cacheHit: 0.0375, cacheMiss: 0.075, output: 0.3 }],
+  // The two Llama models moved to Enterprise (contact sales) and no longer publish a
+  // rate; these are their last public prices, kept as the estimate.
   ["llama-3.3-70b", { cacheHit: 0.295, cacheMiss: 0.59, output: 0.79 }],
   ["llama-3.1-8b", { cacheHit: 0.025, cacheMiss: 0.05, output: 0.08 }],
   ["qwen3-32b", { cacheHit: 0.145, cacheMiss: 0.29, output: 0.59 }],

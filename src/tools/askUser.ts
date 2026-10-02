@@ -22,6 +22,10 @@ const askUserDef: Tool = {
    *  call to be made, not a question put back to the user. */
   deferred: true,
   readOnly: true,
+  // Never alongside other calls: while a question waits on the user, nothing else
+  // may run or appear. The engine finishes the parallel lane first, and everything
+  // after this waits for the answer.
+  isConcurrencySafe: () => false,
   // The old text promised "the user's choice is returned to you" with no account of the
   // two ways that does not happen — dismissal, and no channel at all. Both now return a
   // plain instruction to carry on, so the model must know they are possible or it will
@@ -73,6 +77,17 @@ const askUserDef: Tool = {
     if (!question) return failQuietly("`question` is required.");
     if (options.length < 2) return failQuietly("provide at least 2 concrete `options`.");
 
+    // A Marathon closes questions after its opening turn: the person delegated the whole
+    // run, and a question that waits for them would stall it indefinitely.
+    if (ctx.noQuestions) {
+      return {
+        output:
+          "Questions are closed for this run: it is working on its own now, so nobody will " +
+          "answer. Choose the most reasonable option yourself, note the assumption where the " +
+          "user will see it (your task list or your next reply), and keep going.",
+        summary: "ask_user closed — decide and continue",
+      };
+    }
     // No approval channel (headless run / tests): can't ask — tell the model to
     // proceed on its best judgment rather than stall.
     if (!ctx.requestApproval) {

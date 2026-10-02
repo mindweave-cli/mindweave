@@ -85,6 +85,25 @@ test("read returns only NEW output each time", async () => {
   mgr.dispose();
 });
 
+test("peek shows the log without taking it from the agent", async () => {
+  // A person looking at the log in the app must not make the agent's next read come
+  // back empty: that would hide the very output it needs to act on.
+  const mgr = new BackgroundShells();
+  const child = spawn(NODE, ["-e", "console.log('build failed: missing module')"], { detached: DETACH });
+  const info = mgr.adopt(child, { command: "node", cwd: process.cwd() });
+  await waitUntil(() => mgr.list()[0]!.status !== "running");
+
+  const peeked = await mgr.peek(info.id);
+  assert.match(peeked!.tail, /build failed/);
+  assert.equal(peeked!.info.status, "exited");
+  const read = await mgr.read(info.id);
+  assert.match(read!.chunk, /build failed/, "peeking consumed the agent's output");
+  // And it still shows the whole log after the agent has read it.
+  assert.match((await mgr.peek(info.id))!.tail, /build failed/);
+  assert.equal(await mgr.peek(999), null);
+  mgr.dispose();
+});
+
 test("kill stops a running shell", async () => {
   const mgr = new BackgroundShells();
   const child = spawn(NODE, ["-e", "setTimeout(()=>{}, 100000)"], { detached: DETACH });
@@ -999,4 +1018,114 @@ test("a command started in the background has its output read, so a prompt it st
   } finally {
     mgr.dispose(true);
   }
+});
+
+// ── the port watch: "the app it was building has opened" ─────────────────────
+
+/** A port listing that says what the test wants, and a parent map tying `pid` to `root`. */
+function fakePorts(state: { listeners: { port: number; pid: number }[] }, parents: Map<number, number>) {
+  return { listListeners: async () => state.listeners, parentMap: async () => parents };
+}
+
+test("a port opened later is ONE note, then silence however many scans follow", async () => {
+  const mgr = new BackgroundShells(10, 10, 60_000, 60_000, 0);
+  const child = spawn(NODE, ["-e", "setTimeout(() => {}, 60000)"], { detached: DETACH });
+  mgr.adopt(child, { command: "npm run tauri dev", cwd: process.cwd(), notify: "on_finish" });
+  const APP = 900_001; // the app's process, a grandchild of the shell
+  const parents = new Map([[APP, 900_000], [900_000, child.pid!]]);
+  const state = { listeners: [] as { port: number; pid: number }[] };
+  const source = fakePorts(state, parents);
+
+  await mgr.checkPorts(source);
+  assert.equal(mgr.pendingCount(), 0, "nothing open yet");
+  state.listeners = [{ port: 9222, pid: APP }];
+  await mgr.checkPorts(source);
+  assert.equal(mgr.pendingCount(), 0, "seen once is not enough: it must stay open");
+  await mgr.checkPorts(source);
+  assert.equal(mgr.pendingCount(), 1);
+
+  const events = await mgr.drainEvents();
+  const opened = events.filter((e) => e.kind === "opened");
+  assert.equal(opened.length, 1);
+  assert.deepEqual(opened[0]!.ports, [9222]);
+  assert.equal(opened[0]!.wake, true);
+  assert.deepEqual(opened[0]!.info.listening, [9222]);
+
+  // Still listening: scan after scan, nothing more is said.
+  for (let i = 0; i < 10; i++) await mgr.checkPorts(source);
+  assert.equal(mgr.pendingCount(), 0);
+  assert.equal((await mgr.drainEvents()).length, 0);
+  // And the chat's own lines never carry it: it is for the agent only.
+  assert.equal(mgr.takeUiEvents().filter((e) => (e.kind as string) === "opened").length, 0);
+  mgr.dispose();
+});
+
+test("ports opening together are one note; a port open for a moment is none", async () => {
+  const mgr = new BackgroundShells(10, 10, 60_000, 60_000, 0);
+  const child = spawn(NODE, ["-e", "setTimeout(() => {}, 60000)"], { detached: DETACH });
+  mgr.adopt(child, { command: "node dev.js", cwd: process.cwd(), notify: "on_finish" });
+  const parents = new Map([[800_001, child.pid!], [800_002, child.pid!]]);
+  const state = { listeners: [{ port: 5555, pid: 800_001 }] };
+  const source = fakePorts(state, parents);
+  await mgr.checkPorts(source);
+  state.listeners = []; // gone before the second scan: a throwaway server
+  await mgr.checkPorts(source);
+  assert.equal(mgr.pendingCount(), 0);
+
+  state.listeners = [{ port: 1430, pid: 800_001 }, { port: 9222, pid: 800_002 }];
+  await mgr.checkPorts(source);
+  await mgr.checkPorts(source);
+  const opened = (await mgr.drainEvents()).filter((e) => e.kind === "opened");
+  assert.equal(opened.length, 1);
+  assert.deepEqual(opened[0]!.ports!.sort(), [1430, 9222]);
+  mgr.dispose();
+});
+
+test("a server's first port IS it coming up: the ready note, not a second one", async () => {
+  const mgr = new BackgroundShells(60_000, 10, 60_000, 60_000, 0); // a long startup grace
+  const child = spawn(NODE, ["-e", "setTimeout(() => {}, 60000)"], { detached: DETACH });
+  mgr.adopt(child, { command: "npm run dev", cwd: process.cwd(), notify: "on_failure" });
+  const parents = new Map([[700_001, child.pid!]]);
+  const source = fakePorts({ listeners: [{ port: 5173, pid: 700_001 }] }, parents);
+  await mgr.checkPorts(source);
+  await mgr.checkPorts(source);
+  const events = await mgr.drainEvents();
+  assert.deepEqual(events.map((e) => e.kind), ["ready"], "up now, well before the 60s grace");
+  assert.deepEqual(events[0]!.info.listening, [5173]);
+  mgr.dispose();
+});
+
+test("ports of processes the shell did not start are never its news", async () => {
+  const mgr = new BackgroundShells(10, 10, 60_000, 60_000, 0);
+  const child = spawn(NODE, ["-e", "setTimeout(() => {}, 60000)"], { detached: DETACH });
+  mgr.adopt(child, { command: "node dev.js", cwd: process.cwd(), notify: "on_finish" });
+  const source = fakePorts({ listeners: [{ port: 3000, pid: 600_001 }] }, new Map([[600_001, 4]]));
+  await mgr.checkPorts(source);
+  await mgr.checkPorts(source);
+  assert.equal(mgr.pendingCount(), 0);
+  mgr.dispose();
+});
+
+test("a port opening before the 'up' note is delivered goes in that note, not a second one", async () => {
+  const mgr = new BackgroundShells(60_000, 10, 60_000, 60_000, 0);
+  const child = spawn(NODE, ["-e", "setTimeout(() => {}, 60000)"], { detached: DETACH });
+  mgr.adopt(child, { command: "npm run tauri dev", cwd: process.cwd(), notify: "on_failure" });
+  const parents = new Map([[500_001, child.pid!], [500_002, child.pid!]]);
+  const state = { listeners: [{ port: 1430, pid: 500_001 }] };
+  const source = fakePorts(state, parents);
+  await mgr.checkPorts(source);
+  await mgr.checkPorts(source); // up, on 1430
+  state.listeners.push({ port: 9222, pid: 500_002 });
+  await mgr.checkPorts(source);
+  await mgr.checkPorts(source); // 9222 opens before anyone was told it was up
+  const events = await mgr.drainEvents();
+  assert.deepEqual(events.map((e) => e.kind), ["ready"]);
+  assert.deepEqual(events[0]!.info.listening, [1430, 9222]);
+  // After it was told: a later port IS news, once.
+  state.listeners.push({ port: 5555, pid: 500_001 });
+  await mgr.checkPorts(source);
+  await mgr.checkPorts(source);
+  const later = await mgr.drainEvents();
+  assert.deepEqual(later.map((e) => [e.kind, e.ports]), [["opened", [5555]]]);
+  mgr.dispose();
 });

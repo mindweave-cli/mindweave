@@ -17,11 +17,13 @@
 import { useEffect, useLayoutEffect, useReducer, useRef, useState, type ReactNode } from "react";
 import { Box, Text, measureElement, useCursor, useInput, type DOMElement } from "ink";
 import { clickToOffset, inputView } from "../inputView.js";
+import { cleanInputText } from "../inputText.js";
 import { latestScreen } from "../framebuffer/overlay.js";
 import { feedPasteChunk, initPasteState, type PasteState } from "../pasteAssembler.js";
 import { stripMouse } from "../mouse.js";
 import { killToLineEnd, wordEnd, wordStart } from "../wordEdit.js";
 import { declareCaret } from "../caretPark.js";
+import { ACCENT } from "../theme.js";
 
 /** One autocomplete entry. */
 export interface Completion {
@@ -51,6 +53,8 @@ const PASTE_END_TIMEOUT_MS = 250;
 // continuation of one already buffering, is a paste chunk — never a typed key.
 const PASTE_COALESCE_MS = 30;
 const PASTE_CHUNK_MIN = 40;
+// The longest single line still read as typing followed by Enter when it arrives in one chunk.
+const TYPED_THEN_ENTER_MAX = 2000;
 
 /**
  * The whole input buffer in one state object. Ink runs React in LegacyRoot mode, so
@@ -282,6 +286,9 @@ interface PromptInputProps {
   /** A surface for this box is being opened: hold the frame so it never leaves the screen
    *  between the command list closing and what it opened taking its place. */
   opening?: boolean;
+  /** Text to put in the box, cursor at the end: a message handed back to be edited (a
+   *  rewind). Applied once per new object, so the same text given twice still lands. */
+  fill?: { text: string };
 }
 
 /** A literal newline, kept out of the key handler so the source has no escapes there. */
@@ -312,11 +319,27 @@ export function PromptInput({
   maxInputRows = DEFAULT_MAX_INPUT_ROWS,
   overlay,
   opening = false,
+  fill,
 }: PromptInputProps) {
-  const [state, dispatch] = useReducer(reduce, INITIAL);
+  const [state, rawDispatch] = useReducer(reduce, INITIAL);
+  // The buffer as it is NOW, not as it was at the last render. Ink renders on a timer, so a
+  // key that arrives a few milliseconds after the one before it runs against the committed
+  // state of before that one: Enter pressed right after the last letter saw an empty box and
+  // sent nothing, and the text stayed where it was. Every action goes through the same pure
+  // reducer here at the moment it is dispatched, so the answer to "what is in the box" is
+  // always the latest one, however fast the keys come (a macro, a remote session, a stalled
+  // machine delivering a backlog all at once).
+  const latest = useRef(state);
+  const dispatch = (action: Parameters<typeof rawDispatch>[0]) => {
+    latest.current = reduce(latest.current, action);
+    rawDispatch(action);
+  };
   // Mirrors what the click handler needs, refreshed each render (see registerCaretClick).
   const clickCtx = useRef({ value: "", cursor: 0, fieldWidth: 0, maxRows: 1 });
   const { value, cursor, histIdx, selected, draft } = state;
+  useEffect(() => {
+    if (fill) dispatch({ t: "restore", value: fill.text, cursor: fill.text.length });
+  }, [fill]);
 
   // The two autocomplete sources. Command menu: a single `/token` (no space) at the
   // start. Path menu: a `@token` ending at the cursor, resolved against the
@@ -403,10 +426,15 @@ export function PromptInput({
    * A lone keystroke is never a path and typing is the hot path here, so anything one
    * character wide skips the scan entirely.
    */
-  function insertText(text: string) {
+  function insertText(raw: string) {
+    // Plain text only, however it arrived (see inputText.ts): a pasted carriage return used to draw over the box.
+    const text = cleanInputText(raw);
+    if (!text) return;
     dispatch({ t: "insert", text: onDroppedPaths && text.length > 1 ? onDroppedPaths(text) : text });
   }
-  function emitPaste(text: string) {
+  function emitPaste(raw: string) {
+    // Line breaks first: a paste counts its lines, and a terminal sends them as carriage returns.
+    const text = cleanInputText(raw);
     if (!text) return;
     const big = text.split("\n").length >= PASTE_MIN_LINES || text.length >= PASTE_MIN_CHARS;
     if (onLargePaste && big) {
@@ -477,7 +505,9 @@ export function PromptInput({
           completePath();
           return;
         }
-        submit(menu ? menu.items[sel]!.name : value);
+        // Rendered state that is behind the buffer (keys arrived faster than frames) is not
+        // the box the user is looking at: send what is really in it.
+        submit(latest.current.value !== value ? latest.current.value : menu ? menu.items[sel]!.name : value);
         return;
       }
 
@@ -575,6 +605,17 @@ export function PromptInput({
       // we fall back to timing: a large chunk, a chunk with a newline, or a continuation
       // of one already buffering is a paste — accumulate and flush once idle so the whole
       // paste is one decision (one chip). A lone keypress inserts immediately.
+      // Typing that reached us as ONE chunk with its Enter on the end ("hello\r"): keys that were
+      // pressed a few milliseconds apart and delivered together, by a macro, a remote session or a
+      // machine that stalled for a moment. That is typing then Enter, not a paste (a real paste
+      // is bracketed above, or has newlines inside it), and treating it as text left the message
+      // sitting in the box with no Enter ever seen.
+      const typedThenEnter = /^([^\r\n]+)\r$/.exec(input);
+      if (typedThenEnter && paste.current.buf.length === 0 && typedThenEnter[1]!.length < TYPED_THEN_ENTER_MAX && !key.ctrl && !key.meta) {
+        insertText(typedThenEnter[1]!);
+        submit(latest.current.value);
+        return;
+      }
       if (input) {
         const isPasteChunk =
           paste.current.buf.length > 0 || input.length >= PASTE_CHUNK_MIN || input.includes("\n");
@@ -873,7 +914,7 @@ function SuggestionMenu({
         const active = start + i === selected;
         return (
           <Box key={m.name} width={rowWidth} flexShrink={0}>
-            <Text color={active ? "cyan" : undefined} bold={active}>
+            <Text color={active ? ACCENT : undefined} bold={active}>
               {active ? "› " : "  "}
               {m.name.padEnd(nameWidth)}
             </Text>
@@ -997,7 +1038,7 @@ function Field({
     // the START of the placeholder, which is the row the renderer can find on screen.
     return (
       <Box flexShrink={0}>
-        <Text bold color="cyan">{"> "}</Text>
+        <Text bold color={ACCENT}>{"> "}</Text>
         {/* The caret sits at the start of this box when there is nothing typed yet. */}
         <Box width={width} overflow="hidden" ref={caretRowRef}>
           <Text wrap="truncate-end">
@@ -1026,7 +1067,7 @@ function Field({
         <Box key={i} flexShrink={0}>
           {/* The marker is only on the first row; continuations align under the text
               so a wrapped message reads as one paragraph, not a list. */}
-          <Text bold color="cyan">{i === 0 && view.hiddenAbove === 0 ? "> " : "  "}</Text>
+          <Text bold color={ACCENT}>{i === 0 && view.hiddenAbove === 0 ? "> " : "  "}</Text>
           <Box
             width={width}
             overflow="hidden"

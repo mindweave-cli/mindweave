@@ -45,7 +45,7 @@
 import type { Tool, ToolResult } from "./types.js";
 import { recordWrite, relativize } from "./paths.js";
 import { applyEol } from "./eol.js";
-import { multiEditDetail, lineCount, magnitude, rangeLabel, withScope } from "./detail.js";
+import { FULL_DETAIL_MAX, multiEditDetail, lineCount, magnitude, rangeLabel, withScope } from "./detail.js";
 import { applyEditSequence, type EditOp } from "./editCore.js";
 import { numberedWindow, charToLine } from "./editWindow.js";
 import { prepareEditTarget, unreadError, fail, failQuietly, errText } from "./editTarget.js";
@@ -214,6 +214,7 @@ export const edit: Tool = {
         `Changed region — line-numbered so you can make further edits without re-reading:\n${window}`,
       summary: `edited ${shown} · ${scope}`,
       detail: withScope(scope, multiEditDetail(ops)),
+      detailFull: withScope(scope, multiEditDetail(ops, FULL_DETAIL_MAX)),
       detailKind: "diff" as const,
     };
   },

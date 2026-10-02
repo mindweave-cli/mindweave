@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { projectDir } from "../memory/store.js";
 import { parseForbidden, parseForbiddenCommands } from "./forbidden.js";
 import type { Rule, SkillMeta } from "./types.js";
+import { governanceDir, type GovernanceScope } from "./index.js";
 
 /** A filesystem-safe slug from a human name/phrase (kebab, ≤50 chars). */
 export function slugify(text: string): string {
@@ -140,11 +141,12 @@ export async function writeSkill(cwd: string, skill: NewSkill): Promise<SkillMet
 export async function appendForbidden(
   cwd: string,
   pattern: string,
+  scope: GovernanceScope = "project",
 ): Promise<{ added: boolean; pattern: string }> {
   const normalized = pattern.trim().replace(/^\.?\//, "").replace(/\/+$/, "");
   if (!normalized) return { added: false, pattern: normalized };
 
-  const base = projectDir(cwd);
+  const base = governanceDir(cwd, scope);
   const file = join(base, "forbidden.md");
   let text = "";
   try {
@@ -164,11 +166,15 @@ export async function appendForbidden(
  * Append an MCP tool name to `forbidden-mcp-tools.md`. Sibling of
  * appendForbiddenCommand; tool names are identifiers, kept verbatim.
  */
-export async function appendForbiddenMcpTool(cwd: string, name: string): Promise<{ added: boolean; pattern: string }> {
+export async function appendForbiddenMcpTool(
+  cwd: string,
+  name: string,
+  scope: GovernanceScope = "project",
+): Promise<{ added: boolean; pattern: string }> {
   const normalized = name.trim();
   if (!normalized) return { added: false, pattern: normalized };
 
-  const base = projectDir(cwd);
+  const base = governanceDir(cwd, scope);
   const file = join(base, "forbidden-mcp-tools.md");
   let text = "";
   try {
@@ -192,11 +198,12 @@ export async function appendForbiddenMcpTool(cwd: string, name: string): Promise
 export async function appendForbiddenCommand(
   cwd: string,
   pattern: string,
+  scope: GovernanceScope = "project",
 ): Promise<{ added: boolean; pattern: string }> {
   const normalized = pattern.trim();
   if (!normalized) return { added: false, pattern: normalized };
 
-  const base = projectDir(cwd);
+  const base = governanceDir(cwd, scope);
   const file = join(base, "forbidden-commands.md");
   let text = "";
   try {
@@ -242,10 +249,10 @@ export async function removeSkill(cwd: string, name: string): Promise<boolean> {
 }
 
 /** Drop one line from one of the `forbidden*.md` lists. False when it was not listed. */
-async function removeForbiddenLine(cwd: string, fileName: string, value: string): Promise<boolean> {
+async function removeForbiddenLine(cwd: string, fileName: string, value: string, scope: GovernanceScope = "project"): Promise<boolean> {
   const wanted = value.trim();
   if (!wanted) return false;
-  const file = join(projectDir(cwd), fileName);
+  const file = join(governanceDir(cwd, scope), fileName);
   let text = "";
   try {
     text = await fs.readFile(file, "utf8");
@@ -261,15 +268,46 @@ async function removeForbiddenLine(cwd: string, fileName: string, value: string)
   return true;
 }
 
-export async function removeForbiddenPath(cwd: string, pattern: string): Promise<boolean> {
+export async function removeForbiddenPath(cwd: string, pattern: string, scope: GovernanceScope = "project"): Promise<boolean> {
   const normalized = pattern.trim().replace(/^\.\//, "").replace(/\/$/, "");
-  return removeForbiddenLine(cwd, "forbidden.md", normalized);
+  return removeForbiddenLine(cwd, "forbidden.md", normalized, scope);
 }
 
-export async function removeForbiddenCommand(cwd: string, pattern: string): Promise<boolean> {
-  return removeForbiddenLine(cwd, "forbidden-commands.md", pattern);
+export async function removeForbiddenCommand(cwd: string, pattern: string, scope: GovernanceScope = "project"): Promise<boolean> {
+  return removeForbiddenLine(cwd, "forbidden-commands.md", pattern, scope);
 }
 
-export async function removeForbiddenMcpTool(cwd: string, name: string): Promise<boolean> {
-  return removeForbiddenLine(cwd, "forbidden-mcp-tools.md", name);
+export async function removeForbiddenMcpTool(cwd: string, name: string, scope: GovernanceScope = "project"): Promise<boolean> {
+  return removeForbiddenLine(cwd, "forbidden-mcp-tools.md", name, scope);
+}
+
+/**
+ * Save a kind of action (a tool name) that Sentinel mode will not ask about, in this
+ * project or everywhere. Same one-per-line format as the deny-lists, so it reads and
+ * edits the same way by hand. Idempotent.
+ */
+export async function appendSentinelAllow(
+  cwd: string,
+  tool: string,
+  scope: GovernanceScope = "project",
+): Promise<{ added: boolean; pattern: string }> {
+  const normalized = tool.trim();
+  if (!normalized) return { added: false, pattern: normalized };
+  const base = governanceDir(cwd, scope);
+  const file = join(base, "sentinel-allow.md");
+  let text = "";
+  try {
+    text = await fs.readFile(file, "utf8");
+  } catch {
+    /* none yet */
+  }
+  if (parseForbiddenCommands(text).includes(normalized)) return { added: false, pattern: normalized };
+  await fs.mkdir(base, { recursive: true });
+  const separator = text && !text.endsWith("\n") ? "\n" : "";
+  await fs.writeFile(file, `${text}${separator}${normalized}\n`, "utf8");
+  return { added: true, pattern: normalized };
+}
+
+export async function removeSentinelAllow(cwd: string, tool: string, scope: GovernanceScope = "project"): Promise<boolean> {
+  return removeForbiddenLine(cwd, "sentinel-allow.md", tool, scope);
 }

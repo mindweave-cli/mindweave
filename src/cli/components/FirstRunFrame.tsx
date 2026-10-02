@@ -17,6 +17,7 @@
  */
 import { Box, Text, type BoxProps } from "ink";
 import type { ReactNode } from "react";
+import { ACCENT } from "../theme.js";
 
 /** Below this many rows, centring costs more than it gives. */
 const MIN_ROWS_TO_CENTRE = 24;
@@ -39,7 +40,7 @@ export function FirstRunFrame({ rows, version, subtitle, tips, children }: First
   return (
     <Box flexDirection="column" height={rows} justifyContent={justify} paddingX={2}>
       <Box flexShrink={0}>
-        <Text bold color="yellow">Mindweave 1</Text>
+        <Text bold color={ACCENT}>Mindweave 1</Text>
         <Text dimColor>{version}</Text>
       </Box>
       {subtitle ? (

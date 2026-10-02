@@ -66,6 +66,13 @@ export interface ToolResult {
   detailKind?: "diff" | "text" | "shell";
 
   /**
+   * The same block as `detail`, uncut (up to FULL_DETAIL_MAX lines). `detail` is sized
+   * for a terminal row; a graphical front end shows this one when the row is expanded.
+   * Live display only: never sent to the model, not persisted.
+   */
+  detailFull?: string;
+
+  /**
    * Override the row's category/name shown in the UI. Display-only, like
    * `summary`/`detail`; never sent to the model.
    *
@@ -123,6 +130,20 @@ export interface ToolResult {
    * where the file is rather than handed a message claiming a picture it can't read.
    */
   images?: import("../memory/images.js").ImageRef[];
+
+  /**
+   * What a web search found or a web fetch read, as facts rather than text, for a front
+   * end that can draw them (a list of pages to click, the page and what it was read
+   * for). Display only: the model gets `output`, framed as untrusted, and never this.
+   */
+  web?: WebDisplay;
+
+  /**
+   * What one step of testing an app did, for a front end that draws the test as a list of
+   * steps beside its recording. Display only, like `web`; stored so a resumed session
+   * draws the same steps.
+   */
+  ui?: UiDisplay;
 
   /**
    * This result leaves the MODEL with work to do before it can answer — an image going
@@ -308,6 +329,13 @@ export interface ToolContext {
    * than the terminal and corrupts the screen (measured — a 40-step plan did exactly
    * that, and the app looked hung because the input box was pushed off).
    */
+  /**
+   * Questions are closed: `ask_user` answers "keep going on your best judgment" without
+   * asking anyone. Set by a Marathon once its opening turn (the only place it may ask) is
+   * over, and cleared when the run ends. Separate from `requestApproval`, which it does
+   * not touch: permission prompts belong to the mode the user chose, not to the run.
+   */
+  noQuestions?: boolean;
   requestApproval?: (
     question: string,
     options: string[],
@@ -453,6 +481,13 @@ export interface ToolContext {
    */
   abortSignal?: AbortSignal;
   /**
+   * Where the app the agent is testing streams to while it tests (see `ui`). A front end
+   * that can show moving pictures sets it; one that cannot leaves it unset and nothing is
+   * streamed. Display only: frames never reach the model, which gets its one picture per
+   * step as always.
+   */
+  onLive?: (event: UiLiveEvent) => void;
+  /**
    * Forward a raw live engine event to the UI stream (injected by the engine from its
    * options.onEvent). spawn_subagent uses this to surface a child's nested activity —
    * its lifecycle plus each of its tool calls, tagged with the sub-agent id — so a
@@ -553,6 +588,14 @@ export interface Tool {
   planOnly?: boolean;
 
   /**
+   * Work worth watching while it happens: a shell command. When the caller paces the screen
+   * (`RespondOptions.beforeLiveTool`), a call to this tool does not START until its row is on
+   * screen, so the row's "running" state is the real work rather than a replay of something that
+   * already finished. Reads and edits are over in milliseconds and are not held back.
+   */
+  liveRow?: boolean;
+
+  /**
    * Hold this tool back from the advertised list until the model searches for it.
    *
    * The same trade `src/mcp/deferred.ts` already makes for MCP catalogs, applied to
@@ -630,3 +673,76 @@ export interface ToolSchema {
     parameters: Record<string, unknown>;
   };
 }
+
+/** See ToolResult.ui. Names come from the app under test: text, never markup. */
+export interface UiDisplay {
+  /** The test this step belongs to: every step and frame of one app shares it. */
+  live: string;
+  /** look, click, type, key, scroll, hover, back, wait, resize, inspect, steps (a batch), close. */
+  action: string;
+  /** What was acted on, as the model reads it: `button "Save"`, `text box "Search"`. */
+  target?: string;
+  /** The key pressed, the text typed, the address opened: whatever the step used. */
+  input?: string;
+  ok: boolean;
+  /** Why it failed, or what visibly changed when it worked. */
+  why?: string;
+  /** Worth flagging without failing the step: a control with no name. */
+  warn?: string;
+  /** Errors the page reported during this step. */
+  errors?: string[];
+  /** alert / confirm / prompt dialogs the step raised. */
+  dialogs?: string[];
+  /** A call that ran several steps: each one, in order, so a front end can show them one after another. */
+  steps?: { action: string; target?: string; input?: string; ok: boolean; why?: string }[];
+  /** The app, as the head names it: `Lumen Shop · localhost:4321`, a window title. */
+  app: string;
+  /** Wall-clock start and end of the step (epoch ms), to place it on the recording. */
+  startedAt: number;
+  endedAt: number;
+}
+
+/** See ToolContext.onLive. A frame of the app, or the app going away on its own. */
+export type UiLiveEvent =
+  | { kind: "closed"; live: string }
+  | {
+  kind: "frame";
+  /** UiDisplay.live of the test it shows. */
+  live: string;
+  /** Epoch ms the frame was drawn. */
+  ts: number;
+  /** The picture, base64. */
+  data: string;
+  mime: "image/jpeg" | "image/png";
+  width: number;
+  height: number;
+  };
+
+/** See ToolResult.web. Titles and addresses come from the open web: text, never markup. */
+export type WebDisplay =
+  | {
+      kind: "search";
+      query: string;
+      /** Which service answered, when known. */
+      engine?: string;
+      /** How long the search took. */
+      ms?: number;
+      sources: { title: string; url: string }[];
+      /** The search stopped early; the list may be incomplete. */
+      partial?: boolean;
+    }
+  | {
+      kind: "fetch";
+      /** What was asked for, and where it ended up after redirects. */
+      url: string;
+      finalUrl: string;
+      status: number;
+      /** What the page calls itself. */
+      title?: string;
+      /** Bytes that came off the wire. */
+      bytes?: number;
+      /** What the page was read for, when the agent said. */
+      focus?: string;
+      /** Not text (an image, a zip): nothing was read. */
+      binary?: boolean;
+    };

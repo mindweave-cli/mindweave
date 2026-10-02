@@ -104,6 +104,7 @@ const ACTION_LABEL: Record<string, string> = {
   replace_symbol_body: "File edit",
   write_file: "File write",
   spawn_subagent: "Sub-agent spawn",
+  ui: "App control",
 };
 
 /**
@@ -129,6 +130,14 @@ export function guardDetail(name: string, args: Record<string, unknown>): string
   if (command) lines.push(`Command: $ ${command}`);
   if (path) lines.push(`File: ${path}`);
   if (task) lines.push(`Task: ${clip(task, 200)}`);
+  // An app action: which window, and what is about to be done in it.
+  if (name === "ui") {
+    const what = [strArg(args.action), args.target !== undefined ? `#${String(args.target)}` : "", strArg(args.direction)]
+      .filter(Boolean).join(" ");
+    const app = strArg(args.url) || (args.port !== undefined ? `the app on port ${String(args.port)}` : "") || strArg(args.window);
+    lines.push(`App: ${app || "the one already in use"}`);
+    if (what) lines.push(`Do: ${what}${typeof args.text === "string" ? ` "${clip(args.text, 80)}"` : ""}${strArg(args.key) ? ` ${strArg(args.key)}` : ""}`);
+  }
   lines.push(`Tool: ${name}`);
   return lines.join("\n");
 }

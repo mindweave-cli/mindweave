@@ -187,3 +187,30 @@ test("web_search degrades on a provider without search, without erroring", async
 test("web_search is offered to the model as a read-only tool", () => {
   assert.equal(webSearch.readOnly, true);
 });
+
+test("a search hands a front end its pages as facts: query, service, time, each page's title and address", async () => {
+  const driver = await ensureDriver("deepseek-v4-flash");
+  const saved = driver.webSearch;
+  driver.webSearch = async () => ({
+    answer: "It is v2.",
+    sources: [
+      { title: "API Documentation", url: "https://www.steamgriddb.com/api/v2" },
+      { title: "steamgriddb-api", url: "https://github.com/SteamGridDB/node-steamgriddb" },
+    ],
+  });
+  try {
+    const result = await webSearch.execute({ query: "SteamGridDB API v2" }, ctx());
+    assert.equal(result.web?.kind, "search");
+    assert.ok(result.web?.kind === "search");
+    assert.equal(result.web.query, "SteamGridDB API v2");
+    assert.equal(typeof result.web.ms, "number");
+    assert.deepEqual(result.web.sources.map((s) => s.url), [
+      "https://www.steamgriddb.com/api/v2",
+      "https://github.com/SteamGridDB/node-steamgriddb",
+    ]);
+    // Display only: the model's text is unchanged by it.
+    assert.doesNotMatch(result.output, /"kind"/);
+  } finally {
+    driver.webSearch = saved;
+  }
+});

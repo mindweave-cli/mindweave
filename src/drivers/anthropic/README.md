@@ -8,7 +8,8 @@ Driver for Claude models, built on the official `@anthropic-ai/sdk`.
 
 | Model | Notes |
 | --- | --- |
-| `claude-sonnet-5` | The default here. Fast, strong at code. |
+| `claude-sonnet-5-5` | The default here. Fast, strong at code. |
+| `claude-sonnet-5` | The previous Sonnet, at the same rate. |
 | `claude-opus-5-5` | Long-running agentic work. Always thinks. |
 | `claude-opus-5` | The previous Opus. |
 | `claude-opus-4-8` | An older Opus. |
@@ -59,7 +60,10 @@ Worth knowing before you change `buildBody`:
   `thinking-display-updates-2026-08-18` beta header: the notes they write between
   tool calls come back as progress-update `thinking` blocks, empty unless asked for,
   and the driver shows them as reply text so the session doesn't go quiet.
-- On Opus 5.5 and Fable 5.1, forced tool use (`tool_choice` of `any` or `tool`) is a
+- On Sonnet 5.5, `thinking` of `disabled` is a 400. Its lowest setting is `{type: "between_tools"}`
+  (no up-front thinking, effort `high` or below, no other field), which is what Standard sends.
+  Thinking-on is `{type: "adaptive", display: "updates"}`, same as Opus 5.5.
+- On Sonnet 5.5, Opus 5.5 and Fable 5.1, forced tool use (`tool_choice` of `any` or `tool`) is a
   400. The driver only ever sends `auto`.
 - Assistant-turn prefills — removed. Nothing here uses them.
 

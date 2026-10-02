@@ -19,7 +19,7 @@ const read = (rel: string) => readFile(new URL(rel, import.meta.url), "utf8");
 
 test("Ink is told to keep its hands off Ctrl+C", async () => {
   // With this true (its default), Ink unmounts on the byte and the app never hears it.
-  const source = await read("../index.ts");
+  const source = await read("../main.ts");
   assert.match(source, /exitOnCtrlC:\s*false/, "Ink would silently unmount on Ctrl+C again");
 });
 

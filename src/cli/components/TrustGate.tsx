@@ -15,6 +15,7 @@ import { useInput } from "ink";
 import { useState } from "react";
 import { FirstRunFrame } from "./FirstRunFrame.js";
 import type { Breadth } from "../trust.js";
+import { ACCENT, WARN } from "../theme.js";
 
 export interface TrustGateProps {
   /** Terminal height, so the gate sits in the middle rather than at the top. */
@@ -51,7 +52,7 @@ export function TrustGate({ cwd, rows, breadth, warning, persists, version, docs
   return (
     <FirstRunFrame rows={rows} version={version} subtitle="Work in this folder?">
       <Box marginTop={1}>
-        <Text bold color="cyan">{cwd}</Text>
+        <Text bold color={ACCENT}>{cwd}</Text>
       </Box>
 
       <Box marginTop={1} flexDirection="column">
@@ -64,14 +65,14 @@ export function TrustGate({ cwd, rows, breadth, warning, persists, version, docs
 
       {warning ? (
         <Box marginTop={1}>
-          <Text color="yellow">{warning}</Text>
+          <Text color={WARN}>{warning}</Text>
         </Box>
       ) : null}
 
       <Box marginTop={1} flexDirection="column">
         {CHOICES.map((label, i) => (
           <Box key={label}>
-            <Text color={i === sel ? "cyan" : undefined} bold={i === sel}>
+            <Text color={i === sel ? ACCENT : undefined} bold={i === sel}>
               {i === sel ? " › " : "   "}
               {`[${i + 1}] ${label}`}
             </Text>

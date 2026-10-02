@@ -29,7 +29,7 @@ const USER_ONLY: [what: string, how: string][] = [
   ["start a fresh conversation, or resume an old one", "/clear, /continue"],
   ["sign in to a remote MCP server", "/mcp, then Sign in"],
   ["switch between the fullscreen and inline shell", "/screen"],
-  ["turn anonymous usage analytics on or off", "/analytics"],
+  ["see why usage counting is off for now", "/analytics"],
   ["update Mindweave itself", "/update"],
 ];
 

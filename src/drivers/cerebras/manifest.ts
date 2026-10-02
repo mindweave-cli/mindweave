@@ -78,12 +78,16 @@ export function thinkLevels(model: ModelId): ThinkLevel[] {
  * cache discount would be invented.
  */
 const PRICES: [fragment: string, price: ModelPrice][] = [
-  ["gpt-oss-120b", { cacheHit: 0.25, cacheMiss: 0.25, output: 0.69 }],
+  // cerebras.ai/pricing rate card, checked 2026-09-23.
+  ["gpt-oss-120b", { cacheHit: 0.35, cacheMiss: 0.35, output: 0.75 }],
+  // The served id is `qwen-3.8-27b`, with a hyphen. The old fragment was "qwen3", which
+  // never matched it, so this model was quietly billed at the fallback rate.
+  ["qwen-3.8-27b", { cacheHit: 0.99, cacheMiss: 0.99, output: 1.49 }],
   ["glm-4.7", { cacheHit: 0.6, cacheMiss: 0.6, output: 2.2 }],
   ["qwen3", { cacheHit: 0.29, cacheMiss: 0.29, output: 0.59 }],
 ];
 
-const UNKNOWN_PRICE: ModelPrice = { cacheHit: 0.25, cacheMiss: 0.25, output: 0.69 };
+const UNKNOWN_PRICE: ModelPrice = { cacheHit: 0.35, cacheMiss: 0.35, output: 0.75 };
 
 export function price(model: ModelId): ModelPrice {
   const id = model.toLowerCase();

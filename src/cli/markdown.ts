@@ -16,6 +16,7 @@
  */
 import { createRequire } from "node:module";
 import chalk from "chalk";
+import { CODE, LINK, SYNTAX } from "./theme.js";
 import { marked, type Token, type Tokens } from "marked";
 
 const ESC = String.fromCharCode(27); // the ANSI escape byte, built to avoid embedding it in source
@@ -23,15 +24,69 @@ const ESC = String.fromCharCode(27); // the ANSI escape byte, built to avoid emb
 // cli-highlight is loaded defensively — if it (or highlight.js) fails to resolve,
 // code blocks fall back to dim plain text rather than breaking all rendering.
 // It's CJS, so a createRequire keeps the load synchronous (renderMarkdown can't await).
+//
+// Loaded on the FIRST code block, not at startup: it registers every language highlight.js
+// knows, which was about 240ms of every launch, and a session that never shows code never
+// needs it. `undefined` = not tried yet, `null` = tried and unavailable.
 type Highlighter = {
-  highlight: (code: string, opts: { language: string; ignoreIllegals?: boolean }) => string;
+  highlight: (code: string, opts: { language: string; ignoreIllegals?: boolean; theme?: Record<string, (s: string) => string> }) => string;
   supportsLanguage: (lang: string) => boolean;
 };
-let highlighter: Highlighter | null = null;
-try {
-  highlighter = createRequire(import.meta.url)("cli-highlight") as Highlighter;
-} catch {
-  highlighter = null;
+/** highlight.js scopes mapped onto the app's syntax palette (theme.ts SYNTAX). */
+const CODE_THEME: Record<string, (s: string) => string> = {
+  keyword: chalk.hex(SYNTAX.keyword),
+  built_in: chalk.hex(SYNTAX.type),
+  type: chalk.hex(SYNTAX.type),
+  literal: chalk.hex(SYNTAX.number),
+  number: chalk.hex(SYNTAX.number),
+  regexp: chalk.hex(SYNTAX.string),
+  string: chalk.hex(SYNTAX.string),
+  subst: (s) => s,
+  symbol: chalk.hex(SYNTAX.number),
+  class: chalk.hex(SYNTAX.type),
+  function: (s) => s,
+  title: chalk.hex(SYNTAX.fn),
+  params: (s) => s,
+  comment: chalk.hex(SYNTAX.comment),
+  doctag: chalk.hex(SYNTAX.comment),
+  meta: chalk.hex(SYNTAX.comment),
+  "meta-keyword": chalk.hex(SYNTAX.keyword),
+  "meta-string": chalk.hex(SYNTAX.string),
+  section: chalk.hex(SYNTAX.fn),
+  tag: chalk.hex(SYNTAX.keyword),
+  name: chalk.hex(SYNTAX.keyword),
+  "builtin-name": chalk.hex(SYNTAX.type),
+  attr: chalk.hex(SYNTAX.prop),
+  attribute: chalk.hex(SYNTAX.prop),
+  variable: chalk.hex(SYNTAX.prop),
+  bullet: chalk.hex(SYNTAX.number),
+  code: chalk.hex(SYNTAX.prop),
+  emphasis: chalk.italic,
+  strong: chalk.bold,
+  formula: chalk.hex(SYNTAX.number),
+  link: chalk.hex(LINK).underline,
+  quote: chalk.hex(SYNTAX.comment),
+  "selector-tag": chalk.hex(SYNTAX.keyword),
+  "selector-id": chalk.hex(SYNTAX.fn),
+  "selector-class": chalk.hex(SYNTAX.fn),
+  "selector-attr": chalk.hex(SYNTAX.prop),
+  "selector-pseudo": chalk.hex(SYNTAX.prop),
+  "template-tag": chalk.hex(SYNTAX.keyword),
+  "template-variable": chalk.hex(SYNTAX.prop),
+  addition: chalk.hex("#A3CF6E"),
+  deletion: chalk.hex("#EC7C72"),
+  default: (s) => s,
+};
+let loadedHighlighter: Highlighter | null | undefined;
+function highlighterNow(): Highlighter | null {
+  if (loadedHighlighter === undefined) {
+    try {
+      loadedHighlighter = createRequire(import.meta.url)("cli-highlight") as Highlighter;
+    } catch {
+      loadedHighlighter = null;
+    }
+  }
+  return loadedHighlighter;
 }
 
 let configured = false;
@@ -233,11 +288,11 @@ function inlineToken(token: Token): string {
     case "em":
       return chalk.italic(inline((token as Tokens.Em).tokens));
     case "codespan":
-      return chalk.cyan(decodeEntities((token as Tokens.Codespan).text));
+      return chalk.hex(CODE)(decodeEntities((token as Tokens.Codespan).text));
     case "link": {
       const l = token as Tokens.Link;
       const text = decodeEntities(inline(l.tokens) || l.href);
-      const shown = chalk.cyan.underline(text);
+      const shown = chalk.hex(LINK).underline(text);
       // Show the URL only when it differs from the link text. No OSC-8 escapes —
       // they render as garbage in terminals that don't support them.
       return l.href && l.href !== text ? `${shown} ${chalk.dim(`(${l.href})`)}` : shown;
@@ -268,9 +323,10 @@ function decodeEntities(s: string): string {
 function renderCodeBlock(token: Tokens.Code): string {
   let body: string;
   const lang = (token.lang || "").trim().split(/\s+/)[0];
-  if (highlighter && lang && safeSupports(lang)) {
+  const highlighter = lang ? highlighterNow() : null;
+  if (highlighter && lang && safeSupports(highlighter, lang)) {
     try {
-      body = highlighter.highlight(token.text, { language: lang, ignoreIllegals: true });
+      body = highlighter.highlight(token.text, { language: lang, ignoreIllegals: true, theme: CODE_THEME });
     } catch {
       body = chalk.dim(token.text);
     }
@@ -283,9 +339,9 @@ function renderCodeBlock(token: Tokens.Code): string {
     .join("\n");
 }
 
-function safeSupports(lang: string): boolean {
+function safeSupports(highlighter: Highlighter, lang: string): boolean {
   try {
-    return highlighter!.supportsLanguage(lang);
+    return highlighter.supportsLanguage(lang);
   } catch {
     return false;
   }

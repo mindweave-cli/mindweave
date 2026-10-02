@@ -8,9 +8,10 @@
  * At the end of a turn the engine `seal`s those into one restorable checkpoint.
  * `/undo` then rolls the last turn's file changes back.
  *
- * It's deliberately a shadow-copy in memory (bounded stack), not a shadow git
- * repo: cheap, dependency-free, and it works even when the project isn't a git
- * repo at all. Client-side state (holds file bytes), like the background shells —
+ * It's deliberately a shadow-copy (bounded stack), not a shadow git repo: cheap,
+ * dependency-free, and it works even when the project isn't a git repo at all. The
+ * stack is also written next to the session (see `persistTo`), so undo and rewind
+ * still work after the app is closed and the session reopened. Client-side state (holds file bytes), like the background shells —
  * absent in bare contexts, in which case edits simply aren't checkpointed.
  *
  * FOUR RULES THIS FILE EXISTS TO KEEP, all learned the hard way:
@@ -29,6 +30,8 @@
  *    hundreds of megabytes resident. The count bound never was the real limit.
  */
 import { promises as fs } from "node:fs";
+import { createHash } from "node:crypto";
+import { dirname, join } from "node:path";
 import { writeFileAtomic } from "./atomicWrite.js";
 
 /**
@@ -59,18 +62,44 @@ const MAX_UNDO_ATTEMPTS = 2;
 
 const byteLen = (s: string | null): number => (s === null ? 0 : Buffer.byteLength(s, "utf8"));
 
+/** How many sessions per project keep their undo history on disk. Nothing else ever
+ *  deletes old sessions, so without a bound every session ever run would keep up to
+ *  MAX_TOTAL_BYTES of file copies forever. */
+const KEEP_SESSIONS_ON_DISK = 5;
+
+/** The on-disk shape: file contents live once each in `blobs/`, named by their hash. */
+interface StoredStack {
+  version: 1;
+  stack: {
+    label: string;
+    at: number;
+    turnAt?: number;
+    skipped: string[];
+    ranShell: boolean;
+    attempts: number;
+    files: [path: string, original: string | null, written: string | null][];
+  }[];
+}
+
+const hashOf = (text: string): string => createHash("sha256").update(text).digest("hex").slice(0, 40);
+
 /** What we knew about one file when the turn touched it. */
 export interface FileState {
   /** Bytes on disk before the turn. `null` = the file did not exist (undo deletes it). */
   original: string | null;
-  /** Bytes we last wrote. Undo only proceeds if the file still matches this. */
-  written: string;
+  /** Bytes we last wrote. Undo only proceeds if the file still matches this. `null` =
+   *  the turn deleted the file (undo puts `original` back, if nobody recreated it). */
+  written: string | null;
 }
 
 /** One sealed checkpoint: the files a single turn changed, and their pre-turn state. */
 export interface Checkpoint {
   label: string;
   at: number;
+  /** The `ts` of the user message that opened this turn, so a rewind to that message (or
+   *  an earlier one) knows this checkpoint is part of what it takes back. Absent when the
+   *  turn had no stamped opener. */
+  turnAt?: number;
   files: Map<string, FileState>;
   /** Files this turn changed that were too large to hold — NOT undoable. */
   skipped: string[];
@@ -205,6 +234,10 @@ export class Checkpoints {
   private shellRan = false;
   private stack: Checkpoint[] = [];
   private resumed = false;
+  /** Where the stack is kept on disk, once `persistTo` has been called. */
+  private store: string | null = null;
+  /** Writes happen in order, one after another, and never block the caller. */
+  private saving: Promise<void> = Promise.resolve();
   constructor(private readonly max = 20) {}
 
   /**
@@ -215,7 +248,7 @@ export class Checkpoints {
    * A file too large to hold is recorded as SKIPPED rather than dropped silently —
    * `/undo` then says it wasn't covered instead of implying it was.
    */
-  backup(absPath: string, original: string | null, written: string): void {
+  backup(absPath: string, original: string | null, written: string | null): void {
     const prior = this.current.get(absPath);
     if (prior) {
       // A later touch in the same turn moves only `written`; `original` is the
@@ -262,8 +295,9 @@ export class Checkpoints {
     return this.resumed;
   }
 
-  /** Close this turn's edits into a restorable checkpoint. No-op if nothing happened. */
-  seal(label: string): void {
+  /** Close this turn's edits into a restorable checkpoint. No-op if nothing happened.
+   *  `turnAt` names the message that opened the turn (see Checkpoint.turnAt). */
+  seal(label: string, turnAt?: number): void {
     // A turn whose only file changes were too large still gets a checkpoint: it has
     // nothing to restore, but it has something to SAY, and saying it is the point.
     if (this.current.size === 0 && this.currentSkipped.size === 0) {
@@ -273,6 +307,7 @@ export class Checkpoints {
     this.stack.push({
       label: label || "(edits)",
       at: Date.now(),
+      ...(turnAt !== undefined ? { turnAt } : {}),
       files: this.current,
       skipped: [...this.currentSkipped],
       ranShell: this.shellRan,
@@ -284,6 +319,7 @@ export class Checkpoints {
     this.currentSkipped = new Set();
     this.shellRan = false;
     this.evict();
+    this.persist();
   }
 
   /** Trim the stack to both bounds: the turn count, then the byte budget. */
@@ -374,6 +410,7 @@ export class Checkpoints {
     cp.attempts++;
     const retired = cp.files.size === 0 || cp.attempts >= MAX_UNDO_ATTEMPTS;
     if (retired) this.stack.pop();
+    this.persist();
 
     return {
       label: cp.label,
@@ -385,6 +422,158 @@ export class Checkpoints {
       skipped: cp.skipped,
       ranShell: cp.ranShell,
     };
+  }
+
+  /**
+   * What undoing every turn from the message stamped `turnAt` onward would change, per
+   * file: how it was before the first of those turns, and what the last one left. For a
+   * picker that says what a rewind puts back before anyone commits to it.
+   */
+  changesSince(turnAt: number): { files: Map<string, FileState>; skipped: string[]; ranShell: boolean } {
+    const files = new Map<string, FileState>();
+    const taken = this.takenSince(turnAt); // newest first
+    for (const cp of taken) {
+      for (const [path, state] of cp.files) {
+        const later = files.get(path);
+        // Walking back in time: the newest `written` stays, the oldest `original` wins.
+        files.set(path, { original: state.original, written: later ? later.written : state.written });
+      }
+    }
+    return {
+      files,
+      skipped: [...new Set(taken.flatMap((cp) => cp.skipped))],
+      ranShell: taken.some((cp) => cp.ranShell),
+    };
+  }
+
+  /** The checkpoints at the top of the stack that belong to turns opened at or after
+   *  `turnAt`, newest first. Stops at the first older one: the stack is in turn order, so
+   *  nothing beneath it can be newer. */
+  private takenSince(turnAt: number): Checkpoint[] {
+    const out: Checkpoint[] = [];
+    for (let i = this.stack.length - 1; i >= 0; i--) {
+      const cp = this.stack[i]!;
+      if (cp.turnAt === undefined || cp.turnAt < turnAt) break;
+      out.push(cp);
+    }
+    return out;
+  }
+
+  /**
+   * Roll back every turn opened at or after `turnAt`, newest first: the file half of a
+   * rewind, where the conversation goes back to before that message.
+   *
+   * Unlike `/undo`, nothing is left queued for a retry. The conversation those turns
+   * belonged to is being removed, so there is no later `/undo` that could still name
+   * them; a file that could not be written is reported in `failed` and the checkpoint
+   * goes anyway. Conflicts are left alone exactly as `/undo` leaves them.
+   */
+  async undoSince(turnAt: number): Promise<UndoResult[]> {
+    const results: UndoResult[] = [];
+    while (this.takenSince(turnAt).length > 0) {
+      const top = this.stack[this.stack.length - 1]!;
+      const result = await this.undo();
+      if (!result) break;
+      // Still on the stack means a file failed and undo kept it for another try.
+      if (this.stack[this.stack.length - 1] === top) {
+        this.stack.pop();
+        this.persist();
+      }
+      results.push({ ...result, retryable: false });
+    }
+    return results;
+  }
+
+  /**
+   * Keep this stack on disk in `dir` from now on, so it outlives the process. Moving to
+   * a new directory (a fresh session inheriting the history) takes the files along and
+   * removes the old copy, so two sessions never both think they can undo the same turn.
+   */
+  persistTo(dir: string): void {
+    const previous = this.store;
+    this.store = dir;
+    if (previous && previous !== dir) {
+      this.saving = this.saving.then(() => fs.rm(previous, { recursive: true, force: true })).catch(() => {});
+    }
+    this.persist();
+  }
+
+  /** Wait for pending writes. For tests and for a clean exit; nothing else needs to. */
+  async flush(): Promise<void> {
+    await this.saving;
+  }
+
+  /**
+   * Load a stack written by `persistTo`, and keep writing there. Returns how many turns
+   * came back; 0 when there was nothing (a session from before this existed, or one that
+   * never changed a file), in which case the caller should `noteResumed()`.
+   */
+  async restoreFrom(dir: string): Promise<number> {
+    this.store = dir;
+    let stored: StoredStack;
+    try {
+      stored = JSON.parse(await fs.readFile(join(dir, "stack.json"), "utf8")) as StoredStack;
+    } catch {
+      return 0;
+    }
+    const blob = async (hash: string | null): Promise<string | null | undefined> => {
+      if (hash === null) return null;
+      try {
+        return await fs.readFile(join(dir, "blobs", hash), "utf8");
+      } catch {
+        return undefined; // lost: the file cannot be restored, so it is left out
+      }
+    };
+    const stack: Checkpoint[] = [];
+    for (const cp of stored.stack ?? []) {
+      const files = new Map<string, FileState>();
+      let bytes = 0;
+      for (const [path, o, w] of cp.files) {
+        const original = await blob(o);
+        const written = await blob(w);
+        if (original === undefined || written === undefined) continue;
+        files.set(path, { original, written });
+        bytes += byteLen(original) + byteLen(written);
+      }
+      stack.push({
+        label: cp.label,
+        at: cp.at,
+        ...(cp.turnAt !== undefined ? { turnAt: cp.turnAt } : {}),
+        files,
+        skipped: cp.skipped ?? [],
+        ranShell: cp.ranShell ?? false,
+        bytes,
+        attempts: cp.attempts ?? 0,
+      });
+    }
+    this.stack = stack;
+    return stack.length;
+  }
+
+  /** Queue a write of the current stack. Captured now, written in order, never awaited. */
+  private persist(): void {
+    const dir = this.store;
+    if (!dir) return;
+    const blobs = new Map<string, string>();
+    const keep = (text: string | null): string | null => {
+      if (text === null) return null;
+      const hash = hashOf(text);
+      blobs.set(hash, text);
+      return hash;
+    };
+    const stored: StoredStack = {
+      version: 1,
+      stack: this.stack.map((cp) => ({
+        label: cp.label,
+        at: cp.at,
+        ...(cp.turnAt !== undefined ? { turnAt: cp.turnAt } : {}),
+        skipped: cp.skipped,
+        ranShell: cp.ranShell,
+        attempts: cp.attempts,
+        files: [...cp.files].map(([path, st]) => [path, keep(st.original), keep(st.written)]),
+      })),
+    };
+    this.saving = this.saving.then(() => writeStack(dir, stored, blobs)).catch(() => {});
   }
 
   /**
@@ -402,5 +591,39 @@ export class Checkpoints {
       if (result.retryable) break;
     }
     return results;
+  }
+}
+
+/** Write one stack: new blobs, then the index, then drop blobs nothing points at. */
+async function writeStack(dir: string, stored: StoredStack, blobs: Map<string, string>): Promise<void> {
+  if (stored.stack.length === 0) {
+    // Nothing left to undo: no directory at all, rather than an empty one per session.
+    await fs.rm(dir, { recursive: true, force: true });
+    return;
+  }
+  const blobDir = join(dir, "blobs");
+  await fs.mkdir(blobDir, { recursive: true });
+  const present = new Set(await fs.readdir(blobDir).catch(() => [] as string[]));
+  for (const [hash, text] of blobs) {
+    if (!present.has(hash)) await writeFileAtomic(join(blobDir, hash), text);
+  }
+  await writeFileAtomic(join(dir, "stack.json"), JSON.stringify(stored));
+  for (const name of present) {
+    if (!blobs.has(name)) await fs.rm(join(blobDir, name), { force: true });
+  }
+  await pruneOtherSessions(dir);
+}
+
+/** Keep undo history for the most recent sessions of this project only. */
+async function pruneOtherSessions(dir: string): Promise<void> {
+  const parent = dirname(dir);
+  const names = (await fs.readdir(parent).catch(() => [] as string[])).filter((n) => n.endsWith(".checkpoints"));
+  if (names.length <= KEEP_SESSIONS_ON_DISK) return;
+  const dated = await Promise.all(
+    names.map(async (n) => ({ path: join(parent, n), at: (await fs.stat(join(parent, n, "stack.json")).catch(() => null))?.mtimeMs ?? 0 })),
+  );
+  dated.sort((a, b) => b.at - a.at);
+  for (const old of dated.slice(KEEP_SESSIONS_ON_DISK)) {
+    if (old.path !== dir) await fs.rm(old.path, { recursive: true, force: true });
   }
 }

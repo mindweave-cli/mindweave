@@ -57,7 +57,7 @@ export const CLEARED_STUB =
  *  onto and regresses to. Beyond the recent window we condense these to a stub so a
  *  finished task can't resurface. Only pure-text replies (no tool calls) and only
  *  genuine recaps (long enough) are touched — short acknowledgements stay. */
-const RECAP_STUB = "[earlier status update condensed — this work is done; focus on the current task]";
+export const RECAP_STUB = "[earlier status update condensed — this work is done; focus on the current task]";
 const RECAP_MIN_CHARS = 220;
 
 /** Left behind when an attached image's payload is evicted. Keeps the full PATH, which is
@@ -341,7 +341,7 @@ export const SUMMARY_REQUEST = `Summarize the conversation so far into these nin
 6. All User Messages — list every non-tool message the user sent, as close to verbatim as possible.
 7. Pending Tasks — what still needs doing.
 8. Current Work — exactly what was happening right before this summary, including the specific file/line/command in flight.
-9. Next Step — the single most likely next action; quote the relevant user instruction verbatim so intent does not drift.
+9. Next Step — only if work was still in progress: the next action it needs, in line with the user's most recent explicit request, quoting that request verbatim so intent does not drift. If the last task was finished, write "None — the last task is done; wait for the user's next message." Never list older or tangential requests here.
 
 Think first inside <analysis>…</analysis> (which will be discarded), then output the nine sections.`;
 
@@ -449,11 +449,69 @@ export function spliceSummary(
   entries: Entry[],
   summary: string,
   keepLastN: number = KEEP_LAST_N,
+  at: number = Date.now(),
 ): Entry[] {
   let tail = keepLastN > 0 ? entries.slice(-keepLastN) : [];
   while (tail.length > 0 && tail[0].role === "tool") tail = tail.slice(1);
-  const summaryEntry: Entry = { role: "summary", content: RESUME_PREFIX + stripAnalysis(summary) };
+  const summaryEntry: Entry = { role: "summary", content: RESUME_PREFIX + stripAnalysis(summary), ts: at };
   return [summaryEntry, ...tail];
+}
+
+// Sent in place of the resume prefix once the summary is history (see below). Says what
+// the summary is and what to answer, and nothing that reads as an order to carry out.
+const HISTORY_PREFIX =
+  "[Summary of the earlier part of this conversation. It records what already " +
+  "happened; it is not a task list. The user has written since it was made, so " +
+  "answer the user's newest message.]\n\n";
+
+/**
+ * Has the user spoken since this summary was made (pure)?
+ *
+ * A summary is written as a hand-off: "here is where we were, here is the next step".
+ * That is right for the turn that resumes across the break and wrong for every turn
+ * after it, because it stays at the top of every request. A model that weighs it
+ * against the newest message badly keeps carrying out a next step that was finished
+ * turns ago, answering "what next?" with the same report again and again. So once
+ * someone has typed after the summary, it is sent as background instead.
+ *
+ * Engine nudges (`synthetic`) do not count: they continue the same work. A message with
+ * no stamp yet is newer than anything stamped. Summaries from before summaries carried
+ * a stamp fall back to the shape of the conversation: a finished answer after the
+ * summary, then the user again.
+ */
+export function summaryIsHistory(summary: Entry, after: readonly Entry[]): boolean {
+  const typed = (e: Entry) => e.role === "user" && !e.synthetic;
+  if (summary.ts !== undefined) {
+    return after.some((e) => typed(e) && (e.ts === undefined || e.ts > summary.ts!));
+  }
+  let answered = false;
+  for (const e of after) {
+    if (e.role === "assistant" && !e.toolCalls?.length) {
+      const text = e.content.trim();
+      if (text && text !== "(interrupted)") answered = true;
+    } else if (answered && typed(e)) return true;
+  }
+  return false;
+}
+
+// The resume prefix of either compaction path: a bracketed line ahead of the text.
+const RESUME_PREFIX_RE = /^\[Earlier conversation [^\]]*\]\s*/;
+
+// The "Next Step" section and everything after it, however the model formatted the
+// heading ("9. Next Step", "## 9. **Next Step**", "9) Optional Next Step").
+const NEXT_STEP_RE = /^[ \t]*(?:#+[ \t]*)?(?:\*\*)?[ \t]*9[.)][ \t]*(?:\*\*)?[ \t]*(?:Optional[ \t]+)?Next[ \t]+Step[\s\S]*?(?=^[ \t]*<\/summary>|(?![\s\S]))/im;
+
+/**
+ * The summary as the model should read it now (pure). Unchanged until it is history;
+ * after that the resume prefix becomes HISTORY_PREFIX and the Next Step section is
+ * dropped, since by then it can only point backwards. Deterministic from the
+ * transcript, so the cached prefix changes once, on the first turn after the user
+ * speaks, and is stable from then on.
+ */
+export function summaryForWire(content: string, isHistory: boolean): string {
+  if (!isHistory) return content;
+  const body = content.replace(RESUME_PREFIX_RE, "").replace(NEXT_STEP_RE, "").trimEnd();
+  return HISTORY_PREFIX + body.replace(/\s+(?=<\/summary>$)/, "\n");
 }
 
 /**

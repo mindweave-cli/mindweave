@@ -43,6 +43,13 @@ test("parseWindowList skips anything that isn't a window line", () => {
   );
 });
 
+test("parseWindowList keeps the hidden-desktop mark on a handle", () => {
+  // The mark is what sends a capture of that window to the hidden desktop instead of
+  // the user's screen.
+  const windows = parseWindowList("-12\tMine\n-~34\tTest app\n");
+  assert.deepEqual(windows.map((w) => w.handle), ["12", "~34"]);
+});
+
 test("parseWindowList keeps tabs out of titles but not spaces", () => {
   const windows = parseWindowList("-9\tmy app — main window\n");
   assert.equal(windows[0]!.title, "my app — main window");

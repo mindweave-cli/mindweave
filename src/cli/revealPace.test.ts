@@ -94,10 +94,9 @@ test("whitespace is not narration", () => {
   assert.equal(narrationPending({ openAsstId: 7, raw: "   \n  ", narrated: false }), false);
 });
 
-test("once the turn has narrated, further text buys an EMPTY beat and is not paced", () => {
-  // The budget is one narration line per turn, so a second block seals to nothing
-  // (sealAssistant's `suppressed`). Pausing for it would be a held screen with no
-  // block arriving at the end — a stall, which is the exact failure mode the
-  // occupied-time condition exists to avoid.
-  assert.equal(narrationPending({ openAsstId: 9, raw: "And now the other file.", narrated: true }), false);
+test("every sentence in a turn gets its own beat, not only the first", () => {
+  // Narration used to be capped at one line per turn, so a second sentence sealed to nothing and
+  // was not paced. The cap is gone: the second and third sentences are visible blocks, and when
+  // they were not paced they landed in the same paint as the tool row under them.
+  assert.equal(narrationPending({ openAsstId: 9, raw: "And now the other file.", narrated: true }), true);
 });

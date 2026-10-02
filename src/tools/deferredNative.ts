@@ -19,6 +19,7 @@
  */
 import type { Tool } from "./types.js";
 import { screenshot } from "./screenshot.js";
+import { ui } from "./ui.js";
 import { saveMemoryTool } from "./saveMemory.js";
 import { governor, skillTool } from "./governorTools.js";
 import { sessionsTool } from "./sessionTools.js";
@@ -52,6 +53,7 @@ export const DEFERRED_TOOLS: Tool[] = [
   mcpServer,
   mindweaveStatus,
   screenshot,
+  ui,
 ];
 
 /**

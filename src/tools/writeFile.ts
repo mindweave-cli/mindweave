@@ -20,7 +20,7 @@ import { foreignAgentReason, protectedPathReason } from "./guard.js";
 import { forbiddenPathReason } from "../governor/forbidden.js";
 import { requestAgentDataAccess, requestForbiddenLift, requestOutsideWorkspaceWrite } from "./approval.js";
 import { recordWrite, relativize, resolvePath } from "./paths.js";
-import { writeDetail, withScope } from "./detail.js";
+import { FULL_DETAIL_MAX, writeDetail, withScope } from "./detail.js";
 import { applyEol, dirEol, fileEol } from "./eol.js";
 import { writeFileAtomic } from "./atomicWrite.js";
 import { fail, failQuietly } from "./results.js";
@@ -175,6 +175,7 @@ export const writeFile: Tool = {
         : `Created ${shown} (${lines} line${plural}).`,
       summary: existed ? `rewrote all of ${shown} · ${lines} line${plural}` : `created ${shown} · ${lines} line${plural}`,
       detail: withScope(scope, writeDetail(content)),
+      detailFull: withScope(scope, writeDetail(content, FULL_DETAIL_MAX)),
       detailKind: "diff" as const,
     };
   },

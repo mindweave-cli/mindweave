@@ -347,6 +347,15 @@ export interface DriverManifest {
   keysUrl: string;
 
   /**
+   * Optional: a runtime on this machine (Ollama) rather than a service with keys. It has no
+   * key to ask for, so key screens leave it out, and `apiKeyEnv` names a variable its own
+   * discovery sets while the runtime answers, which is what makes it count as connected. Its
+   * model list is asked for every time rather than cached, since asking is free and the list
+   * changes the moment a model is pulled. `keysUrl` is where to get the runtime.
+   */
+  local?: boolean;
+
+  /**
    * Optional: something a user should know before their prompts go to this provider,
    * shown when they switch to it. For a fact about where data goes that the provider's
    * name does not make obvious (a router may forward prompts to hosts with their own

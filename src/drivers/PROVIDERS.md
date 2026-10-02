@@ -10,7 +10,7 @@ lineup below costs nothing until you pick from it.
 
 ## Available now
 
-15 providers, 60 models, plus OpenRouter's catalogue. `/provider` moves between them and
+16 providers, 62 models, plus OpenRouter's catalogue and whatever you run in Ollama. `/provider` moves between them and
 `/model` lists what the one you are on offers, so there is nothing here you need to memorise.
 
 | Provider | Models | Key |
@@ -30,6 +30,7 @@ lineup below costs nothing until you pick from it.
 | **Meta** | 4 | `MODEL_API_KEY` |
 | **Tencent** | 2 | `TOKENHUB_API_KEY` |
 | **OpenRouter** | its live catalogue | `OPENROUTER_API_KEY` |
+| **Ollama** | whatever you have pulled | none: it only has to be running (`OLLAMA_HOST`) |
 
 DeepSeek is the default, and DeepSeek V4.1 Flash is what a fresh project opens with.
 
@@ -52,6 +53,15 @@ Free models are listed and marked, but they are rate-limited hard enough that an
 task can run out of requests part way through. By default OpenRouter may send your prompts
 to hosts that store or train on them. Set `MINDWEAVE_OPENROUTER_DATA=deny` to use only
 hosts that do not; a few models then have fewer hosts, or none.
+
+**Ollama** runs models on your own machine: no key, no account, nothing leaves it, nothing
+is billed. Install it from ollama.com, pull a model that takes tools (`ollama pull qwen3:8b`),
+and it appears in `/provider` and `/model` while Ollama runs. Only models that can call tools
+are listed, since an agent turn needs them. Each request asks for a 32K window (or the
+model's own, if smaller), because Ollama otherwise loads a model with a few thousand tokens
+and silently cuts the rest of the prompt. That window costs memory (several GB of the
+model's cache), so `MINDWEAVE_OLLAMA_CONTEXT` sets a smaller one for a smaller machine. A server elsewhere: set `OLLAMA_HOST`, as for
+Ollama itself.
 
 ## Picking a model
 
@@ -83,5 +93,4 @@ list. Keys stay on your machine and are never uploaded anywhere.
 Drivers are the intended contribution. A provider is a manifest (what it offers, what it
 costs, what it can do) plus a wire layer, and most providers need only the manifest
 because they speak the OpenAI-compatible shape the shared transport already handles.
-`src/drivers/deepseek/` is the reference to copy. `src/drivers/ollama/` is an unclaimed
-stub for local models if you want it.
+`src/drivers/deepseek/` is the reference to copy.

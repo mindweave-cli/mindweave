@@ -29,11 +29,13 @@
  * never shown; only its final distilled report crosses back, as the spawn's result.
  */
 import { Box, Text } from "ink";
-import { KIND_COLOR, ERROR_COLOR } from "../toolDisplay.js";
+import { ERROR_COLOR } from "../toolDisplay.js";
 import { collapseAdjacent } from "../toolItems.js";
+import { PulseDot } from "./PulseDot.js";
 import type { AgentEntry } from "../transcript.js";
+import { BAD } from "../theme.js";
 
-const DIAMOND = "◆";
+const DIAMOND = "●";
 const BRANCH = "⎿";
 const RAIL = "│";
 const TEE = "├──";
@@ -41,7 +43,8 @@ const ELBOW = "└──";
 // The rail/branch occupy 3 columns; item text hangs beside them, aligned under the
 // header content and never spilling left into the marker gutter.
 const RAIL_INDENT = 3;
-const AGENT_COLOR = KIND_COLOR.agent;
+/** A sub-agent is not given a colour of its own: plain, and red when one failed. */
+const AGENT_COLOR: string | undefined = undefined;
 
 export function SubagentView({
   agents,
@@ -62,7 +65,8 @@ export function SubagentView({
     <Box marginTop={tightTop ? 0 : 1} flexDirection="column">
       <Box flexDirection="row">
         <Box minWidth={2}>
-          <Text color={dotColor} dimColor={!done}>{DIAMOND}</Text>
+          {/* White like every tool dot: it pulses while the work goes on and is still once it is done. */}
+          {done ? <Text>{DIAMOND}</Text> : <PulseDot glyph={DIAMOND} />}
         </Box>
         {agents.length === 1 ? (
           <SoloHeader agent={agents[0]!} columns={columns} color={dotColor} />
@@ -84,7 +88,7 @@ export function SubagentView({
 }
 
 /** One worker's header: its identity and the task it was given. */
-function SoloHeader({ agent, columns, color }: { agent: AgentEntry; columns: number; color: string }) {
+function SoloHeader({ agent, columns, color }: { agent: AgentEntry; columns: number; color: string | undefined }) {
   const taskLabel = clip(agent.task, Math.max(16, columns - 22));
   return (
     <>
@@ -105,7 +109,7 @@ function SoloBody({ agent, columns, done }: { agent: AgentEntry; columns: number
         <Box key={row.item.toolId} flexDirection="row" width={columns}>
           <Text color={AGENT_COLOR} dimColor>{` ${RAIL} `}</Text>
           <Box width={content}>
-            <Text color={row.anyError ? "red" : undefined} dimColor={!row.anyError} wrap="truncate-end">
+            <Text color={row.anyError ? BAD : undefined} dimColor={!row.anyError} wrap="truncate-end">
               {row.label}{row.count > 1 ? `  ×${row.count}` : ""}
             </Text>
           </Box>
@@ -115,7 +119,7 @@ function SoloBody({ agent, columns, done }: { agent: AgentEntry; columns: number
         <Box flexDirection="row" width={columns}>
           <Text dimColor>{` ${BRANCH} `}</Text>
           <Box width={content}>
-            <Text color={errored ? "red" : undefined} dimColor={!errored} wrap="truncate-end">
+            <Text color={errored ? BAD : undefined} dimColor={!errored} wrap="truncate-end">
               {agent.summary}
             </Text>
           </Box>
@@ -155,7 +159,7 @@ function Topology({ agents, columns }: { agents: AgentEntry[]; columns: number }
                   tree stays connected down the left edge. */}
               <Text color={AGENT_COLOR} dimColor>{`  ${last ? " " : RAIL}    ${BRANCH} `}</Text>
               <Box width={Math.max(8, columns - 12)}>
-                <Text color={errored ? "red" : undefined} dimColor={!errored} wrap="truncate-end">
+                <Text color={errored ? BAD : undefined} dimColor={!errored} wrap="truncate-end">
                   {progress}
                 </Text>
               </Box>

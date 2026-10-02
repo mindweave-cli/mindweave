@@ -7,10 +7,8 @@
  * it properly, and the same applies to a layout that is subtly wrong, a chart
  * with no data, or a dialog nobody expected.
  *
- * CAPTURE ONLY. There is no clicking, typing, or moving anything, and that is a
- * scope decision rather than a missing feature. Seeing closes the verification
- * loop; acting is a different product with a far larger risk surface, and it does
- * not belong in a small core.
+ * CAPTURE ONLY. Pressing buttons and typing into the window is `ui` (ui.ts), which
+ * ends every action with one of these pictures; this tool stays the plain look.
  *
  * ## Privacy is the design, not a footnote
  *
@@ -185,8 +183,8 @@ export const screenshot: Tool = {
     "the focused window rather than guessing its title. " +
     "It photographs whatever that window is showing, so call it when looking will " +
     "genuinely tell you something, not as a routine check. " +
-    "Windows only, one window at a time — the whole screen is never captured, and " +
-    "nothing can be clicked or typed.",
+    "Windows only, one window at a time — the whole screen is never captured. " +
+    "To press buttons, switch views or type into the app, use `ui` instead.",
   parameters: {
     type: "object",
     additionalProperties: false,

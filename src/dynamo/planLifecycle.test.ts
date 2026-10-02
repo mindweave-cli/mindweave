@@ -23,6 +23,7 @@ import { saveSession, transcriptPath } from "../memory/store.js";
 import type { Session } from "../memory/types.js";
 import { PLAN_CHOICES } from "../tools/exitPlan.js";
 import { APPROVAL_TEXT } from "../tools/approval.js";
+import { appendSentinelAllow } from "../governor/write.js";
 
 /**
  * A real turn, against a local stand-in provider.
@@ -381,6 +382,34 @@ test("SENTINEL: a second call of the SAME kind is not asked about again", async 
   assert.equal(asks, 1, "the grant was not honoured, so the user was asked twice");
 });
 
+test("SENTINEL: an action the user saved as allowed is not asked about, and others still are", async () => {
+  // Saved through the same writer the Permissions screen uses, and picked up from disk
+  // by the turn's own governance refresh: the whole path a real session takes.
+  const root = tempRoot();
+  await appendSentinelAllow(root, "write_file", "project");
+  const asked: string[] = [];
+  const s = session(root, {
+    id: "abc-123",
+    toolContext: {
+      activePlan: "",
+      guarded: true,
+      requestApproval: async (_q: string, options: string[], detail?: string) => {
+        asked.push(String(detail).split(String.fromCharCode(10))[0]!);
+        return options[0]!;
+      },
+    } as object,
+  });
+  nextToolCall = { id: "c1", type: "function", function: { name: "write_file", arguments: JSON.stringify({ path: "a.txt", content: "x" }) } };
+  sendUnadvertised = true;
+  await respond(s);
+  assert.equal(asked.length, 0, "a saved allowance was asked about anyway");
+
+  nextToolCall = { id: "c2", type: "function", function: { name: "run_command", arguments: JSON.stringify({ command: "echo hi" }) } };
+  sendUnadvertised = true;
+  await respond(s);
+  assert.equal(asked.length, 1, "an action that was not saved went through without asking");
+});
+
 test("SENTINEL: a declined action carries the user's own direction back", async () => {
   const root = tempRoot();
   const s = session(root, {
@@ -453,4 +482,59 @@ test("a sub-agent's turn does NOT mark the parent's plan complete", async () => 
     await loadPlanArtifact(root),
     "the sub-agent marked its parent's plan done while the parent was still working on it",
   );
+});
+
+
+// ── Nothing appears or runs behind an open decision ────────────────────────────
+
+test("SENTINEL: a gated command is not shown as running until it is approved", async () => {
+  // The defect: every call in a step was announced up front, so a command sat on screen
+  // as "running" while its own permission prompt was still waiting for an answer.
+  const root = tempRoot();
+  const events: { type: string; phase?: string; id?: string }[] = [];
+  let startsSeenWhenAsked = -1;
+  const s = session(root, {
+    id: "abc-123",
+    toolContext: {
+      activePlan: "",
+      guarded: true,
+      requestApproval: async (_q: string, options: string[]) => {
+        startsSeenWhenAsked = events.filter((e) => e.type === "tool" && e.phase === "start" && e.id === "g1").length;
+        return options[0]!; // approve
+      },
+    } as object,
+  });
+  nextToolCall = { id: "g1", type: "function", function: { name: "write_file", arguments: JSON.stringify({ path: "b.txt", content: "y" }) } };
+  sendUnadvertised = true;
+  await respond(s, { onEvent: (e) => events.push(e as never) });
+  assert.equal(startsSeenWhenAsked, 0, "the command was announced before it was approved");
+  const g1 = events.filter((e) => e.type === "tool" && e.id === "g1").map((e) => e.phase);
+  assert.deepEqual(g1, ["start", "end"], "approved: it runs, then ends");
+});
+
+test("SENTINEL: a declined command still gets its row, announced with its result", async () => {
+  const root = tempRoot();
+  const events: { type: string; phase?: string; id?: string; summary?: string }[] = [];
+  const s = session(root, {
+    id: "abc-123",
+    toolContext: {
+      activePlan: "",
+      guarded: true,
+      requestApproval: async () => undefined, // declined
+    } as object,
+  });
+  nextToolCall = { id: "g2", type: "function", function: { name: "run_command", arguments: JSON.stringify({ command: "echo no" }) } };
+  sendUnadvertised = true;
+  await respond(s, { onEvent: (e) => events.push(e as never) });
+  const g2 = events.filter((e) => e.type === "tool" && e.id === "g2");
+  assert.deepEqual(g2.map((e) => e.phase), ["start", "end"]);
+  assert.match(String(g2[1]!.summary), /^declined /);
+});
+
+test("a question or a plan never runs alongside other calls", async () => {
+  const { callIsConcurrencySafe } = await import("./engine.js");
+  const { askUserTool } = await import("../tools/askUser.js");
+  const { exitPlan } = await import("../tools/exitPlan.js");
+  assert.equal(callIsConcurrencySafe(askUserTool, { question: "?", options: ["a", "b"] }), false);
+  assert.equal(callIsConcurrencySafe(exitPlan, { plan: "x" }), false);
 });

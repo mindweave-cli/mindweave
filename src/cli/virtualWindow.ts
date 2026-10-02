@@ -62,6 +62,18 @@ export interface VirtualWindow {
 export const OVERSCAN_BLOCKS = 2;
 
 /**
+ * The most blocks the transcript keeps reachable. It used to be 150, which is only a few dozen
+ * turns of tool work, and everything older was simply unreachable by scrolling: a long project
+ * lost its own beginning.
+ *
+ * It can be this large because only the window is ever laid out. Everything else is a spacer,
+ * and the cost of the rest is one pass over a list of numbers per frame. Measured: a wheel
+ * notch costs the same at 150, 1,000, 3,000 and 8,000 blocks. This is a safety valve for
+ * runaway sessions, not a working limit.
+ */
+export const SCROLLBACK_BLOCKS = 10_000;
+
+/**
  * The blocks covering rows `[shift, shift + rows)` of the transcript, plus overscan.
  *
  * @param heights exact rendered height of every block, in rows, in transcript order
@@ -80,8 +92,9 @@ export function virtualWindow(heights: readonly number[], shift: number, rows: n
 
   // Walk once, accumulating offsets. A binary search over a prefix-sum array would be
   // asymptotically better and is what a list of thousands would need; this list is
-  // capped at SCROLLBACK_BLOCKS (150), where one pass over a number array is far
-  // cheaper than the allocation the prefix-sum table would cost every frame.
+  // capped at SCROLLBACK_BLOCKS, where one pass over a number array is still far
+  // cheaper than the allocation a prefix-sum table would cost every frame (measured flat
+  // up to 8,000 blocks).
   let first = -1;
   let last = -1;
   let offset = 0;

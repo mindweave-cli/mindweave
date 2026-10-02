@@ -5,18 +5,20 @@
  *     ⎿ - <a href="#" class="btn">
  *       + <a href="catalog.html" class="btn">
  *
- * The dot reflects lifecycle: dim while running, white when ok, red on error. The
- * bold `Name(arg)` sits on the first row; once resolved, an indented `⎿` branch
- * hangs beneath with the rich detail (an edit diff, a file preview, command
- * output) or a one-line summary. The whole result appears AT ONCE on resolve —
- * never a live, line-by-line scroll (that churn is what made the old version
- * glitch).
+ * The row appears while its tool is still working: the dot pulses and the verb is in the
+ * present tense ("Reading views.py"). When the result comes the dot goes still and the verb
+ * settles ("Read views.py"), with an indented `⎿` branch beneath holding the rich detail (an
+ * edit diff, a file preview, command output) or a one-line summary. A command shows the tail
+ * of its output while it runs. The dot is white, always: the pulse says working, stillness
+ * says done, and a failure says so in words.
  */
 import { useEffect, useState } from "react";
 import { Box, Text } from "ink";
-import { KIND_COLOR, ERROR_COLOR, type ToolKind } from "../toolDisplay.js";
+import { ERROR_COLOR, type ToolKind } from "../toolDisplay.js";
+import { PulseDot } from "./PulseDot.js";
 import { activeForm } from "../toolItems.js";
 import { commandLabel } from "../commandLabel.js";
+import { BAD, CODE, GOOD } from "../theme.js";
 
 const DOT = "●";
 const BRANCH = "⎿";
@@ -76,13 +78,13 @@ export interface ToolLineProps {
 
 export function ToolLine({ name, arg, status, action, summary, detail, detailKind, meta, columns, live, tightTop, since, waited, startedAt }: ToolLineProps) {
   const errored = status === "error";
-  // "Updating(home.html)" while the turn runs, "Update(home.html)" once it ends —
-  // the same row, one word apart. The row is not shown at all until its result is
-  // in hand, so this is the only change the user ever sees it make.
-  const verb = activeForm(name, !!live);
-  // The dot carries the action at a glance: its category colour when it succeeds,
-  // dim while still running, red when it failed.
-  const dotColor = errored ? ERROR_COLOR : action ? KIND_COLOR[action] : undefined;
+  // "Updating(home.html)" while the tool works, "Update(home.html)" the moment it is done.
+  // `live` is false for a row from a turn that has ended (or a resumed session), which is
+  // done whatever its status says: an interrupted call never sent a result.
+  // An image handed to the model is still being worked on after the tool returns: the model is
+  // looking at it (`since` set, no total yet), so the row keeps its present tense and its pulse.
+  const working = !!live && (status === "running" || (since !== undefined && waited === undefined));
+  const verb = activeForm(name, working);
   const metaRoom = meta ? meta.length + 1 : 0;
 
   // The branch content: rich detail lines if present, else the one-line summary.
@@ -149,7 +151,7 @@ export function ToolLine({ name, arg, status, action, summary, detail, detailKin
           header. The viewport's clip already cuts anything past the right edge. */}
       <Box flexDirection="row" width={columns}>
         <Box minWidth={2} flexShrink={0}>
-          <Text color={dotColor} dimColor={status === "running"}>{DOT}</Text>
+          {working ? <PulseDot glyph={DOT} /> : <Text>{DOT}</Text>}
         </Box>
         <Box flexShrink={0}>
           <Text bold>{verb}</Text>
@@ -185,11 +187,11 @@ export function ToolLine({ name, arg, status, action, summary, detail, detailKin
             with nothing in between, so the two have to be connected by eye every time. */}
         {outcome ? (
           <Box flexShrink={0}>
-            <Text color={errored ? ERROR_COLOR : "green"} bold wrap="truncate-end">{"  "}{outcome}</Text>
+            <Text color={errored ? BAD : GOOD} bold wrap="truncate-end">{"  "}{outcome}</Text>
           </Box>
         ) : null}
       </Box>
-      {status !== "running" && branchLines.length > 0 ? (
+      {(status !== "running" || (working && detailKind === "shell")) && branchLines.length > 0 ? (
         detailKind === "shell" ? (
           <ShellLines lines={branchLines} columns={columns} errored={errored} headerHasCommand={!!arg} />
         ) : (
@@ -222,7 +224,7 @@ function BranchLines({
   return (
     <Box flexDirection="column">
       {lines.map((line, i) => {
-        const style = errored ? { color: "red" } : diff ? diffStyle(line) : undefined;
+        const style = errored ? { color: BAD } : diff ? diffStyle(line) : undefined;
         const dim = !errored && style === undefined;
         // Padded to the full content width so the tint is a continuous band rather than
         // stopping wherever the code happens to end, which reads as a ragged smear.
@@ -295,12 +297,12 @@ function ShellLines({
                 // and it was previously distinguished only by being bold, which loses
                 // against a screenful of equally plain machine text.
                 <Text wrap="truncate-end">
-                  <Text color={KIND_COLOR.run}>{"$ "}</Text>
-                  <Text bold>{line.slice(2)}</Text>
+                  <Text dimColor>{"$ "}</Text>
+                  <Text bold color={CODE}>{line.slice(2)}</Text>
                 </Text>
               ) : (
                 <Text
-                  color={outcome ? (line.startsWith("✓") ? "green" : ERROR_COLOR) : errored ? "red" : undefined}
+                  color={outcome ? (line.startsWith("✓") ? GOOD : BAD) : errored ? BAD : undefined}
                   dimColor={railed && !errored}
                   bold={outcome}
                   wrap="truncate-end"
@@ -337,8 +339,8 @@ interface DiffStyle {
 }
 
 function diffStyle(line: string): DiffStyle | undefined {
-  if (line.startsWith("+")) return { color: "green", backgroundColor: ADDED_BG };
-  if (line.startsWith("-")) return { color: "red", backgroundColor: REMOVED_BG };
+  if (line.startsWith("+")) return { color: GOOD, backgroundColor: ADDED_BG };
+  if (line.startsWith("-")) return { color: BAD, backgroundColor: REMOVED_BG };
   return undefined;
 }
 

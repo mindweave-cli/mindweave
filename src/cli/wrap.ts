@@ -40,7 +40,7 @@ export function clipRows(text: string, width: number, maxRows: number): string[]
   return [...rows.slice(0, Math.max(1, maxRows - 1)), `… (${rows.length - (maxRows - 1)} more lines above)`];
 }
 
-function visibleWidth(s: string): number {
+export function visibleWidth(s: string): number {
   return s.replace(ANSI_RE, "").length;
 }
 

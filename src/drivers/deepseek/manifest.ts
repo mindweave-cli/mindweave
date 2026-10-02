@@ -9,10 +9,12 @@
  * stays plain data and pure functions. The wire code lives in `client.ts`, which
  * only loads once DeepSeek is actually selected.
  *
- * `deepseek-v4-flash` is V4.1 Flash: an OpenAI-compatible model that stores 1M
- * tokens, reads images natively, and supports Thinking / Non-Thinking modes. The id
- * is a route DeepSeek keeps serving; `deepseek-flash` is its canonical name for the
- * same model, so a maintainer can switch to that the day the route is retired.
+ * `deepseek-flash` is V4.1 Flash: an OpenAI-compatible model that stores 1M tokens,
+ * reads images natively, and supports Thinking / Non-Thinking modes. It is the name
+ * DeepSeek's own documentation uses. The earlier id, `deepseek-v4-flash`, is a route
+ * DeepSeek still serves for the same model (checked live 2026-10-02: a request for it
+ * is answered as `deepseek-flash`), so sessions and settings saved under it keep
+ * working: `normalize` migrates the old id and `ownsModel` keeps it routed here.
  *
  * `deepseek-v4-pro` is the stronger model. It was expected to fold into V4.1 Flash on
  * 2026-09-14 (see git history for the retired PRO_SUNSET_MS), but DeepSeek's own docs
@@ -23,8 +25,12 @@
  */
 import type { DriverManifest, Effort, ModelChoice, ModelConfig, ModelId, ModelPrice, ThinkLevel } from "../types.js";
 
-export const FLASH = "deepseek-v4-flash";
+export const FLASH = "deepseek-flash";
 export const PRO = "deepseek-v4-pro";
+/** Flash's id before DeepSeek's docs settled on `deepseek-flash`. Still served, so it only
+ *  survives as an alias: saved settings and old sessions carry it, and `normalize` maps it
+ *  onto Flash. Never offered. */
+export const FLASH_LEGACY = "deepseek-v4-flash";
 /** The pre-4.1 vision model's id. It no longer names a model of its own — Flash reads
  *  images now — so it survives only as an alias normalize maps onto Flash. */
 export const VISION_LEGACY = "deepseek-v4-flash-vision-exp";
@@ -141,7 +147,12 @@ export function contextWindow(model: ModelId): number {
  * now, and the old vision id reaches this as Flash after normalize migrates it.
  */
 export function acceptsImages(model: ModelId): boolean {
-  return model === FLASH;
+  return model === FLASH || model === FLASH_LEGACY;
+}
+
+/** The ids this driver answers for beyond its listed models: the two retired names of Flash. */
+export function ownsModel(model: ModelId): boolean {
+  return model === FLASH_LEGACY || model === VISION_LEGACY;
 }
 
 /**
@@ -154,7 +165,7 @@ export function acceptsImages(model: ModelId): boolean {
  */
 export function normalize(config: ModelConfig): ModelConfig {
   // Anything that is not an explicit Pro selection resolves to Flash. That folds in
-  // both the pre-4.1 vision id and the plain `deepseek-v4-flash` id, and it means a
+  // both the pre-4.1 vision id and the earlier `deepseek-v4-flash` id, and it means a
   // config saved by a build that named some other DeepSeek model opens on the default
   // rather than on a model this build cannot serve.
   const model: ModelId = config.model === PRO ? PRO : FLASH;
@@ -177,5 +188,6 @@ export const deepseekManifest: DriverManifest = {
   price,
   contextWindow,
   acceptsImages,
+  ownsModel,
   normalize,
 };

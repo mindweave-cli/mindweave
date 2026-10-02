@@ -132,7 +132,7 @@ export function compactFromSessionMemory(
   if (coveredEntries === undefined || coveredEntries <= 0) return null;
   if (coveredEntries > entries.length) return null;
 
-  const summaryEntry: Entry = { role: "summary", content: RESUME_PREFIX + (notes ?? "").trim() };
+  const summaryEntry: Entry = { role: "summary", content: RESUME_PREFIX + (notes ?? "").trim(), ts: Date.now() };
   const fixed = estimateEntriesTokens([summaryEntry]) + overhead;
 
   // What the tail may cost and still leave us under the bar, capped so a compaction

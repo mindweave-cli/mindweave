@@ -5,8 +5,9 @@
  * typecheck and reducer tests say nothing about what the user sees — the whole
  * defect this file exists to pin was a header that rendered without its body.
  *
- * The rule under test, in one line: a tool block appears ONCE, already complete,
- * and the only thing that ever changes afterwards is its verb.
+ * The rules under test: a tool row appears while its tool works (present tense, pulsing dot)
+ * and resolves in place when the result comes; a call already finished by its beat appears
+ * finished; and nothing new reaches the screen while a row on it is still working.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -17,7 +18,7 @@ import { Picker } from "./components/Picker.js";
 import { ApprovalBox } from "./components/ApprovalBox.js";
 import { clipRows } from "./wrap.js";
 import { initialState, reduce, type Action, type Block, type TranscriptState } from "./transcript.js";
-import { resultQueued, isGroupMember, groupSettled, planGroupReveal } from "./groupReveal.js";
+import { newPacer, nextMove, takeImmediate, takePaced } from "./revealQueue.js";
 import { narrationPending } from "./revealPace.js";
 
 /** A stdout Ink will happily write frames into. */
@@ -64,23 +65,20 @@ function blocks(s: TranscriptState): Block[] {
 }
 
 /**
- * The pacer's reveal decision, replayed here as the pure functions App.pump()
- * calls, so the sequence of FRAMES a real turn produces can be asserted without
- * mounting the whole app.
+ * The frames a turn produces, replayed through the SAME pacer App.pump() drives (revealQueue.ts),
+ * so the sequence of paints can be asserted without mounting the whole app.
  *
- * The batching matters as much as the holding: Ink runs a legacy React root, so
- * each dispatch flushes synchronously and IS a frame. A batch therefore snapshots
- * once, at its end — mirroring applyBatch. A replay that snapshotted per action
- * would report intermediate frames the terminal never shows, and one that never
- * snapshotted mid-turn would miss the bare-header bug entirely.
+ * `arrive` is when the events reach the pacer: "all" has the whole turn queued before the first
+ * beat (a burst that finished faster than the tempo), "stepwise" delivers one event at a time and
+ * lets every beat that is due fire before the next one arrives (a tool slower than the tempo).
+ * Each applied batch is one paint, as applyNow makes it one.
  */
-function screensDuring(queue: Action[]): string[] {
+function screensDuring(queue: Action[], arrive: "all" | "stepwise" = "all"): string[] {
   let s = initialState();
   const frames: string[] = [];
-  const q = [...queue];
-  let groupOpen = false;
   let last = "";
   const apply = (batch: Action[]) => {
+    if (batch.length === 0) return;
     for (const a of batch) s = reduce(s, a);
     const f = frameOf(blocks(s));
     if (f !== last) {
@@ -88,48 +86,18 @@ function screensDuring(queue: Action[]): string[] {
       last = f;
     }
   };
-  while (q.length > 0) {
-    const head = q[0]!;
-    // Narration in front of a tool call is sealed on its own beat, so the sentence
-    // reaches the screen in its own frame. `toolStart` would otherwise seal it as
-    // part of its own action and the two would land in one paint.
-    if (head.type === "toolStart" && narrationPending(s)) {
-      apply([{ type: "sealNarration" }]);
-      groupOpen = false;
+  const incoming = [...queue];
+  const p = newPacer(arrive === "all" ? incoming.splice(0) : []);
+  const flags = () => ({ flushing: false, streamDone: incoming.length === 0, narrationPending: narrationPending(s) });
+  for (;;) {
+    apply(takeImmediate(p, flags()));
+    const move = nextMove(p);
+    if (move === "beat") {
+      apply(takePaced(p, flags()));
       continue;
     }
-    // A new group's opening call is held until the model has moved past the burst,
-    // then the whole burst lands as one frame.
-    if (head.type === "toolStart" && head.group && !groupOpen) {
-      if (planGroupReveal(groupSettled(q.slice(1)), false) === "hold") {
-        // Nothing can advance until more actions arrive; in this replay the queue
-        // is already complete, so a permanent hold would be a bug in the test.
-        assert.fail("group held with a complete queue — it can never be revealed");
-      }
-      let n = 0;
-      while (n < q.length && isGroupMember(q[n]!)) n++;
-      apply(q.splice(0, n));
-      groupOpen = false;
-      continue;
-    }
-    // A standalone call is held until its own result is queued behind it, then that
-    // PAIR lands as one frame — the call and its own result, never the span between
-    // them. Concurrent calls all have their starts emitted before any of them
-    // finishes, so a contiguous span from the front would swallow the other calls'
-    // starts into this frame. Mirrors pump() in App.tsx.
-    if (head.type === "toolStart" && !head.group) {
-      const end = q.findIndex((x) => x.type === "toolEnd" && x.toolId === head.toolId);
-      assert.notEqual(end, -1, "standalone tool held with a complete queue — it can never be revealed");
-      const endAction = q.splice(end, 1)[0]!;
-      const startAction = q.shift()!;
-      apply([startAction, endAction]);
-      groupOpen = false;
-      continue;
-    }
-    const a = q.shift()!;
-    if (a.type === "toolStart" && a.group) groupOpen = true;
-    else if (a.type !== "toolEnd") groupOpen = false;
-    apply([a]);
+    if (incoming.length === 0) break;
+    p.queue.push(incoming.shift()!);
   }
   return frames;
 }
@@ -151,36 +119,36 @@ test("a discovery group is never on screen without its list — one frame, then 
   // THE regression guard: no frame may ever show the header alone. Every frame that
   // names the group also carries what it found.
   for (const f of withTool) {
-    assert.match(f, /Reading 1 file|Read 1 file/);
-    assert.match(f, /195 lines/, `header rendered without its body:\n${f}`);
+    assert.match(f, /Read 1 file/);
+    assert.match(f, /runCommand\.ts/, `header rendered without its body:\n${f}`);
   }
 
-  // While the turn runs: present tense, list already there.
-  const live = withTool[0]!;
-  assert.match(live, /Reading 1 file/);
-  assert.doesNotMatch(live, /Read 1 file/);
+  // Already done by its beat, so it appears done: no present tense to pretend with.
+  const first = withTool[0]!;
+  assert.match(first, /Read 1 file/);
+  assert.doesNotMatch(first, /Reading/);
 
-  // Turn ends: the SAME block, one word different.
+  // The turn ending changes nothing about it.
   const ended = frameOf(blocks(reduce(run(turn), { type: "endTurn" })));
-  assert.match(ended, /Read 1 file/);
-  assert.doesNotMatch(ended, /Reading 1 file/);
-  assert.match(ended, /195 lines/);
-
-  // And nothing else moved — strip the verb and the two frames are identical.
-  const norm = (f: string) => f.replace(/Reading 1 file|Read 1 file/, "<verb> 1 file");
-  assert.equal(norm(ended), norm(live), "the block changed by more than its verb");
+  assert.equal(ended, first, "a finished row changed when the turn ended");
 });
 
-test("a group row prints its result once, not twice", () => {
+test("a group row names each file once, three to a line", () => {
   const s = run([
     { type: "toolStart", toolId: "t1", name: "Read", arg: "a.ts", action: "read", group: true },
     { type: "toolEnd", toolId: "t1", ok: true, summary: "read src/a.ts (195 lines)" },
+    { type: "toolStart", toolId: "t2", name: "Read", arg: "b.ts, c.ts, d.ts", action: "read", group: true, covers: 3 },
+    { type: "toolEnd", toolId: "t2", ok: true, summary: "read 3 files" },
+    { type: "toolStart", toolId: "t3", name: "Read", arg: "e.ts", action: "read", group: true },
+    { type: "toolEnd", toolId: "t3", ok: false, summary: "no such file" },
   ]);
   const frame = frameOf(blocks(s));
-  assert.equal(frame.match(/195 lines/g)?.length, 1, `result duplicated on the row:\n${frame}`);
+  assert.match(frame, /Read 5 files/);
+  assert.match(frame, /⎿ a\.ts, b\.ts, c\.ts\n\s+d\.ts, e\.ts \(failed\)/, `not three to a line:\n${frame}`);
+  assert.equal(frame.match(/a\.ts/g)?.length, 1, `a name was listed twice:\n${frame}`);
 });
 
-test("a standalone tool arrives with its diff already under it, then settles its verb", () => {
+test("a tool finished before its beat arrives finished, with its diff already under it", () => {
   const turn: Action[] = [
     { type: "user", text: "fix the guard" },
     { type: "toolStart", toolId: "e1", name: "Update", arg: "runCommand.ts", action: "edit" },
@@ -193,13 +161,10 @@ test("a standalone tool arrives with its diff already under it, then settles its
   for (const f of frames.filter((x) => /Updat/.test(x))) {
     assert.match(f, /isInteractive/, `edit row rendered without its diff:\n${f}`);
   }
-  const live = frames.filter((f) => /Updat/.test(f))[0]!;
-  assert.match(live, /Updating\(runCommand\.ts\)/);
-
-  const ended = frameOf(blocks(reduce(run(turn), { type: "endTurn" })));
-  assert.match(ended, /Update\(runCommand\.ts\)/);
-  assert.doesNotMatch(ended, /Updating/);
-  assert.match(ended, /isInteractive/);
+  // Its result was in before its beat, so it appears finished.
+  const first = frames.filter((f) => /Updat/.test(f))[0]!;
+  assert.match(first, /Update\(runCommand\.ts\)/);
+  assert.doesNotMatch(first, /Updating/);
 });
 
 test("a batch of concurrent tools reveals one row at a time, never all at once", () => {
@@ -295,37 +260,68 @@ test("a sentence and the tool row it introduces never land in the same frame", (
   assert.ok(!together.includes(frames.find((f) => said.test(f))!), "the sentence arrived in the row's paint");
 });
 
-test("endTurn settles rows that already scrolled into committed, not just the live tail", () => {
-  // The flip has to reach committed blocks, because every block is re-rendered each
-  // frame (there is no <Static>) — a row that scrolled up mid-turn would otherwise
-  // sit reading "Reading" forever.
-  const s = run([
-    { type: "toolStart", toolId: "e1", name: "Update", arg: "a.ts", action: "edit" },
-    { type: "toolEnd", toolId: "e1", ok: true, summary: "1 line changed" },
-    { type: "note", text: "moving on" }, // forces the drain into committed
-  ]);
-  assert.ok(s.committed.some((b) => b.kind === "tool"), "the row should have committed");
-  assert.match(frameOf(blocks(s)), /Updating/);
-  assert.match(frameOf(blocks(reduce(s, { type: "endTurn" }))), /Update\(a\.ts\)/);
-  assert.doesNotMatch(frameOf(blocks(reduce(s, { type: "endTurn" }))), /Updating/);
+test("a slow tool is on screen while it works, then resolves in place", () => {
+  // Events one at a time: the row reaches the screen on its beat before its result exists.
+  const turn: Action[] = [
+    { type: "user", text: "run the tests" },
+    { type: "toolStart", toolId: "r1", name: "Run", arg: "npm test", action: "run" },
+    { type: "toolProgress", toolId: "r1", text: "$ npm test\nrunning 12 suites" },
+    { type: "toolEnd", toolId: "r1", ok: true, detail: "$ npm test\nall 12 passed\n✓ Exit code 0", detailKind: "shell" },
+    { type: "finishReply" },
+  ];
+  const frames = screensDuring(turn, "stepwise");
+  const rows = frames.filter((f) => /npm test/.test(f));
+  assert.match(rows[0]!, /Running\(npm test\)/, "the row did not appear while the command ran");
+  assert.ok(rows.some((f) => /Running\(npm test\)/.test(f) && /running 12 suites/.test(f)), "its output did not show while it ran");
+  const done = rows[rows.length - 1]!;
+  assert.match(done, /Run\(npm test\)/);
+  assert.doesNotMatch(done, /Running/);
+  assert.match(done, /all 12 passed/);
 });
 
-test("a new turn's rows are live again while the previous turn's stay settled", () => {
-  const first = reduce(
-    run([
-      { type: "toolStart", toolId: "e1", name: "Update", arg: "a.ts", action: "edit" },
-      { type: "toolEnd", toolId: "e1", ok: true, summary: "1 line changed" },
-    ]),
-    { type: "endTurn" },
-  );
-  const second = run2(first, [
-    { type: "user", text: "now b.ts" },
-    { type: "toolStart", toolId: "e2", name: "Update", arg: "b.ts", action: "edit" },
-    { type: "toolEnd", toolId: "e2", ok: true, summary: "2 lines changed" },
+test("nothing new reaches the screen while a row on it is still working", () => {
+  // The beat comes after the result: the note queued behind a working call waits for it.
+  const p = newPacer([
+    { type: "toolStart", toolId: "r1", name: "Run", arg: "npm test", action: "run" },
+    { type: "note", text: "next" },
   ]);
-  const frame = frameOf(blocks(second));
-  assert.match(frame, /Update\(a\.ts\)/, "the finished turn's row must stay past-tense");
-  assert.match(frame, /Updating\(b\.ts\)/, "the running turn's row must be present-tense");
+  const flags = { flushing: false, streamDone: false, narrationPending: false };
+  assert.equal(nextMove(p), "beat");
+  assert.deepEqual(takePaced(p, flags).map((a) => a.type), ["toolStart"]);
+  assert.equal(nextMove(p), "wait", "the note would appear while the command still runs");
+  // Its progress and result are taken at once, even queued behind the note.
+  p.queue.push({ type: "toolProgress", toolId: "r1", text: "…" }, { type: "toolEnd", toolId: "r1", ok: true });
+  assert.deepEqual(takeImmediate(p, flags).map((a) => a.type), ["toolProgress", "toolEnd"]);
+  assert.equal(nextMove(p), "beat", "the result came: the next block gets its beat");
+});
+
+test("reads made in separate calls join one row, which works until the last one is done", () => {
+  const p = newPacer([{ type: "toolStart", toolId: "a", name: "Read", arg: "a.ts", action: "read", group: true }]);
+  const flags = { flushing: false, streamDone: false, narrationPending: false };
+  let s = initialState();
+  for (const a of takePaced(p, flags)) s = reduce(s, a);
+  p.queue.push(
+    { type: "toolStart", toolId: "b", name: "Read", arg: "b.ts", action: "read", group: true },
+    { type: "toolEnd", toolId: "a", ok: true },
+  );
+  for (const a of takeImmediate(p, flags)) s = reduce(s, a);
+  assert.equal(nextMove(p), "wait", "b is still being read");
+  let frame = frameOf(blocks(s));
+  assert.match(frame, /Reading 2 files/);
+  p.queue.push({ type: "toolEnd", toolId: "b", ok: true });
+  for (const a of takeImmediate(p, flags)) s = reduce(s, a);
+  frame = frameOf(blocks(s));
+  assert.match(frame, /Read 2 files/);
+  assert.match(frame, /⎿ a\.ts, b\.ts/);
+  assert.equal(s.tail.filter((b) => b.kind === "tools").length + s.committed.filter((b) => b.kind === "tools").length, 1);
+});
+
+test("a row interrupted before its result stops working when the turn ends", () => {
+  const s = run([{ type: "toolStart", toolId: "e1", name: "Update", arg: "a.ts", action: "edit" }]);
+  assert.match(frameOf(blocks(s)), /Updating\(a\.ts\)/);
+  const ended = frameOf(blocks(reduce(s, { type: "endTurn" })));
+  assert.match(ended, /Update\(a\.ts\)/);
+  assert.doesNotMatch(ended, /Updating/);
 });
 
 function run2(s: TranscriptState, actions: Action[]): TranscriptState {
@@ -460,7 +456,7 @@ test("one worker keeps its full rail", () => {
     { type: "subagentEnd", agentId: "a", ok: true, summary: "3 steps · read-only" },
   ]);
   const frame = frameOf(blocks(s));
-  assert.match(frame, /◆ Subagent · read-only/);
+  assert.match(frame, /● Subagent · read-only/);
   assert.match(frame, /Read login\.ts \(88 lines\)/, "with one worker there is room for its calls");
   assert.match(frame, /3 steps · read-only/);
 });
@@ -473,7 +469,7 @@ test("several workers become a tree, and each branch says how far along it is", 
     { type: "subagentEnd", agentId: "a", ok: true, summary: "4 steps · read-only" },
   ]);
   const frame = frameOf(blocks(s));
-  assert.match(frame, /◆ Subagents/);
+  assert.match(frame, /● Subagents/);
   assert.match(frame, /2 delegated/);
   assert.match(frame, /├──/, "a branch for each worker…");
   assert.match(frame, /└──/, "…and an elbow on the last");
@@ -518,8 +514,8 @@ test("a resumed session opens with settled verbs, not work that looks in flight"
     { type: "toolEnd", toolId: "e1", ok: true, summary: "-3 +63" },
     { type: "sealNarration" },
   ];
-  assert.match(frameOf(blocks(run(replayed))), /Updating/, "born live — this is what showResumed produces");
-  // …which is why showResumed must finish with endTurn.
+  // Finished rows read finished, live or not.
+  assert.doesNotMatch(frameOf(blocks(run(replayed))), /Updating/);
   const settled = frameOf(blocks(reduce(run(replayed), { type: "endTurn" })));
   assert.match(settled, /Update\(App\.tsx\)/);
   assert.doesNotMatch(settled, /Updating/);
@@ -530,10 +526,9 @@ test("progress is applied at once, never queued behind the beat", async () => {
   // Paced, a tail sent once a second would queue up behind a two-second beat and fall
   // further behind the command for as long as it ran.
   const { readFile } = await import("node:fs/promises");
-  const app = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
-  const at = app.indexOf("const isPaced =");
-  assert.ok(at > 0, "isPaced is gone");
-  assert.match(app.slice(at, at + 500), /a\.type !== "toolProgress"/, "progress is being paced");
+  const { isPaced } = await import("./revealQueue.js");
+  assert.equal(isPaced({ type: "toolProgress", toolId: "x", text: "…" }, false), false, "progress is being paced");
+  void readFile;
 });
 
 test("the engine gives each call its OWN progress channel", async () => {

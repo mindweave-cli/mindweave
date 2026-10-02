@@ -21,6 +21,7 @@ import {
   discoveredList,
   discoveredProviderIds,
   ensureDriver,
+  localProviderIds,
   manifestForModel,
   modelsOf,
   normalizeConfig,
@@ -235,7 +236,11 @@ export async function loadModelConfig(projectCwd: string): Promise<ModelConfig> 
   // saved config against nothing is the bug the comment above describes.
   await loadDiscoveryCache();
   const refresh = refreshModels({ maxAgeMs: DISCOVERY_TTL_MS });
-  if (discoveredProviderIds().some((id) => !discoveredList(id))) await refresh;
+  // A local server is waited on every launch, saved list or not: whether it is running IS whether
+  // that provider counts as connected, and the first-run key screen is decided from that before the
+  // first frame. With a saved list this used to be skipped, so every launch after the first showed
+  // "add a key" to anyone whose only provider was a local model.
+  if (discoveredProviderIds().some((id) => !discoveredList(id)) || localProviderIds().length > 0) await refresh;
 
   let config: ModelConfig;
   try {

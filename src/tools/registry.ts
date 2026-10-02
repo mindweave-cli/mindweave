@@ -16,6 +16,7 @@ import { readSymbolTool } from "./readSymbol.js";
 import { replaceSymbolBody } from "./replaceSymbol.js";
 import { web } from "./web.js";
 import { screenshot } from "./screenshot.js";
+import { ui } from "./ui.js";
 import { viewImage } from "./viewImage.js";
 import { exitPlan } from "./exitPlan.js";
 import { todoWrite } from "./todo.js";
@@ -57,6 +58,8 @@ export const TOOLS: Tool[] = [
   // Sight (read-only: looks at a picture, changes nothing)
   viewImage,
   screenshot,
+  // Using an app window (mutating: it presses the app's buttons)
+  ui,
   // Planning (read-only, and offered only while planning — see `planOnly`)
   exitPlan,
   // Action (mutating)

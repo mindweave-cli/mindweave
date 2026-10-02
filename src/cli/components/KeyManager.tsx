@@ -28,6 +28,7 @@ import {
   type ProviderRow,
 } from "../keyManager.js";
 import { MiniTabPanel as Panel, MiniTabRow as Row, miniTabPosition as position, miniTabWindowStart as windowStart, MINITAB_WINDOW as WINDOW } from "./minitabs.js";
+import { ACCENT, GOOD, WARN } from "../theme.js";
 
 export { windowStart };
 
@@ -196,7 +197,7 @@ export function KeyManager({
         hint="Enter to save · Esc to go back"
       >
         <Box flexShrink={0}>
-          <Text bold color="cyan">{"  key "}</Text>
+          <Text bold color={ACCENT}>{"  key "}</Text>
           <TextInput
             value={value}
             // Mouse reports arrive at a focused field as TYPED TEXT once wheel reporting
@@ -232,7 +233,7 @@ export function KeyManager({
         ))}
         {shown ? (
           <Box flexShrink={0} marginTop={1}>
-            <Text color="yellow" wrap="truncate-end">{`  ${shown}`}</Text>
+            <Text color={WARN} wrap="truncate-end">{`  ${shown}`}</Text>
           </Box>
         ) : null}
       </Panel>
@@ -260,7 +261,7 @@ export function KeyManager({
             left={`key ${r.slot}`}
             mid={r.hint}
             right={r.active ? "● active" : ""}
-            rightColor={r.active ? "green" : undefined}
+            rightColor={r.active ? GOOD : undefined}
             width={width}
           />
         ))}
@@ -287,7 +288,7 @@ export function KeyManager({
           numWidth={String(providers.length).length}
           left={p.label}
           right={countLabel(p.count)}
-          rightColor={p.count > 0 ? "green" : undefined}
+          rightColor={p.count > 0 ? GOOD : undefined}
           width={width}
         />
       ))}

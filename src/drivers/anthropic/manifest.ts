@@ -16,10 +16,13 @@
  *
  * Some models add a rule of their own on top of that. Both Fables and Opus 5.5
  * cannot be asked NOT to think — an explicit no-thinking request is rejected at any
- * effort — and Opus 5 accepts one only at effort `high` or below. Those are wire
- * facts, not preferences, so `SURFACES` below is the single place they are written
- * down: `normalize` reads it to keep a saved config legal, and `client.ts` reads the
- * same rows to decide what to put on the wire. One table, so the two cannot drift apart.
+ * effort — and Opus 5 accepts one only at effort `high` or below. Sonnet 5.5 rejects
+ * `disabled` too, but has its own off switch, `between_tools`, which skips the up-front
+ * thinking, is accepted at effort `high` or below, and keeps the progress updates.
+ * Those are wire facts, not preferences, so `SURFACES` below is the single place they
+ * are written down: `normalize` reads it to keep a saved config legal, and `client.ts`
+ * reads the same rows to decide what to put on the wire. One table, so the two cannot
+ * drift apart.
  */
 import type { DriverManifest, Effort, ModelChoice, ModelConfig, ModelId, ModelPrice, ThinkLevel } from "../types.js";
 
@@ -28,11 +31,12 @@ export const FABLE = "claude-fable-5";
 export const OPUS_55 = "claude-opus-5-5";
 export const OPUS = "claude-opus-5";
 export const OPUS_48 = "claude-opus-4-8";
+export const SONNET_55 = "claude-sonnet-5-5";
 export const SONNET = "claude-sonnet-5";
 export const HAIKU = "claude-haiku-4-5";
 
 /** The model used when nothing is saved and no env override is set. */
-export const DEFAULT_MODEL = SONNET;
+export const DEFAULT_MODEL = SONNET_55;
 
 /**
  * The models offered by `/model`. First entry is this provider's default, which is
@@ -43,7 +47,8 @@ export const DEFAULT_MODEL = SONNET;
  * distinction is the kind of work each one earns its rate on.
  */
 export const MODELS: ModelChoice[] = [
-  { id: SONNET, label: "Claude Sonnet 5", description: "fast, strong at code — the default" },
+  { id: SONNET_55, label: "Claude Sonnet 5.5", description: "fast, strong at code — the default" },
+  { id: SONNET, label: "Claude Sonnet 5", description: "the previous Sonnet, at the same rate" },
   { id: OPUS_55, label: "Claude Opus 5.5", description: "long-running agentic work, and cheaper than Opus 5" },
   { id: OPUS, label: "Claude Opus 5", description: "the previous Opus — deep reasoning for complex work" },
   { id: OPUS_48, label: "Claude Opus 4.8", description: "an older Opus — proven and steady" },
@@ -80,6 +85,12 @@ export interface ModelSurface {
    * See `applyReasoning` in client.ts.
    */
   progressUpdates: boolean;
+  /**
+   * How "thinking off" is written on the wire for a model that CAN skip up-front thinking.
+   * `disabled` for everything that accepts it; `between_tools` for Sonnet 5.5, where
+   * `disabled` is a 400 and `between_tools` is the lowest setting. Absent means `disabled`.
+   */
+  thinkingOff?: "disabled" | "between_tools";
 }
 
 const CURRENT = {
@@ -105,6 +116,14 @@ const SURFACES: Record<string, ModelSurface> = {
   // Always thinking, like the Fables: `{type:"disabled"}` is a 400 on this model
   // (platform.claude.com, "What's new in Claude Opus 5.5", checked 2026-09-23).
   [OPUS_55]: { ...CURRENT, canDisableThinking: false, progressUpdates: true },
+  // Thinking is on by default and `{type:"disabled"}` is a 400. The off switch is
+  // `{type:"between_tools"}`: no up-front thinking, accepted at effort `high` or below
+  // (at `xhigh`/`max` it is a 400), and it takes no other field. The progress updates
+  // between tool calls still come back with their text under it, with no beta header.
+  // Forced tool use is a 400 here too, and so is any non-default temperature/top_p/top_k;
+  // this driver sends neither (platform.claude.com, "What's new in Claude Sonnet 5.5",
+  // checked 2026-10-01).
+  [SONNET_55]: { ...CURRENT, maxDisabledEffort: "high", progressUpdates: true, thinkingOff: "between_tools" },
   // Thinking may be turned off, but only at effort `high` or below.
   [OPUS]: { ...CURRENT, maxDisabledEffort: "high" },
   [OPUS_48]: { ...CURRENT },
@@ -199,6 +218,9 @@ const PRICES: Record<string, ModelPrice> = {
   [OPUS]: { cacheHit: 0.5, cacheMiss: 5, output: 25, cacheWrite: 5 * CACHE_WRITE_MULTIPLIER },
   [OPUS_48]: { cacheHit: 0.5, cacheMiss: 5, output: 25, cacheWrite: 5 * CACHE_WRITE_MULTIPLIER },
   [SONNET]: { cacheHit: 0.2, cacheMiss: 2, output: 10, cacheWrite: 2 * CACHE_WRITE_MULTIPLIER },
+  // Same prices as Sonnet 5, cache read included (platform.claude.com/docs/en/about-claude/pricing,
+  // checked 2026-10-01).
+  [SONNET_55]: { cacheHit: 0.2, cacheMiss: 2, output: 10, cacheWrite: 2 * CACHE_WRITE_MULTIPLIER },
   [HAIKU]: { cacheHit: 0.1, cacheMiss: 1, output: 5, cacheWrite: 1 * CACHE_WRITE_MULTIPLIER },
 };
 

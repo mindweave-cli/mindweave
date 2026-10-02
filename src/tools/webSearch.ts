@@ -78,12 +78,21 @@ const webSearchTool: Tool = {
         return {
           output: `No results for "${query}". Try different wording, or a narrower query.`,
           summary: `searched "${query}" (nothing found)`,
+          web: { kind: "search", query, engine: driver.label, ms: elapsedMs, sources: [] },
         };
       }
       return {
         output: formatSearch(query, result),
         summary: `searched "${query}" (${result.sources.length} source${result.sources.length === 1 ? "" : "s"})`,
         detail: formatSearchDetail(result, driver.label, elapsedMs),
+        web: {
+          kind: "search",
+          query,
+          engine: driver.label,
+          ms: elapsedMs,
+          sources: result.sources.slice(0, MAX_DISPLAY_SOURCES).map((s) => ({ title: s.title, url: s.url })),
+          ...(result.partial ? { partial: true } : {}),
+        },
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -91,6 +100,10 @@ const webSearchTool: Tool = {
     }
   },
 };
+
+/** Pages a front end may list under a search. More than the model is shown, because a
+ *  list the user opens on purpose can afford it; still bounded. */
+const MAX_DISPLAY_SOURCES = 20;
 
 /**
  * Render a result for the model. Pure, so the shape is testable without a

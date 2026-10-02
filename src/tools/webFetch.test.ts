@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { fetchDetail, formatBytes, pageTitle } from "./webFetch.js";
+import { fetchDetail, formatBytes, pageTitle, fetchWeb } from "./webFetch.js";
 
 test("fetchDetail leads with the URL and status", () => {
   const d = fetchDetail("https://docs.deepseek.com/api/endpoints", 200, []);
@@ -40,4 +40,31 @@ test("the page's own title is pulled out, collapsed and capped", () => {
 test("a page with no title contributes no Title line at all", () => {
   // Better an absent line than "Title: " with nothing after it.
   assert.equal(pageTitle("<html><body>no head here</body></html>"), "");
+});
+
+test("a fetch hands a front end the page it read: where, its title, its size, what it was read for", async () => {
+  const page = "<html><head><title>API Documentation</title></head><body><p>Grids by game id.</p></body></html>";
+  const saved = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(page, {
+      status: 200,
+      headers: { "content-type": "text/html" },
+    })) as typeof fetch;
+  try {
+    const result = await fetchWeb(
+      { url: "https://www.steamgriddb.com/api/v2", prompt: "how to fetch grids" },
+      { cwd: process.cwd(), roots: [process.cwd()], reads: new Map(), todos: [], planMode: false } as never,
+    );
+    assert.deepEqual(result.web, {
+      kind: "fetch",
+      url: "https://www.steamgriddb.com/api/v2",
+      finalUrl: "https://www.steamgriddb.com/api/v2",
+      status: 200,
+      bytes: Buffer.byteLength(page, "utf8"),
+      title: "API Documentation",
+      focus: "how to fetch grids",
+    });
+  } finally {
+    globalThis.fetch = saved;
+  }
 });

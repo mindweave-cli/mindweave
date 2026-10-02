@@ -16,7 +16,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Responses } from "openai/resources/responses/responses";
 import { buildBody, emit, renderInput, toStop, toTurn, toUsage } from "./client.js";
-import { LUNA, MODELS, SOL, TERRA, normalize, thinkLevels } from "./manifest.js";
+import { ASTRA, LUNA, MODELS, SOL, SOL_61, TERRA, canSkipReasoning, normalize, price, thinkLevels } from "./manifest.js";
 import type { Effort, ModelRequest, StreamEvent } from "../types.js";
 
 const base: ModelRequest = { system: "SYSTEM", messages: [] };
@@ -199,14 +199,47 @@ test("no tools means no tool_choice (a plain-text answer is forced)", () => {
 });
 
 test("reasoning is ONE dial: `none` is the off switch, the rung is sent as itself", () => {
-  for (const model of ALL) {
+  for (const model of ALL.filter(canSkipReasoning)) {
     assert.deepEqual(buildBody({ ...base, model: { model, thinking: false, effort: "high" } }, 1000).reasoning, {
       effort: "none",
     });
+  }
+  for (const model of ALL) {
     assert.deepEqual(buildBody({ ...base, model: { model, thinking: true, effort: "max" } }, 1000).reasoning, {
       effort: "max",
     });
   }
+});
+
+test("Astra and GPT-6.1 Sol are never sent `none`: OpenAI does not accept it for them", () => {
+  // developers.openai.com lists their efforts as low..max and the reasoning guide says
+  // `none` is unsupported, so "Standard" used to be a setting that ended in a refused request.
+  assert.equal(canSkipReasoning(ASTRA), false);
+  assert.equal(canSkipReasoning(SOL_61), false);
+  for (const model of [ASTRA, SOL_61]) {
+    // Even a stray no-thinking config reaches the wire as the lightest rung, not `none`.
+    assert.deepEqual(buildBody({ ...base, model: { model, thinking: false, effort: "high" } }, 1000).reasoning, {
+      effort: "low",
+    });
+    // Its ladder has no "answer directly" rung, and every rung is a thinking one.
+    const levels = thinkLevels(model);
+    assert.ok(levels.every((l) => l.thinking), `${model} still offers a no-reasoning rung`);
+    assert.deepEqual(levels.map((l) => l.effort), ["low", "medium", "high", "max"]);
+    // A config carried over from a model that CAN skip reasoning lands on the lightest rung,
+    // not on the effort it was carrying (which would quietly spend more).
+    assert.deepEqual(normalize({ model, thinking: false, effort: "high" }), { model, thinking: true, effort: "low" });
+  }
+  // Every other model keeps the off switch.
+  for (const model of ALL.filter((m) => m !== ASTRA && m !== SOL_61)) {
+    assert.equal(canSkipReasoning(model), true, `${model} lost its off switch`);
+    assert.equal(thinkLevels(model)[0]!.thinking, false);
+  }
+});
+
+test("GPT-6.1 Sol is offered, priced at GPT-6 Sol's rate with half its cache-read price", () => {
+  assert.ok(MODELS.some((m) => m.id === "gpt-6.1-sol" && m.label === "GPT-6.1 Sol"));
+  assert.deepEqual(price(SOL_61), { cacheHit: 0.1, cacheMiss: 2, output: 10 });
+  assert.equal(normalize({ model: SOL_61, thinking: true, effort: "high" }).model, SOL_61, "it was coerced away");
 });
 
 test("turns are never stored on the vendor's servers", () => {

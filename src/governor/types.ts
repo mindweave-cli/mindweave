@@ -93,6 +93,12 @@ export interface Governance {
   skills: SkillMeta[];
   forbidden: ForbiddenConfig;
   /**
+   * Kinds of action (tool names) Sentinel mode does not ask about, set by the user as a
+   * standing decision, for this project or for every project. The saved sibling of
+   * `ToolContext.guardAllowed`, which only lasts the session.
+   */
+  sentinelAllow?: string[];
+  /**
    * One-shot, user-facing lines from a governance DECISION rather than a tool
    * result — today just "a forbidden pattern was lifted for this session."
    * Pushed by approval.ts, drained by the UI the same way MCP's manager drains
@@ -108,4 +114,11 @@ export interface Governance {
    * user had just allowed. Re-applied after every reload.
    */
   lifted?: string[];
+  /**
+   * The user's own auto-compaction bar, in tokens — replaces the model-derived default
+   * from dynamo/contextWindow.ts when set. Project wins over the universal value, same
+   * override rule as rules and skills. Undefined means "no override": the model default
+   * applies, same as before this existed.
+   */
+  contextAutoCompactTokens?: number;
 }

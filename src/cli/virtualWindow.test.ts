@@ -9,7 +9,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { OVERSCAN_BLOCKS, virtualWindow } from "./virtualWindow.js";
+import { OVERSCAN_BLOCKS, SCROLLBACK_BLOCKS, virtualWindow } from "./virtualWindow.js";
 
 /** Sum of the heights actually rendered, plus both spacers. */
 function total(heights: number[], w: ReturnType<typeof virtualWindow>): number {
@@ -111,4 +111,23 @@ test("degenerate inputs do not produce a blank or inconsistent frame", () => {
   const neg = virtualWindow([3, 3, 3], -50, 5);
   assert.equal(neg.start, 0);
   assert.equal(total([3, 3, 3], neg), 9);
+});
+
+test("a long session keeps its beginning reachable, and the window stays cheap", () => {
+  // The cap used to be 150 blocks, so a long project lost its own start: scrolling up ended at
+  // block N-150 and nothing older could be reached.
+  assert.ok(SCROLLBACK_BLOCKS >= 5000, `cap is ${SCROLLBACK_BLOCKS}: a long session would lose its start again`);
+  const heights = Array.from({ length: 5000 }, (_, i) => 1 + (i % 7));
+  const all = heights.reduce((a, b) => a + b, 0);
+  // Scrolled all the way up: the window must include block 0.
+  const top = virtualWindow(heights, 0, 40);
+  assert.equal(top.start, 0, "the first block is in the window at the top of the transcript");
+  assert.equal(top.padTop, 0);
+  // And at the bottom the window is the end, with every earlier block as padding.
+  const bottom = virtualWindow(heights, all - 40, 40);
+  assert.equal(bottom.end, heights.length);
+  assert.equal(bottom.padTop + (bottom.padBottom), all - heights.slice(bottom.start, bottom.end).reduce((a, b) => a + b, 0));
+  const t0 = performance.now();
+  for (let i = 0; i < 100; i++) virtualWindow(heights, (i * 97) % (all - 40), 40);
+  assert.ok((performance.now() - t0) / 100 < 5, "a frame's window maths at 5,000 blocks stays well under a few ms");
 });

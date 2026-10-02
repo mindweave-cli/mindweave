@@ -33,6 +33,7 @@ import { metaManifest } from "./meta/manifest.js";
 import { minimaxManifest } from "./minimax/manifest.js";
 import { tencentManifest } from "./tencent/manifest.js";
 import { openrouterManifest } from "./openrouter/manifest.js";
+import { ollamaManifest } from "./ollama/manifest.js";
 
 /** Every provider's cheap metadata, in display order. Always loaded. */
 const MANIFESTS: DriverManifest[] = [
@@ -51,6 +52,7 @@ const MANIFESTS: DriverManifest[] = [
   minimaxManifest,
   tencentManifest,
   openrouterManifest,
+  ollamaManifest,
 ];
 
 /** How to load each provider's wire code, on demand. Keyed by manifest id. */
@@ -70,6 +72,7 @@ const LOADERS: Record<string, () => Promise<Driver>> = {
   minimax: async () => (await import("./minimax/index.js")).minimaxDriver,
   tencent: async () => (await import("./tencent/index.js")).tencentDriver,
   openrouter: async () => (await import("./openrouter/index.js")).openrouterDriver,
+  ollama: async () => (await import("./ollama/index.js")).ollamaDriver,
 };
 
 /** The provider used when a model id doesn't match any other. */
@@ -214,6 +217,9 @@ export async function refreshModels(options: { maxAgeMs?: number } = {}): Promis
     // A list younger than the caller's tolerance is left alone. A router's catalogue is
     // a large download, and asking for it on every picker open costs a visible pause
     // for a list that changes weekly.
+    // A local runtime is asked every time: it answers in milliseconds, and its list changes the
+    // moment a model is pulled.
+    if (m.local) return true;
     const at = refreshedAt.get(m.id);
     return maxAge <= 0 || at === undefined || now - at >= maxAge;
   });
@@ -262,6 +268,11 @@ export function seedDiscovered(id: string, models: ModelChoice[], fetchedAt: num
 /** Ids of every provider that discovers its models. */
 export function discoveredProviderIds(): string[] {
   return MANIFESTS.filter((m) => m.discoverModels).map((m) => m.id);
+}
+
+/** Ids of the providers that run on this machine (a local model server), whose answer is quick and changes at any moment. */
+export function localProviderIds(): string[] {
+  return MANIFESTS.filter((m) => m.discoverModels && m.local).map((m) => m.id);
 }
 
 /** Drop every discovered list. For tests, and for a full provider reset. */
