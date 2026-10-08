@@ -15,6 +15,8 @@ import { createDropHandles } from "./dropHandles.js";
 // Before Ink loads: chalk fixes its colour support at import time from the real
 // process.stdout, not the stream it is handed.
 process.env.FORCE_COLOR = process.env.FORCE_COLOR ?? "3";
+// Chalk takes FORCE_COLOR as a minimum: a 256-colour TERM (most Linux shells) still downgrades hex colours unless this says otherwise.
+process.env.COLORTERM = "truecolor";
 const { render } = await import("ink");
 const { PromptInput } = await import("./components/PromptInput.js");
 

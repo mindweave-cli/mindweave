@@ -17,6 +17,7 @@
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { killTree, killTreeSync, spawnManaged } from "../../tools/killTree.js";
+import { childEnv } from "../../tools/childEnv.js";
 import { DEFAULT_REQUEST_TIMEOUT_MS, RpcError, type Notification, type Transport } from "./types.js";
 
 /** How much of the child's stderr to keep for diagnostics. */
@@ -121,7 +122,9 @@ export class StdioTransport implements Transport {
     });
 
     const args = [...(options.args ?? [])];
-    const env = { ...process.env, ...(options.env ?? {}) };
+    // The user's environment, not Mindweave's (no provider keys; see tools/childEnv.ts), plus
+    // what this server's own config sets.
+    const env = childEnv(options.env ?? {});
     // On Windows almost everything has to go through a shell to be found at all; see
     // `windowsNeedsShell`. POSIX spawns directly, where PATH lookup already works and a
     // shell would only add a quoting surface.

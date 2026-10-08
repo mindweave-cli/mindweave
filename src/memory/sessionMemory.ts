@@ -143,7 +143,12 @@ export function boundSessionMemory(notes: string, maxTokens: number = SESSION_ME
  * persists the notes file, keeping the engine filesystem-pure. Degrade-safe: on any
  * failure the previous notes are kept untouched.
  */
-export async function updateSessionMemory(session: Session, signal?: AbortSignal): Promise<boolean> {
+export async function updateSessionMemory(
+  session: Session,
+  signal?: AbortSignal,
+  /** Told what the call cost: it is a real model call on the user's key that nobody asked for. */
+  onUsage?: (usage: import("../drivers/types.js").Usage) => void,
+): Promise<boolean> {
   const recent = session.transcript.slice(-RECENT_ENTRIES);
   if (recent.length === 0) return false;
   const current = session.sessionMemory?.trim() || SESSION_MEMORY_TEMPLATE;
@@ -157,7 +162,7 @@ export async function updateSessionMemory(session: Session, signal?: AbortSignal
     //
     // `withTools`: a real (read-only) tool set, attached only if the model already
     // refused a bare call — some free models serve only tool-shaped requests.
-    const { content } = await withAuxModel(session.modelConfig, async (model, withTools) => {
+    const { content, usage } = await withAuxModel(session.modelConfig, async (model, withTools) => {
       await ensureDriver(model.model);
       return activeDriver().toolTurn({
         system: UPDATE_SYSTEM,
@@ -173,6 +178,7 @@ export async function updateSessionMemory(session: Session, signal?: AbortSignal
         ...(withTools ? { tools: toolSchemas({ readOnlyOnly: true }) } : {}),
       }, { signal }); // Esc reaches this call too; a slow model must not hold a stop open
     });
+    if (usage) onUsage?.(usage);
     const notes = content.trim();
     if (!notes) return false;
     session.sessionMemory = boundSessionMemory(notes);

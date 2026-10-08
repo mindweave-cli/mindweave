@@ -29,6 +29,27 @@ export function baseUrl(env: NodeJS.ProcessEnv = process.env): string {
 }
 
 /**
+ * An address as a person types it into the app: `host`, `host:port` or a full http(s) URL. Returns
+ * the server's root URL the way `baseUrl` would hold it, or null when it is not an address. Ollama's
+ * port is added to a bare http host, as it is for `OLLAMA_HOST`. An address with a user name or a
+ * password in it is refused: the address is kept in a plain file and shown on screen.
+ */
+export function parseAddress(input: string): string | null {
+  const raw = input.trim();
+  if (!raw) return null;
+  const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `http://${raw}`;
+  try {
+    const url = new URL(withScheme);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    if (!url.hostname || url.username || url.password) return null;
+    if (!url.port && url.protocol === "http:" && !/:\d+(\/|$)/.test(raw)) url.port = "11434";
+    return `${url.protocol}//${url.host}${url.pathname.replace(/\/+$/, "")}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * The variable that says the server answered with at least one usable model.
  *
  * Every provider is "connected" when its key variable is set, and every part of Mindweave that

@@ -3,20 +3,19 @@
 Written down rather than quietly carried. Several are good places to start if you want to
 contribute, and each says what it would actually take.
 
-## Windows only for now
+## macOS has not been run
 
-Mindweave is developed and tested on Windows, and that is the platform it currently
-supports. The test suite does not yet pass on macOS or Linux: it hangs partway through
-rather than failing outright, which points at process handling that has only ever been
-exercised on Windows. CI runs Windows alone until that is fixed, so a green run means
-something.
+Mindweave is developed on Windows. The whole test suite also passes on Linux, and the
+process handling that used to hang there has been fixed. macOS shares the Linux code paths
+and has fixes of its own (folder names that differ only in case are one folder there), but
+nothing has been run on a real Mac. Continuous testing still runs on Windows alone, so a
+green run says nothing about the other two yet.
 
 The desktop app, [mwcode](https://github.com/mindweave-cli/mwcode), ships for macOS and
-Linux too, with Mindweave and its own Node inside, so that is the way to use it there for
-now.
+Linux too, with Mindweave and its own Node inside.
 
-Making a platform work is the single most useful thing an outside contributor can take
-on, and it is genuinely open. See [CONTRIBUTING.md](CONTRIBUTING.md).
+Adding Linux and macOS jobs to continuous testing, and running the suite on a real Mac, is
+the most useful thing an outside contributor can take on. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## The out-of-memory crash is contained, not cured
 

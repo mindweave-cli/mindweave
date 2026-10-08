@@ -13,7 +13,7 @@ import type { Tool, ToolContext, ToolResult } from "./types.js";
 import { relativize, resolvePath } from "./paths.js";
 import { allChassis, chassisForPath, mergedDefinition, mergedReferences } from "./chassisMux.js";
 import { walkFiles } from "./walk.js";
-import { excludedFromSearch } from "./guard.js";
+import { excludedFromSearch, guardedPathReason } from "./guard.js";
 import { isSupported } from "../alternator/chassis/treesitter.js";
 import { isMarkupSupported } from "../alternator/chassis/markup.js";
 import type { Confidence, DirectorySummary, OutlineEntry } from "../alternator/chassis/types.js";
@@ -63,6 +63,8 @@ const outlineDef: Tool = {
     if (allChassis(ctx).length === 0) return degraded();
     const rawPath = typeof args.path === "string" && args.path.trim() ? args.path.trim() : ".";
     const abs = resolvePath(ctx, rawPath);
+    const blocked = await guardedPathReason(abs);
+    if (blocked) return fail(`Refusing to outline ${rawPath}: it is ${blocked}.`);
     let stat;
     try {
       stat = await fs.stat(abs);

@@ -7,9 +7,10 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { collectProjectContext, renderProjectContext } from "./context.js";
 
 function fixture(): string {
@@ -93,4 +94,62 @@ test("missing directory degrades to environment-only, never throws", async () =>
   assert.equal(pc.signals.kinds.length, 0);
   // Rendering still yields the environment block.
   assert.ok(renderProjectContext(pc).includes("<environment>"));
+});
+
+// ── git: the repository's own config must not be able to run a program ─────────
+
+function hasGit(): boolean {
+  try {
+    execFileSync("git", ["--version"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** A repository with one commit and one modified file, so `status` has work to do. */
+function gitRepo(): { root: string; git: (...args: string[]) => void } {
+  const root = mkdtempSync(join(tmpdir(), "mindweave-ctx-git-"));
+  const git = (...args: string[]) =>
+    execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args], { cwd: root, stdio: "ignore" });
+  git("init", "-q");
+  writeFileSync(join(root, "a.txt"), "one\n");
+  git("add", "a.txt");
+  git("commit", "-q", "-m", "first");
+  writeFileSync(join(root, "a.txt"), "two\n");
+  return { root, git };
+}
+
+/** A shell command that leaves a file behind if git ever runs it. */
+function markerCommand(root: string): { command: string; marker: string } {
+  const marker = `${root}-ran`;
+  return { command: `echo ran > "${marker.split(sep).join("/")}"`, marker };
+}
+
+test("git snapshot: branch, status and recent commits are captured", { skip: !hasGit() }, async () => {
+  const { root } = gitRepo();
+  const pc = await collectProjectContext(root);
+  assert.ok(pc.git, "a repository is detected");
+  assert.match(pc.git.status, /M a\.txt/);
+  assert.match(pc.git.recentCommits, /first/);
+});
+
+test("git snapshot: core.fsmonitor in the repository's config does not run", { skip: !hasGit() }, async () => {
+  const { root, git } = gitRepo();
+  const { command, marker } = markerCommand(root);
+  git("config", "core.fsmonitor", command);
+  const pc = await collectProjectContext(root);
+  assert.equal(existsSync(marker), false, "the repository's fsmonitor program ran");
+  assert.match(pc.git?.status ?? "", /M a\.txt/, "status is still read");
+});
+
+test("git snapshot: a content filter in the repository's config does not run", { skip: !hasGit() }, async () => {
+  const { root, git } = gitRepo();
+  const { command, marker } = markerCommand(root);
+  writeFileSync(join(root, ".gitattributes"), "*.txt filter=probe\n");
+  git("config", "filter.probe.clean", command);
+  const pc = await collectProjectContext(root);
+  assert.equal(existsSync(marker), false, "the repository's filter program ran");
+  assert.match(pc.git?.status ?? "", /content filters/, "status is left out and says why");
+  assert.match(pc.git?.recentCommits ?? "", /first/, "the rest of the snapshot is kept");
 });

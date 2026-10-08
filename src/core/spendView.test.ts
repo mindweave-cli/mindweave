@@ -135,3 +135,21 @@ test("only .meta.json files are read, and a corrupt one doesn't take down the to
   assert.equal(view.sessionsScanned, 1);
   assert.equal(view.totalBilled, 15);
 });
+
+test("calls nobody asked for (notes, summary, fetch) are counted in the total and reported on their own", async () => {
+  const dir = freshStateDir();
+  const now = Date.now();
+  await writeMeta(dir, "proj-aux", "s1", {
+    cwd: "/proj-aux",
+    entryCount: 4,
+    updatedAt: now,
+    callLog: [
+      { at: now, prompt: 1000, hit: 0, miss: 1000, out: 100, model: "glm-5.3" },
+      { at: now, prompt: 6000, hit: 0, miss: 6000, out: 400, model: "glm-5.3", aux: "notes" },
+      { at: now, prompt: 2000, hit: 0, miss: 2000, out: 200, model: "glm-5.3", aux: "fetch" },
+    ],
+  });
+  const view = await spendView();
+  assert.equal(view.totalBilled, 1100 + 6400 + 2200, "background work is part of what was billed");
+  assert.deepEqual(view.background, { billed: 6400 + 2200, calls: 2 });
+});

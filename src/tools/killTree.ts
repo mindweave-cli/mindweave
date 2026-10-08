@@ -29,6 +29,7 @@
  */
 import { spawn, spawnSync, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { childEnv } from "./childEnv.js";
 
 const IS_WINDOWS = process.platform === "win32";
 
@@ -60,6 +61,8 @@ function killArgs(pid: number): string[] {
 export function spawnManaged(command: string, args: readonly string[], options: SpawnOptions = {}): ChildProcess {
   return spawn(command, args as string[], {
     ...options,
+    // Without an explicit environment a child gets the user's, not Mindweave's (see childEnv.ts).
+    env: options.env ?? childEnv(),
     windowsHide: options.windowsHide ?? true,
     // POSIX: lead our own process group so the whole tree can be signalled at once.
     // Windows has no process groups in this sense; taskkill /T walks the tree instead.

@@ -26,7 +26,8 @@ async function project(): Promise<{ dir: string; ctx: ToolContext }> {
   const governance = await loadGovernance(dir);
   return {
     dir,
-    ctx: { cwd: dir, roots: [dir], reads: new Map(), todos: [], governance } as unknown as ToolContext,
+    // Changing a rule, a skill or a protection asks the user; here they agree.
+    ctx: { cwd: dir, roots: [dir], reads: new Map(), todos: [], governance, requestApproval: async () => "Yes" } as unknown as ToolContext,
   };
 }
 

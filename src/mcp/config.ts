@@ -142,24 +142,6 @@ export function globalConfigPath(): string {
   return override ? join(override, "mcp.json") : join(homedir(), ".mindweave", "mcp.json");
 }
 
-/** Load configs from the global and project files (project wins by name). */
-export async function loadMcpConfig(cwd: string): Promise<McpServerConfig[]> {
-  const [global, project] = await Promise.all([readConfigFile(globalConfigPath()), readConfigFile(projectConfigPath(cwd))]);
-  const byName = new Map<string, McpServerConfig>();
-  for (const s of [...global, ...project]) byName.set(s.name, s);
-  return [...byName.values()];
-}
-
-async function readConfigFile(path: string): Promise<McpServerConfig[]> {
-  let raw: string;
-  try {
-    raw = await fs.readFile(path, "utf8");
-  } catch {
-    return []; // no file → no servers, quietly
-  }
-  return parseMcpConfig(raw);
-}
-
 /**
  * Pure parse of an mcp.json body into validated configs.
  *

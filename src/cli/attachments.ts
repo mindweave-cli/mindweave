@@ -33,9 +33,22 @@
 import { promises as fs } from "node:fs";
 import { basename, isAbsolute, relative, resolve } from "node:path";
 import { describeImage, isImage, isRejection, type ImageRef } from "../memory/images.js";
+import { guardedPathReason } from "../tools/guard.js";
 
 // Same ceiling as read_file's whole-file read — keep one consistent "too big" line.
 const MAX_BYTES = 256 * 1024;
+
+/**
+ * What one message may attach, in tokens. Each file was capped at 256 KB but the total
+ * was not: twelve files of 250 KB made ONE message of about 878K tokens, more than any
+ * window, and that message then rode in every later request, leaving the session unable
+ * to continue until it was rewound. A file over the per-file cap, or one that would take
+ * the message past its total, is attached by reference: its name, size and how to read a
+ * range of it.
+ */
+export const ATTACH_FILE_TOKENS = 40_000;
+export const ATTACH_TOTAL_TOKENS_DEFAULT = 60_000;
+const attachTokens = (bytes: number) => Math.ceil(bytes / 3.5);
 
 // `@token` at a word boundary: `@` after start-or-whitespace, then a path-ish run.
 const MENTION_RE = /(^|\s)@([^\s@]+)/g;
@@ -121,7 +134,10 @@ export async function resolveAttachments(
   cwd: string,
   canSeeImages = false,
   labelFor?: (absPath: string) => string | undefined,
+  /** The most this message may attach, in tokens (a share of the model's window). */
+  totalTokens: number = ATTACH_TOTAL_TOKENS_DEFAULT,
 ): Promise<ResolvedAttachments> {
+  let spent = 0;
   const candidates = findCandidates(text);
   const seen = new Set<string>();
   const blocks: string[] = [];
@@ -148,6 +164,17 @@ export async function resolveAttachments(
     seen.add(abs);
 
     const shown = displayPath(cwd, abs);
+
+    // Paths turn up in messages by accident all the time: an error pasted for help says
+    // "cannot read C:\...\.env", an ssh failure names the key file. Attaching every one of
+    // them sent .env and private keys to the provider. A protected file is never attached;
+    // the note says so, and the model is told why it has nothing.
+    const blocked = await guardedPathReason(abs);
+    if (blocked) {
+      notes.push(`not attached: ${shown} (${blocked})`);
+      blocks.push(`[The message names ${shown}, which is ${blocked}; it was not attached.]`);
+      continue;
+    }
 
     // Images take the vision path when the running model has eyes, and degrade to a
     // named-but-unseen note when it doesn't. Either way the file name reaches the
@@ -192,6 +219,18 @@ export async function resolveAttachments(
 
     const content = buf.toString("utf8");
     const lineCount = content.split("\n").length;
+    const tokens = attachTokens(buf.length);
+    if (tokens > ATTACH_FILE_TOKENS || spent + tokens > totalTokens) {
+      const limit = tokens > ATTACH_FILE_TOKENS ? ATTACH_FILE_TOKENS : Math.max(0, totalTokens - spent);
+      notes.push(`skipped ${shown} (~${tokens} tokens, over this message's attachment budget; the model can read a range)`);
+      blocks.push(
+        `<attached_file path="${shown}">\n[Not included: ${lineCount} lines, ~${tokens} tokens, more than the ${limit} this message can carry. ` +
+          `Use read_file on ${shown} with an offset and limit to read the part you need.]\n</attached_file>`,
+      );
+      if (c.kind === "path") collapses.push({ start: c.start, end: c.end, label: labelFor?.(abs) ?? basename(abs), modelLabel: basename(abs) });
+      continue;
+    }
+    spent += tokens;
     blocks.push(`<attached_file path="${shown}">\n${content}\n</attached_file>`);
     notes.push(`attached ${shown} (+${lineCount} lines)`);
     // A dropped/quoted path is long and ugly in the chat — collapse it to the file

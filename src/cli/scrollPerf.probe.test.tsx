@@ -146,7 +146,12 @@ async function scrollMs(blockCount: number, opts: { maxFps: number; virtual: boo
     const seen = stdout.writes;
     const t0 = performance.now();
     setScroll(next);
-    while (stdout.writes === seen) await new Promise((r) => setTimeout(r, 0));
+    // A step that lands on a frame identical to the last one writes nothing (Ink skips an unchanged frame),
+    // and waiting for a write that is never coming hung this probe for ever on Linux. Give each step a
+    // deadline; a step with no frame is not a latency sample.
+    const deadline = t0 + 1000;
+    while (stdout.writes === seen && performance.now() < deadline) await new Promise((r) => setTimeout(r, 0));
+    if (stdout.writes === seen) continue;
     samples.push(performance.now() - t0);
   }
   instance.unmount();

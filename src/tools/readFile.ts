@@ -12,7 +12,7 @@
  */
 import { promises as fs } from "node:fs";
 import type { Tool, ToolContext, ToolResult } from "./types.js";
-import { foreignAgentReason, protectedPathReason } from "./guard.js";
+import { foreignAgentReason, guardedPathReason } from "./guard.js";
 import { requestAgentDataAccess } from "./approval.js";
 import { relativize, resolvePath, nextTouch, touch, markScope } from "./paths.js";
 import { addFocus, coversSpan } from "./focus.js";
@@ -231,7 +231,7 @@ async function readOne(
   if (!trimmed) return bad("empty path.");
 
   const filePath = resolvePath(ctx, trimmed);
-  const blocked = protectedPathReason(filePath);
+  const blocked = await guardedPathReason(filePath);
   if (blocked) return bad(`Refusing to read ${trimmed}: it is ${blocked}.`);
   const otherTool = foreignAgentReason(filePath);
   if (otherTool) {

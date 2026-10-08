@@ -14,10 +14,11 @@
 import { promises as fs } from "node:fs";
 import type { Tool, ToolContext, ToolResult } from "./types.js";
 import { relativize, resolvePath, nextTouch, markScope } from "./paths.js";
-import { addFocus, coversSpan } from "./focus.js";
+import { addFocus } from "./focus.js";
 import { allChassis, symbolSpans } from "./chassisMux.js";
 import { sliceBody } from "./spanCore.js";
 import { fail, failQuietly } from "./results.js";
+import { guardedPathReason } from "./guard.js";
 
 // Even a single symbol can be huge (a 900-line class). Cap what we return so one
 // read_symbol can't flood the context; the model can read_file a range for more.
@@ -94,6 +95,8 @@ export const readSymbolTool: Tool = {
 
     const span = spans[0]!;
     const abs = resolvePath(ctx, span.file);
+    const blocked = await guardedPathReason(abs);
+    if (blocked) return fail(`Refusing to read ${relativize(ctx, span.file)}: it is ${blocked}.`);
     let content: string;
     let stat;
     try {
@@ -125,31 +128,6 @@ export const readSymbolTool: Tool = {
       touchedAt: nextTouch(),
       focus: addFocus(prior?.focus, { start: span.start, end: span.end }),
     });
-
-    // DEDUP, the same contract read_file has had and this tool never did. Once a file
-    // is in the working set, its content is rebuilt into the volatile tail on EVERY
-    // turn — so re-sending a symbol body the model is already looking at pays for the
-    // same lines twice, every time. Measured across terminal coding agents,
-    // repeated reads are ~42% of avoidable token spend, and this was our version of it:
-    // a session re-read the same four functions over and over while all four sat in
-    // <working_files>.
-    //
-    // Checked against what the working set actually PUT ON SCREEN this turn, not
-    // against the read ledger. The ledger records what was read once; it does not
-    // prove the text is still visible, and a sub-agent or a headless run has no
-    // working set at all — so trusting it would tell the model "you already have
-    // this" about content it cannot see. A wasted read is cheap; a phantom one makes
-    // the model work from text it never received. Also requires the file to be
-    // UNCHANGED: after an edit the new body has to come back.
-    const alreadyShown = unchanged && coversSpan(ctx.workingSetSpans?.get(abs), span.start, span.end);
-    if (alreadyShown) {
-      return {
-        output:
-          `${span.kind} ${span.name} — ${shown}:${span.start}-${span.end} is already in your ` +
-          `<working_files> block, unchanged. Read it there rather than calling this again.`,
-        summary: `${span.name} (already in context)`,
-      };
-    }
 
     return {
       output: `${span.kind} ${span.name} — ${shown}:${span.start}-${span.end}\n${body}${truncated}${caveat}`,

@@ -199,3 +199,23 @@ test("a resumed chat does not show the image source line the model was given", (
   const stored = "look at shot.png\n\n[Image source: C:\Users\me\Pictures\shot.png]";
   assert.equal(stripAttachments(stored), "look at shot.png");
 });
+
+test("a secrets file named in a message is never attached, however it is named", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "mw-att-secret-"));
+  try {
+    await fs.writeFile(join(dir, ".env"), "API_KEY=hunter2-FAKE-attach\n");
+    await fs.mkdir(join(dir, ".ssh"));
+    await fs.writeFile(join(dir, ".ssh", "id_rsa"), "FAKE-PRIVATE-KEY-attach\n");
+    for (const message of [
+      `my build says: Error: cannot read ${join(dir, ".env")} (line 3), why?`,
+      `ssh failed: Load key "${join(dir, ".ssh", "id_rsa")}": invalid format`,
+      "look at @.env please",
+    ]) {
+      const r = await resolveAttachments(message, dir);
+      assert.ok(!r.modelText.includes("hunter2-FAKE-attach") && !r.modelText.includes("FAKE-PRIVATE-KEY-attach"), message);
+      assert.ok(r.notes.some((n) => n.startsWith("not attached")), "the user is told");
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

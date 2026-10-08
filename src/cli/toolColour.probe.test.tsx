@@ -20,6 +20,8 @@ import { EventEmitter } from "node:events";
 // worth stating: a probe that reads styling and forgets this measures a blank string and
 // passes whatever it asserts about "no colour".
 process.env.FORCE_COLOR = "3";
+// Chalk takes FORCE_COLOR as a minimum: a 256-colour TERM (most Linux shells) still downgrades hex colours unless this says otherwise.
+process.env.COLORTERM = "truecolor";
 const { render } = await import("ink");
 const { ToolLine } = await import("./components/ToolLine.js");
 

@@ -111,40 +111,40 @@ const github = (repo: string, version: string, targets: Record<string, GithubTar
 // rust-analyzer ships prebuilt binaries: .zip on Windows (contains the .exe),
 // single-file .gz on macOS/Linux (decompresses straight to the binary).
 const RUST_ANALYZER = github("rust-lang/rust-analyzer", "2026-06-22", {
-  "win32-x64": { asset: "rust-analyzer-x86_64-pc-windows-msvc.zip", bin: "rust-analyzer.exe" },
-  "win32-arm64": { asset: "rust-analyzer-aarch64-pc-windows-msvc.zip", bin: "rust-analyzer.exe" },
-  "darwin-x64": { asset: "rust-analyzer-x86_64-apple-darwin.gz", bin: "rust-analyzer" },
-  "darwin-arm64": { asset: "rust-analyzer-aarch64-apple-darwin.gz", bin: "rust-analyzer" },
-  "linux-x64": { asset: "rust-analyzer-x86_64-unknown-linux-gnu.gz", bin: "rust-analyzer" },
-  "linux-arm64": { asset: "rust-analyzer-aarch64-unknown-linux-gnu.gz", bin: "rust-analyzer" },
+  "win32-x64": { asset: "rust-analyzer-x86_64-pc-windows-msvc.zip", sha256: "6071dc5b28aa6d22c715f63c08d75b827c066be4ea866796587e52ed48b2922f", bin: "rust-analyzer.exe" },
+  "win32-arm64": { asset: "rust-analyzer-aarch64-pc-windows-msvc.zip", sha256: "30f873713ea3663db10999c23e95b74fe19968c893d5c0e9b8a896b31dbf8cf8", bin: "rust-analyzer.exe" },
+  "darwin-x64": { asset: "rust-analyzer-x86_64-apple-darwin.gz", sha256: "bf65b0d4586f127ab11bf33476dd6aac82dad173946c5d3b1cede19d63ae85ed", bin: "rust-analyzer" },
+  "darwin-arm64": { asset: "rust-analyzer-aarch64-apple-darwin.gz", sha256: "c8cdf6d5e488752b907d5ee15e31768b59a78d992e9a54b9f9660e1bfdf39f27", bin: "rust-analyzer" },
+  "linux-x64": { asset: "rust-analyzer-x86_64-unknown-linux-gnu.gz", sha256: "feb7c170d2c1a2e4b8a88ac73f937eddb576828e3821b0a63ee0e64bd0bc9440", bin: "rust-analyzer" },
+  "linux-arm64": { asset: "rust-analyzer-aarch64-unknown-linux-gnu.gz", sha256: "9602ca5b24dcaa07a5a021274763bed367d8a32da9a226fe3e139de3306569cb", bin: "rust-analyzer" },
 });
 
 // clangd: per-OS .zip; the binary is at clangd_<version>/bin/clangd. The mac build
 // is a universal binary (used for both arches); clangd has no arm64-linux build.
 const CLANGD = github("clangd/clangd", "22.1.0", {
-  "win32-x64": { asset: "clangd-windows-{version}.zip", bin: "clangd_{version}/bin/clangd.exe" },
-  "darwin-x64": { asset: "clangd-mac-{version}.zip", bin: "clangd_{version}/bin/clangd" },
-  "darwin-arm64": { asset: "clangd-mac-{version}.zip", bin: "clangd_{version}/bin/clangd" },
-  "linux-x64": { asset: "clangd-linux-{version}.zip", bin: "clangd_{version}/bin/clangd" },
+  "win32-x64": { asset: "clangd-windows-{version}.zip", sha256: "e31e271fe11f6dcd7cf87ca74be4a12788ff8ce5a0b07762583e335c058e939a", bin: "clangd_{version}/bin/clangd.exe" },
+  "darwin-x64": { asset: "clangd-mac-{version}.zip", sha256: "71eddc5303da9a5bc5e8b509488b5b2c5acf45f20e33b8394e71a12a56d67198", bin: "clangd_{version}/bin/clangd" },
+  "darwin-arm64": { asset: "clangd-mac-{version}.zip", sha256: "71eddc5303da9a5bc5e8b509488b5b2c5acf45f20e33b8394e71a12a56d67198", bin: "clangd_{version}/bin/clangd" },
+  "linux-x64": { asset: "clangd-linux-{version}.zip", sha256: "c54e57dbff3ccc9e8352367ddb7030ad3f624073ec58c7477424e7919f578572", bin: "clangd_{version}/bin/clangd" },
 });
 
 // zls: .zip on Windows, .tar.xz on Unix (system tar extracts xz); binary at root.
 const ZLS = github("zigtools/zls", "0.16.0", {
-  "win32-x64": { asset: "zls-x86_64-windows.zip", bin: "zls.exe" },
-  "win32-arm64": { asset: "zls-aarch64-windows.zip", bin: "zls.exe" },
-  "darwin-x64": { asset: "zls-x86_64-macos.tar.xz", bin: "zls" },
-  "darwin-arm64": { asset: "zls-aarch64-macos.tar.xz", bin: "zls" },
-  "linux-x64": { asset: "zls-x86_64-linux.tar.xz", bin: "zls" },
-  "linux-arm64": { asset: "zls-aarch64-linux.tar.xz", bin: "zls" },
+  "win32-x64": { asset: "zls-x86_64-windows.zip", sha256: "35cbb7163224e8cf92d21099c1b1391f2aba927f25d389f021b13a21d40b96dd", bin: "zls.exe" },
+  "win32-arm64": { asset: "zls-aarch64-windows.zip", sha256: "ef4c5ccb93c80c9f023105c5f558ae8774ac6668d560ba6f92a2f87d95df2311", bin: "zls.exe" },
+  "darwin-x64": { asset: "zls-x86_64-macos.tar.xz", sha256: "49f716ea96c1aadaecaa5d9c0a50874cbcf443dc42b825f1e7ee35499ad3eb96", bin: "zls" },
+  "darwin-arm64": { asset: "zls-aarch64-macos.tar.xz", sha256: "b93ec549f8558a7e85984a840e9276d274f1059b54ade4254296ef4982958359", bin: "zls" },
+  "linux-x64": { asset: "zls-x86_64-linux.tar.xz", sha256: "ded6d562a0b86ee878b1ddf70ffab2797ce3cdca3b02d6077548f9d56dff96b6", bin: "zls" },
+  "linux-arm64": { asset: "zls-aarch64-linux.tar.xz", sha256: "430cd293d201eb70ae2519dbc96c854bf8791b8df7fc9392e8d2dc9680a2bed7", bin: "zls" },
 });
 
 // lua-language-server: .zip on Windows, .tar.gz on Unix; binary at bin/.
 const LUA_LS = github("LuaLS/lua-language-server", "3.18.2", {
-  "win32-x64": { asset: "lua-language-server-{version}-win32-x64.zip", bin: "bin/lua-language-server.exe" },
-  "darwin-x64": { asset: "lua-language-server-{version}-darwin-x64.tar.gz", bin: "bin/lua-language-server" },
-  "darwin-arm64": { asset: "lua-language-server-{version}-darwin-arm64.tar.gz", bin: "bin/lua-language-server" },
-  "linux-x64": { asset: "lua-language-server-{version}-linux-x64.tar.gz", bin: "bin/lua-language-server" },
-  "linux-arm64": { asset: "lua-language-server-{version}-linux-arm64.tar.gz", bin: "bin/lua-language-server" },
+  "win32-x64": { asset: "lua-language-server-{version}-win32-x64.zip", sha256: "a4439a8f5e8e9e6505c11f045a7bf45db602124a1e246371c1dbe34924f3cf71", bin: "bin/lua-language-server.exe" },
+  "darwin-x64": { asset: "lua-language-server-{version}-darwin-x64.tar.gz", sha256: "e26cfefe423dd7326fc7c649539e4d4aaa4f35f34d2fefd8af2ed7090b72c556", bin: "bin/lua-language-server" },
+  "darwin-arm64": { asset: "lua-language-server-{version}-darwin-arm64.tar.gz", sha256: "cec99d70b1f612acec4a10a79a03664e3aa0c229d4d8a586cb3f928ec37d509e", bin: "bin/lua-language-server" },
+  "linux-x64": { asset: "lua-language-server-{version}-linux-x64.tar.gz", sha256: "ca71415dd19f19e30aaa35a4915aefca9fdb5fec31b98331cc3d77f778d539c5", bin: "bin/lua-language-server" },
+  "linux-arm64": { asset: "lua-language-server-{version}-linux-arm64.tar.gz", sha256: "273af33f26f4a1143f27c96d9f9e1188aba619c71e0807042134f66b4bd27f24", bin: "bin/lua-language-server" },
 });
 
 const REGISTRY: Entry[] = [
@@ -222,6 +222,18 @@ export function specForLanguage(langId: string): ServerSpec | null {
 export function serverFor(absPath: string): ServerSpec | null {
   const lang = languageIdFor(absPath);
   return lang ? specForLanguage(lang) : null;
+}
+
+/**
+ * Install server `key` now that the user has approved it, and let the next query use it.
+ * Returns whether it is available afterwards.
+ */
+export async function installApproved(key: string, log?: (m: string) => void): Promise<boolean> {
+  const entry = REGISTRY.find((e) => e.key === key);
+  if (!entry?.install) return false;
+  const cmd = await ensureInstalled(entry.key, entry.install, log);
+  if (cmd) specCache.delete(entry.key);
+  return cmd !== null;
 }
 
 /**

@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 import { editedPaths, rippleTargets, formatRippleNote, MAX_DEPENDENTS } from "./editRipple.js";
 import type { CodeDiagnostic } from "../alternator/chassis/types.js";
 import type { ToolContext } from "./types.js";
+import { sep } from "node:path";
 
 const diag = (file: string, line: number, severity: "error" | "warning", message: string): CodeDiagnostic =>
   ({ file, line, column: 1, severity, message, source: "ts" }) as CodeDiagnostic;
@@ -113,4 +114,26 @@ test("errors are reported before warnings", () => {
   const errAt = note.indexOf("not assignable");
   const warnAt = note.indexOf("unused import");
   assert.ok(errAt < warnAt, "one type error must not be buried under lint warnings");
+});
+
+test("caller warnings and schema-loading noise are not reported; the edited file's are, under either slash", () => {
+  // The edited path in the platform's own separators; the diagnostic always uses "/".
+  const edited = (process.platform === "win32" ? "C:/p/src/a.ts" : "/p/src/a.ts").split("/").join(sep);
+  const editedShown = process.platform === "win32" ? "C:/p/src/a.ts" : "/p/src/a.ts";
+  const d = (file: string, severity: "error" | "warning", message: string) => ({ file, line: 1, column: 1, severity, message }) as never;
+  const note = formatRippleNote(
+    [
+      d(editedShown, "warning", "unused variable"),
+      d("/p/tauri.conf.json", "warning", "Unable to load schema from 'desktop-schema.json': ENOENT"),
+      d("/p/other.json", "warning", "Property windows is not allowed"),
+      d("/p/src/b.ts", "error", "Expected 1 arguments, but got 0"),
+    ],
+    new Set([edited]),
+    (p) => p,
+  );
+  assert.match(note, /unused variable/, "a warning in the edited file is kept");
+  assert.ok(!/unused variable \(caller\)|:1 \(caller\) warning: unused/.test(note), "the edited file is not called a caller");
+  assert.match(note, /b\.ts:1 \(caller\) error/);
+  assert.ok(!/schema|windows is not allowed/.test(note), "noise was reported");
+  assert.equal(formatRippleNote([d("/p/x.json", "warning", "Property windows is not allowed")], new Set([edited]), (p) => p), "");
 });

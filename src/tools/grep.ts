@@ -20,7 +20,7 @@ import type { Tool, ToolContext, ToolResult } from "./types.js";
 import { isMultiRoot, nextTouch, relativize, resolvePath, rootLabel, rootsOf, searchUnits, type SearchUnit, markScope } from "./paths.js";
 import { addFocus } from "./focus.js";
 import { DEFAULT_IGNORES, globToRegExp, walkFiles } from "./walk.js";
-import { SEARCH_EXCLUDE_GLOBS, excludedFromSearch } from "./guard.js";
+import { SEARCH_EXCLUDE_GLOBS, excludedFromSearch, guardedPathReason } from "./guard.js";
 import { ripgrepAvailable, runRipgrep } from "./ripgrep.js";
 import { fail, failQuietly } from "./results.js";
 
@@ -157,6 +157,13 @@ export const grepDef: Tool = {
         if (rawPath) return fail(`path not found: ${rawPath}`);
         continue; // a missing root in a multi-root sweep is skipped, not fatal
       }
+      // A walk leaves secrets out, but a target named outright was searched as given: a
+      // search pointed at .env returned its lines. The target itself goes through the
+      // same guard a read does, which also catches a folder that is a link to .ssh.
+      if (rawPath) {
+        const blocked = await guardedPathReason(target);
+        if (blocked) return fail(`Refusing to search ${rawPath}: it is ${blocked}.`);
+      }
       const o: GrepOpts = { pattern, mode, before, after, multiline, caseInsensitive, glob, ctx, unit, isFile: stat.isFile() };
       const got = haveRg ? await grepViaRipgrep(o) : await grepViaWalk(o);
       if (got.invalid) return failQuietly(got.invalid);
@@ -165,10 +172,10 @@ export const grepDef: Tool = {
 
     // Keep what the search found. Without this a grep is the one useful thing the model
     // can do that leaves NOTHING behind: its result lives only in the transcript, which
-    // keeps the last 8 tool results and sweeps to 2 at a task boundary, while a read is
-    // re-rendered from disk into <working_files> on every step, forever. The harness was
-    // teaching, mechanically, that reading sticks and searching does not — so the model
-    // read, narrowly and repeatedly, where one search would have answered it.
+    // keeps the last 8 tool results and sweeps to 2 at a task boundary, while a read leaves
+    // its file in the read ledger. Left alone, the harness teaches, mechanically, that
+    // reading sticks and searching does not, and the model reads, narrowly and repeatedly,
+    // where one search would have answered it.
     if (mode === "content" && lines.length > 0) await recordSearchHits(ctx, lines);
 
     return formatGrep(mode, pattern, lines, headLimit, offset);

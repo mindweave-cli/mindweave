@@ -349,8 +349,8 @@ test("SENTINEL: approving one kind of action does not authorise another", async 
   await respond(s);
   assert.deepEqual([...(s.toolContext.guardAllowed ?? [])], ["write_file"]);
 
-  // Second: a shell command. Must still be asked about.
-  nextToolCall = { id: "c2", type: "function", function: { name: "run_command", arguments: JSON.stringify({ command: "echo hi" }) } };
+  // Second: a shell command that is not read-only (an `echo` no longer asks). Must still be asked about.
+  nextToolCall = { id: "c2", type: "function", function: { name: "run_command", arguments: JSON.stringify({ command: "node -e 0" }) } };
   sendUnadvertised = true;
   await respond(s);
 
@@ -404,7 +404,7 @@ test("SENTINEL: an action the user saved as allowed is not asked about, and othe
   await respond(s);
   assert.equal(asked.length, 0, "a saved allowance was asked about anyway");
 
-  nextToolCall = { id: "c2", type: "function", function: { name: "run_command", arguments: JSON.stringify({ command: "echo hi" }) } };
+  nextToolCall = { id: "c2", type: "function", function: { name: "run_command", arguments: JSON.stringify({ command: "node -e 0" }) } };
   sendUnadvertised = true;
   await respond(s);
   assert.equal(asked.length, 1, "an action that was not saved went through without asking");
@@ -523,7 +523,7 @@ test("SENTINEL: a declined command still gets its row, announced with its result
       requestApproval: async () => undefined, // declined
     } as object,
   });
-  nextToolCall = { id: "g2", type: "function", function: { name: "run_command", arguments: JSON.stringify({ command: "echo no" }) } };
+  nextToolCall = { id: "g2", type: "function", function: { name: "run_command", arguments: JSON.stringify({ command: "node -e 0" }) } };
   sendUnadvertised = true;
   await respond(s, { onEvent: (e) => events.push(e as never) });
   const g2 = events.filter((e) => e.type === "tool" && e.id === "g2");

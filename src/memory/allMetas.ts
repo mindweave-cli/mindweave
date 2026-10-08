@@ -34,6 +34,8 @@ export interface CallRecord {
   hit: number;
   miss: number;
   out: number;
+  /** Set on a call nobody asked for ("notes", "summary", "fetch"): background work that was billed. */
+  aux?: string;
 }
 
 /**
@@ -46,7 +48,7 @@ export interface CallRecord {
  * ran long. A session saved before the log existed is a single lump where it was last touched.
  */
 export function callRecords(meta: SessionMeta): CallRecord[] {
-  const calls: CallRecord[] = (meta.callLog ?? []).map((c) => ({ at: c.at, model: c.model, hit: c.hit, miss: c.miss, out: c.out }));
+  const calls: CallRecord[] = (meta.callLog ?? []).map((c) => ({ at: c.at, model: c.model, hit: c.hit, miss: c.miss, out: c.out, ...(c.aux ? { aux: c.aux } : {}) }));
   if (calls.length === 0) {
     if (!meta.spend) return [];
     const out = meta.spend.output;

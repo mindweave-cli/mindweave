@@ -351,6 +351,8 @@ interface Entry extends ShellInfo {
   /** The file the child writes into, and a reader holding this session's place in it. */
   outputPath: string | null;
   reader: OutputReader | null;
+  /** The read of the last output, started when the process ends. Anything that reads the buffer after that waits for it. */
+  finalRead?: Promise<void>;
   /** How much of  has already been handed out by read(). */
   handed: number;
   /** Everything read so far, capped — kept because several callers want the LATEST output
@@ -700,7 +702,11 @@ export class BackgroundShells {
     if (entry.reader && entry.outputPath) {
       const reader = entry.reader;
       const path = entry.outputPath;
-      void (async () => {
+      // Kept on the entry: `settle`, `read` and `peek` read the same file through the same reader, and the
+      // reader remembers its place. A second reader that started while this one was still in flight got
+      // nothing back (the first had already moved the place on) and returned from the buffer before this
+      // one had put the text there, so a command that died at once looked as if it had printed nothing.
+      entry.finalRead = (async () => {
         const rest = await reader.next(MAX_BUFFER_CHARS);
         if (rest) {
           this.append(entry, rest);
@@ -778,6 +784,7 @@ export class BackgroundShells {
       const end = Date.now() + this.exitGraceMs + 500;
       while (entry.status === "running" && Date.now() < end) await new Promise((r) => setTimeout(r, 25));
     }
+    await entry.finalRead;
     const fresh = entry.reader ? await entry.reader.next(POLL_READ_BYTES) : "";
     if (fresh) this.append(entry, fresh);
     const output = stripNativeStderrNoise(entry.seen.slice(Math.max(0, entry.seen.length - TAIL_CHARS)));
@@ -804,6 +811,7 @@ export class BackgroundShells {
     // Read the file NOW rather than trusting the poll to have caught up. A read arriving
     // between ticks would otherwise miss whatever was written in the gap, which is exactly
     // the output somebody asked for.
+    await entry.finalRead;
     const fresh = entry.reader ? await entry.reader.next(POLL_READ_BYTES) : "";
     if (fresh) this.append(entry, fresh);
     let chunk = stripNativeStderrNoise(entry.seen.slice(entry.handed));
@@ -824,6 +832,7 @@ export class BackgroundShells {
   async peek(id: number, maxChars = 8_000): Promise<{ info: ShellInfo; tail: string; clipped: boolean } | null> {
     const entry = this.shells.get(id);
     if (!entry) return null;
+    await entry.finalRead;
     const fresh = entry.reader ? await entry.reader.next(POLL_READ_BYTES) : "";
     if (fresh) this.append(entry, fresh);
     const all = stripNativeStderrNoise(entry.seen);

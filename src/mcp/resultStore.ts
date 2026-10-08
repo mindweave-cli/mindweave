@@ -74,11 +74,26 @@ export function extensionForMime(mime: string): string {
     "audio/mpeg": "mp3",
     "audio/ogg": "ogg",
     "video/mp4": "mp4",
+    "video/webm": "webm",
+    "text/tab-separated-values": "tsv",
+    "text/yaml": "yaml",
+    "application/yaml": "yaml",
+    "application/x-yaml": "yaml",
+    "application/toml": "toml",
+    "application/x-ndjson": "ndjson",
+    "application/x-parquet": "parquet",
+    "application/vnd.apache.parquet": "parquet",
+    "application/gzip": "gz",
+    "application/x-tar": "tar",
+    "image/avif": "avif",
+    "image/bmp": "bmp",
+    "audio/flac": "flac",
   };
-  if (known[type]) return known[type]!;
-  const subtype = type.split("/")[1] ?? "";
-  const cleaned = subtype.replace(/^x[-.]/, "").replace(/\+.*$/, "").replace(/[^a-z0-9]/g, "");
-  return cleaned && cleaned.length <= 8 ? cleaned : "bin";
+  // Only types on this list keep an extension of their own. The type is the server's to
+  // choose, so deriving the extension from it let any MCP server save a .bat, .ps1, .hta,
+  // .lnk or .js in a known folder and have its path handed to the model, and a path in a
+  // reply is something the user can click open.
+  return known[type] ?? "bin";
 }
 
 /** A filesystem-safe fragment of a server or tool name (pure). */

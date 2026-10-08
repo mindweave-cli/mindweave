@@ -41,6 +41,7 @@ export function MarathonBox({ ui, width, cap }: { ui: MarathonUi; width: number;
   const height = marathonBoxHeight(ui, cap);
 
   const title = ui.phase === "armed" ? "armed" : ui.line || "starting";
+  const spend = ui.spend && ui.phase !== "armed" ? ` · ${ui.spend}` : "";
 
   let body: ReactElement;
   if (ui.phase === "armed") {
@@ -104,7 +105,7 @@ export function MarathonBox({ ui, width, cap }: { ui: MarathonUi; width: number;
     >
       <Text wrap="truncate-end">
         <Text bold>Marathon</Text>
-        <Text dimColor>{` · ${fit(title, inner - 11)}`}</Text>
+        <Text dimColor>{` · ${fit(title, Math.max(8, inner - 11 - spend.length))}${spend}`}</Text>
       </Text>
       {body}
     </Box>

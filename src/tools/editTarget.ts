@@ -10,8 +10,9 @@
  */
 import { promises as fs } from "node:fs";
 import type { ToolContext, ToolResult } from "./types.js";
-import { foreignAgentReason, protectedPathReason } from "./guard.js";
-import { forbiddenPathReason } from "../governor/forbidden.js";
+import { foreignAgentReason, guardedPathReason } from "./guard.js";
+import { forbiddenRealPathReason } from "../governor/forbidden.js";
+import { requestRunsLaterWrite } from "./runsLater.js";
 import { requestAgentDataAccess, requestForbiddenLift, requestOutsideWorkspaceWrite } from "./approval.js";
 import { resolvePath } from "./paths.js";
 import { detectEol } from "./eol.js";
@@ -41,15 +42,16 @@ export interface EditTarget {
 export type PrepareResult = EditTarget | { ok: false; error: ToolResult };
 
 /** Run the shared pre-edit checks for `rawPath`. `verb` names the action in
- *  messages (e.g. "editing"). */
+ *  messages (e.g. "editing"); `preview` is the change, shown if the user is asked. */
 export async function prepareEditTarget(
   ctx: ToolContext,
   rawPath: string,
   verb: string,
+  preview = "",
 ): Promise<PrepareResult> {
   const filePath = resolvePath(ctx, rawPath);
 
-  const blocked = protectedPathReason(filePath);
+  const blocked = await guardedPathReason(filePath);
   if (blocked) return { ok: false, error: fail(`Refusing to edit ${rawPath}: it is ${blocked}.`) };
 
   // Another tool's data. Writing to it is worse than reading it — we'd be editing
@@ -60,7 +62,7 @@ export async function prepareEditTarget(
     if (denied) return { ok: false, error: denied };
   }
 
-  const forbidden = forbiddenPathReason(ctx.governance?.forbidden, filePath, ctx.roots ?? []);
+  const forbidden = await forbiddenRealPathReason(ctx.governance?.forbidden, filePath, ctx.roots ?? []);
   if (forbidden) {
     const lift = await requestForbiddenLift(
       ctx,
@@ -75,6 +77,10 @@ export async function prepareEditTarget(
   // the agent should be writing there at all.
   const outside = await requestOutsideWorkspaceWrite(ctx, filePath, `${verb} ${rawPath}`);
   if (outside) return { ok: false, error: outside };
+
+  // A file that runs code later (an editor task, a hook, a workflow) asks first.
+  const later = await requestRunsLaterWrite(ctx, filePath, rawPath, preview);
+  if (later) return { ok: false, error: later };
 
   let stat;
   try {

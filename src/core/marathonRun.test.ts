@@ -58,7 +58,7 @@ test("a run streams the model's events, the task list and its own progress, then
 
   const marathon = events.filter((e): e is Extract<TurnEvent, { type: "marathon" }> => e.type === "marathon");
   assert.deepEqual(
-    marathon.map((m) => m.event.type),
+    marathon.filter((m) => m.event.type !== "spend").map((m) => m.event.type),
     ["started", "turn", "planned", "turn", "verifying", "verified", "finished"],
   );
   assert.ok(marathon.every((m) => m.text.length > 0), "every progress event carries its one-line wording");

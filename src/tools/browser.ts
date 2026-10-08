@@ -12,6 +12,7 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { request } from "node:http";
 import { CdpConnection } from "./cdp.js";
+import { childEnv } from "./childEnv.js";
 import { existsSync, readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -96,7 +97,7 @@ export async function launchBrowser(width = 1280, height = 800): Promise<Browser
       "--hide-scrollbars",
       "about:blank",
     ],
-    { stdio: "ignore", windowsHide: true },
+    { stdio: "ignore", windowsHide: true, env: childEnv() },
   );
   running.add(child);
   hookExit();

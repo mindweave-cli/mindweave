@@ -28,6 +28,7 @@ import { release } from "node:os";
 import { join, basename } from "node:path";
 import { DEFAULT_IGNORES } from "../tools/walk.js";
 import { commandShellLabel } from "../tools/runCommand.js";
+import { childEnv } from "../tools/childEnv.js";
 
 // ── budgets (tunable, model-agnostic) ────────────────────────────────────────
 const TREE_MAX_DEPTH = envInt("MINDWEAVE_CONTEXT_TREE_DEPTH", 3);
@@ -129,10 +130,15 @@ async function collectGit(cwd: string): Promise<GitSnapshot | null> {
   const inside = (await runGit(["rev-parse", "--is-inside-work-tree"], cwd))?.trim();
   if (inside !== "true") return null;
 
+  // `status` runs the repository's content filters, and a filter is a program named in
+  // the repository's own config, which arrives with any folder that is copied together
+  // with its .git directory. Filters cannot be switched off from the command line, so
+  // when the repository defines one, status is left out of the snapshot.
+  const filters = await repoDefinesFilters(cwd);
   const [branchRaw, statusRaw, logRaw] = await Promise.all([
     runGit(["rev-parse", "--abbrev-ref", "HEAD"], cwd),
-    runGit(["--no-optional-locks", "status", "--short"], cwd),
-    runGit(["--no-optional-locks", "log", "--oneline", "-n", String(GIT_LOG_COUNT)], cwd),
+    filters ? Promise.resolve(null) : runGit(["status", "--short", "--ignore-submodules=all"], cwd),
+    runGit(["log", "--oneline", "--no-show-signature", "-n", String(GIT_LOG_COUNT)], cwd),
   ]);
 
   const branch = branchRaw?.trim() || "(detached)";
@@ -142,9 +148,29 @@ async function collectGit(cwd: string): Promise<GitSnapshot | null> {
   }
   return {
     branch,
-    status: status || "(clean)",
+    status: filters ? FILTERED_STATUS : status || "(clean)",
     recentCommits: (logRaw ?? "").trim(),
   };
+}
+
+const FILTERED_STATUS =
+  "(not read: this repository's own config defines content filters, which git would run; run `git status` yourself if you trust it)";
+
+/**
+ * True when the repository's own config (or a file it includes) defines a content
+ * filter. Filters from the user's global or system config are the user's own and do not
+ * count, so Git LFS installed globally keeps working. Reading config runs no programs.
+ * An old git without --show-scope cannot tell the scopes apart, and counts as true.
+ */
+async function repoDefinesFilters(cwd: string): Promise<boolean> {
+  const out = await runGit(
+    ["config", "--show-scope", "--includes", "--get-regexp", "^filter\\..*\\.(clean|smudge|process)$"],
+    cwd,
+    GIT_TIMEOUT_MS,
+    [0, 1], // 1 means no matching key
+  );
+  if (out === null) return true;
+  return out.split("\n").some((line) => /^(local|worktree)\s/.test(line));
 }
 
 /** Manifest → the labels and metadata it implies. */
@@ -417,12 +443,42 @@ export async function projectContextText(cwd: string): Promise<string> {
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
-/** Run a git command, time-boxed; resolves to stdout on success, null otherwise. */
-function runGit(args: string[], cwd: string, timeoutMs = GIT_TIMEOUT_MS): Promise<string | null> {
+/**
+ * Settings that make git start a program, switched off for every command this module
+ * runs. A setting given with -c outranks the repository's own config, so a folder that
+ * arrives with a hostile .git/config cannot run anything when a session opens. Filters
+ * cannot be switched off this way; see repoDefinesFilters.
+ */
+const SAFE_GIT_ARGS = [
+  "--no-pager",
+  "--no-optional-locks",
+  "-c", "core.fsmonitor=false",
+  "-c", "core.hooksPath=" + (process.platform === "win32" ? "NUL" : "/dev/null"),
+  "-c", "core.sshCommand=",
+  "-c", "log.showSignature=false",
+  "-c", "protocol.ext.allow=never",
+];
+
+const SAFE_GIT_ENV = {
+  GIT_NO_LAZY_FETCH: "1",
+  GIT_TERMINAL_PROMPT: "0",
+  GIT_OPTIONAL_LOCKS: "0",
+  GIT_PAGER: "cat",
+};
+
+/**
+ * Run a git command, time-boxed; resolves to stdout when the exit code is one of `okCodes`,
+ * null otherwise.
+ */
+function runGit(args: string[], cwd: string, timeoutMs = GIT_TIMEOUT_MS, okCodes: number[] = [0]): Promise<string | null> {
   return new Promise((resolve) => {
     let child;
     try {
-      child = spawn("git", args, { cwd, windowsHide: true });
+      child = spawn("git", [...SAFE_GIT_ARGS, ...args], {
+        cwd,
+        windowsHide: true,
+        env: childEnv(SAFE_GIT_ENV),
+      });
     } catch {
       resolve(null);
       return;
@@ -447,7 +503,7 @@ function runGit(args: string[], cwd: string, timeoutMs = GIT_TIMEOUT_MS): Promis
       if (out.length < 64_000) out += c.toString("utf8");
     });
     child.on("error", () => finish(null));
-    child.on("close", (code) => finish(code === 0 ? out : null));
+    child.on("close", (code) => finish(code !== null && okCodes.includes(code) ? out : null));
   });
 }
 

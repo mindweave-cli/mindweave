@@ -205,6 +205,9 @@ export async function saveSession(session: Session): Promise<boolean> {
       ...(session.toolContext.activatedTools && session.toolContext.activatedTools.size > 0
         ? { activatedTools: [...session.toolContext.activatedTools] }
         : {}),
+      ...(session.counters && session.counters.toolCalls > 0 ? { counters: session.counters } : {}),
+      // The task list, so a resumed session still has it.
+      ...((session.toolContext.todos?.length ?? 0) > 0 ? { todos: session.toolContext.todos } : {}),
       // Only once a Marathon has actually been started on this session.
       ...(session.marathon ? { marathon: session.marathon } : {}),
     };

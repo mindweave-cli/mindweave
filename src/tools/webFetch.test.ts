@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { fetchDetail, formatBytes, pageTitle, fetchWeb } from "./webFetch.js";
+import { fetchDetail, formatBytes, pageTitle, fetchWeb, webTransport } from "./webFetch.js";
 
 test("fetchDetail leads with the URL and status", () => {
   const d = fetchDetail("https://docs.deepseek.com/api/endpoints", 200, []);
@@ -44,12 +44,12 @@ test("a page with no title contributes no Title line at all", () => {
 
 test("a fetch hands a front end the page it read: where, its title, its size, what it was read for", async () => {
   const page = "<html><head><title>API Documentation</title></head><body><p>Grids by game id.</p></body></html>";
-  const saved = globalThis.fetch;
-  globalThis.fetch = (async () =>
+  const saved = webTransport.fetch;
+  webTransport.fetch = async () =>
     new Response(page, {
       status: 200,
       headers: { "content-type": "text/html" },
-    })) as typeof fetch;
+    });
   try {
     const result = await fetchWeb(
       { url: "https://www.steamgriddb.com/api/v2", prompt: "how to fetch grids" },
@@ -65,6 +65,6 @@ test("a fetch hands a front end the page it read: where, its title, its size, wh
       focus: "how to fetch grids",
     });
   } finally {
-    globalThis.fetch = saved;
+    webTransport.fetch = saved;
   }
 });

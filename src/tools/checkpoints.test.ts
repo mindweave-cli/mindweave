@@ -9,9 +9,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative, sep } from "node:path";
 import { Checkpoints, parseUndoArg, undoAction, undoNotice, type UndoResult } from "./checkpoints.js";
 
 function tmp(): string {
@@ -336,4 +337,77 @@ test("a resumed session knows its history was dropped, not that nothing happened
   resumed.noteResumed();
   assert.equal(resumed.wasResumed(), true);
   assert.equal(resumed.hasUndo(), false, "resuming carries no undo history");
+});
+
+// ── a saved history is untrusted input ───────────────────────────────────────
+// /undo writes what the history file says. These hand-write that file the way anything
+// able to write the state folder could, and check /undo does not do what it asks.
+
+const sha = (text: string) => createHash("sha256").update(text).digest("hex").slice(0, 40);
+
+async function forgedHistory(files: [string, string | null, string | null][], blobs: Record<string, string>): Promise<string> {
+  const dir = tmp();
+  await fs.mkdir(join(dir, "blobs"));
+  for (const [name, text] of Object.entries(blobs)) await fs.writeFile(join(dir, "blobs", name), text);
+  const stack = [{ label: "x", at: Date.now(), skipped: [], ranShell: false, attempts: 0, files }];
+  await fs.writeFile(join(dir, "stack.json"), JSON.stringify({ version: 1, stack }));
+  return dir;
+}
+
+test("a restored history cannot write outside the folder the session was opened in", async () => {
+  const project = tmp();
+  const elsewhere = tmp();
+  const target = join(elsewhere, "planted.bat");
+  const body = "echo planted";
+  const cp = new Checkpoints();
+  await cp.restoreFrom(await forgedHistory([[target, sha(body), null]], { [sha(body)]: body }), project);
+  await cp.undo();
+  assert.equal(existsSync(target), false, "a file was written outside the project");
+});
+
+test("a blob name cannot point at another file, and a blob must match its name", async () => {
+  const project = tmp();
+  const secretDir = tmp();
+  const secret = join(secretDir, "id_rsa");
+  await fs.writeFile(secret, "FAKE-PRIVATE-KEY");
+  const dest = join(project, "copied.txt");
+  const history = await forgedHistory([[dest, "PLACEHOLDER", null]], {});
+  // Point the blob at the secret by a relative name, as an attacker would.
+  const json = (await fs.readFile(join(history, "stack.json"), "utf8")).replace(
+    "PLACEHOLDER",
+    relative(join(history, "blobs"), secret).split(sep).join("/"),
+  );
+  await fs.writeFile(join(history, "stack.json"), json);
+  const cp = new Checkpoints();
+  await cp.restoreFrom(history, project);
+  await cp.undo();
+  assert.equal(existsSync(dest), false, "a file outside the history was copied into the project");
+
+  // A correctly named blob whose content was swapped is refused too.
+  const tampered = await forgedHistory([[dest, sha("original"), null]], { [sha("original")]: "swapped" });
+  const cp2 = new Checkpoints();
+  assert.equal(await cp2.restoreFrom(tampered, project), 1);
+  await cp2.undo();
+  assert.equal(existsSync(dest), false);
+});
+
+test("a protected file inside the project is not restored", async () => {
+  const project = tmp();
+  const env = join(project, ".env");
+  const body = "API_KEY=attacker";
+  const cp = new Checkpoints();
+  await cp.restoreFrom(await forgedHistory([[env, sha(body), null]], { [sha(body)]: body }), project);
+  await cp.undo();
+  assert.equal(existsSync(env), false);
+});
+
+test("a genuine history inside the project still restores", async () => {
+  const project = tmp();
+  const f = join(project, "a.txt");
+  await fs.writeFile(f, "edited");
+  const cp = new Checkpoints();
+  await cp.restoreFrom(await forgedHistory([[f, sha("original"), sha("edited")]], { [sha("original")]: "original", [sha("edited")]: "edited" }), project);
+  const r = await cp.undo();
+  assert.deepEqual(r?.restored, [f]);
+  assert.equal(await fs.readFile(f, "utf8"), "original");
 });

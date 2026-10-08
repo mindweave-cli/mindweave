@@ -15,7 +15,8 @@
  * per-root chassis landed, and it described the tool as weaker than it is.
  */
 import { promises as fs } from "node:fs";
-import { basename, isAbsolute, resolve } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { Tool, ToolContext, ToolResult } from "./types.js";
 import { canonicalRoot, rootLabel, rootsOf } from "./paths.js";
 import { discoverRelatedRoots } from "./workspaceDiscover.js";
@@ -40,9 +41,10 @@ export const workspaceTool: Tool = {
   description:
     "Widen this session's workspace so you can read, search and edit across more than " +
     "one folder: a separate backend, a frontend, a shared library.\n" +
-    "With a `path` it adds THAT folder. Use it when the user asks to include a " +
-    "directory, or when you NOTICE the task reaching into a folder that is not in the " +
-    "workspace yet — in that case set `proactive: true`, which asks the user first.\n" +
+    "With a `path` it adds THAT folder, after the user confirms. Use it when the user asks " +
+    "to include a directory, or when you NOTICE the task reaching into a folder that is not " +
+    "in the workspace yet (then set `proactive: true`, so the question says why). A home " +
+    "folder, a drive root or a system folder is never added this way.\n" +
     "With NO `path` it DISCOVERS the rest of the project — monorepo members, sibling " +
     "repos, a backend beside a frontend — and offers the whole set. Use it when the task " +
     "clearly spans the project. It finds folders by their project files, not by " +
@@ -65,7 +67,7 @@ export const workspaceTool: Tool = {
         type: "boolean",
         description:
           "Adding a known path only: set true when YOU spotted the need (not an explicit user " +
-          "request); the user is asked to confirm first. Discovery always asks regardless.",
+          "request), so the question tells the user why. Every add asks either way.",
       },
     },
   },
@@ -84,28 +86,39 @@ async function addOne(
 ): Promise<ToolResult> {
     const abs = isAbsolute(raw) ? resolve(raw) : resolve(ctx.cwd, raw);
 
-    // Proactive adds (the model noticed) ask first; explicit requests just add.
-    if (args.proactive === true) {
-      if (!(await isDir(abs))) return fail(`directory not found: ${abs}`);
-      // With no way to ask, a proactive add must NOT happen. The old guard folded the
-      // missing channel into the condition, so exactly the case that needed consent
-      // silently proceeded without it — and that is the case a sub-agent is in.
-      if (!ctx.requestApproval) {
-        return {
-          output:
-            `Did not add '${basename(abs)}' to the workspace: widening it needs the user's ` +
-            `agreement and there is no way to ask from here. Work within the current roots, ` +
-            `and if you genuinely need that folder, say so in your result.`,
-          summary: "cannot ask to widen workspace",
-        };
-      }
-      const choice = await ctx.requestApproval(
-        `This work also reaches into '${basename(abs)}' (${abs}), which isn't in the workspace. Include it?`,
-        ["Yes, include it", "No, stay in the current folder"],
-      );
-      if (!choice.startsWith("Yes")) {
-        return { output: `Left '${basename(abs)}' out of the workspace at the user's request.`, summary: "kept workspace as-is" };
-      }
+    // Every add the MODEL makes asks first. Whether a request was "explicit" is the
+    // model's own claim, and leaving `proactive` out was enough to widen the workspace
+    // to any folder (the home folder included) with no question, after which writes
+    // there no longer counted as outside the workspace. The user's own /include does
+    // not come through here.
+    if (!(await isDir(abs))) return fail(`directory not found: ${abs}`);
+    const broad = tooBroadReason(abs);
+    if (broad) {
+      return {
+        output:
+          `Did not add '${abs}' to the workspace: it is ${broad}, and adding it would make ` +
+          `everything under it count as the project. Work within the current roots; if the user ` +
+          `really wants this folder, they can add it themselves with /include.`,
+        summary: "refused: folder too broad",
+      };
+    }
+    // With no way to ask, the add must NOT happen. That is the case a sub-agent is in.
+    if (!ctx.requestApproval) {
+      return {
+        output:
+          `Did not add '${basename(abs)}' to the workspace: widening it needs the user's ` +
+          `agreement and there is no way to ask from here. Work within the current roots, ` +
+          `and if you genuinely need that folder, say so in your result.`,
+        summary: "cannot ask to widen workspace",
+      };
+    }
+    const why = args.proactive === true ? "This work also reaches into" : "Add to the workspace:";
+    const choice = await ctx.requestApproval(
+      `${why} '${basename(abs)}' (${abs}), which isn't in the workspace. Include it?`,
+      ["Yes, include it", "No, stay in the current folder"],
+    );
+    if (!choice.startsWith("Yes")) {
+      return { output: `Left '${basename(abs)}' out of the workspace at the user's request.`, summary: "kept workspace as-is" };
     }
 
     const result = await addRoot(ctx, abs);
@@ -117,6 +130,54 @@ async function addOne(
       output: `Added '${abs}' to the workspace as '${result.label}'. You can now read/search/edit it; refer to its files as '${result.label}/…'.`,
       summary: `added root '${result.label}'`,
     };
+}
+
+/**
+ * Why `abs` is too broad for the model to add, or null (pure but for the environment).
+ *
+ * The workspace is the boundary the "write outside the workspace?" question guards.
+ * These folders would switch it off for everything that matters: the whole home folder
+ * (and anything above it, or a drive root), the folders programs start from and keep
+ * their settings in, keys, Mindweave's own state, and the operating system.
+ */
+export function tooBroadReason(abs: string): string | null {
+  const win = process.platform === "win32";
+  const norm = (p: string) => {
+    const r = resolve(p);
+    return win ? r.toLowerCase() : r;
+  };
+  const target = norm(abs);
+  const isOrUnder = (dir: string) => {
+    const d = norm(dir);
+    const rel = relative(d, target);
+    return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+  };
+  if (dirname(target) === target) return "the root of a drive";
+  const home = homedir();
+  const homeRel = relative(target, norm(home));
+  if (homeRel === "" || (!homeRel.startsWith("..") && !isAbsolute(homeRel))) {
+    return "your home folder or a folder that contains it";
+  }
+  // The temporary folder sits inside AppData on Windows and under /var on macOS, and a
+  // folder made there is ordinary scratch space.
+  if (isOrUnder(tmpdir()) && norm(tmpdir()) !== target) return null;
+  const env = process.env;
+  const sensitive = [
+    join(home, ".ssh"),
+    join(home, ".gnupg"),
+    join(home, ".aws"),
+    join(home, ".config"),
+    join(home, ".local"),
+    join(home, ".mindweave"),
+    join(home, "Library"),
+    ...(win ? [env.APPDATA, env.LOCALAPPDATA, join(home, "AppData")] : []),
+  ].filter((d): d is string => !!d);
+  if (sensitive.some(isOrUnder)) return "a folder where keys, settings or startup programs live";
+  const system = win
+    ? [env.SystemRoot, env.ProgramFiles, env["ProgramFiles(x86)"], env.ProgramData].filter((d): d is string => !!d)
+    : ["/etc", "/usr", "/bin", "/sbin", "/boot", "/System", "/Library", "/private/etc", "/var"];
+  if (system.some(isOrUnder)) return "a system folder";
+  return null;
 }
 
 // "The user is asked to confirm" was unconditionally true in the old text and

@@ -145,3 +145,13 @@ test("the opening turn reads as questions being open; after it, questions are cl
   s = marathonUiReduce(s, { type: "event", event: { type: "planned" } })!;
   assert.match(s.line, /Questions closed/);
 });
+
+test("the cost line is kept beside the run without changing its phase or status line", () => {
+  let s = marathonUiReduce(null, { type: "event", event: { type: "started", goal: "g", ceiling: "up to $5" } });
+  s = marathonUiReduce(s, { type: "event", event: { type: "turn", n: 1, phase: "work" } });
+  const line = s!.line;
+  s = marathonUiReduce(s, { type: "event", event: { type: "spend", spentUsd: 0.42, limitUsd: 5 } });
+  assert.equal(s!.spend, "~$0.420 of ~$5.00");
+  assert.equal(s!.line, line, "the status line is untouched");
+  assert.equal(s!.phase, "running");
+});

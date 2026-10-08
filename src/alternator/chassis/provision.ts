@@ -17,11 +17,14 @@
  * once per session.
  */
 import { killTree, spawnManaged } from "../../tools/killTree.js";
-import { existsSync, promises as fs } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, promises as fs, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import zlib from "node:zlib";
 import AdmZip from "adm-zip";
+import { stateRoot } from "../../memory/store.js";
+import { writeFileAtomic } from "../../tools/atomicWrite.js";
 
 export interface NpmInstall {
   source: "npm";
@@ -35,6 +38,12 @@ export interface NpmInstall {
 export interface GithubTarget {
   /** Release asset filename ("{version}" substituted). */
   asset: string;
+  /**
+   * SHA-256 of that asset, as published for the release. A download that does not match
+   * is refused: the tag is only a name, and a replaced asset or a taken-over repository
+   * would otherwise be installed and later run as the language server.
+   */
+  sha256: string;
   /** Executable path inside the cache dir after extraction ("{version}" substituted). */
   bin: string;
 }
@@ -51,6 +60,51 @@ const IS_WIN = process.platform === "win32";
 
 export function autoInstallEnabled(): boolean {
   return !process.env.MINDWEAVE_NO_AUTO_INSTALL;
+}
+
+// ── consent ─────────────────────────────────────────────────────────────────
+// A language server is third-party code that runs on this machine and reads the
+// project. It used to be downloaded and started the first time a project had a file in
+// its language, with nothing asked. Now the user decides once per server: an undecided
+// server is not installed, the request waits for a question at the start of the next
+// turn (see tools/serverConsent.ts), and tree-sitter answers in the meantime.
+
+export type InstallDecision = "yes" | "never";
+
+function decisionsPath(): string {
+  return join(stateRoot(), "servers", "decisions.json");
+}
+
+function readDecisions(): Record<string, InstallDecision> {
+  try {
+    const v = JSON.parse(readFileSync(decisionsPath(), "utf8"));
+    return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, InstallDecision>) : {};
+  } catch {
+    return {};
+  }
+}
+
+/** What the user decided about installing server `key`, if anything. */
+export function installDecision(key: string): InstallDecision | undefined {
+  const d = readDecisions()[key];
+  return d === "yes" || d === "never" ? d : undefined;
+}
+
+/** Record the user's answer for server `key`, for good. */
+export async function recordInstallDecision(key: string, decision: InstallDecision): Promise<void> {
+  const all = { ...readDecisions(), [key]: decision };
+  await fs.mkdir(join(stateRoot(), "servers"), { recursive: true });
+  await writeFileAtomic(decisionsPath(), JSON.stringify(all, null, 2));
+}
+
+/** Servers wanted this session that the user has not decided about yet. */
+const undecided = new Map<string, InstallSpec>();
+
+/** Take the servers waiting for a question (each is asked about once). */
+export function takeUndecidedInstalls(): { key: string; spec: InstallSpec }[] {
+  const out = [...undecided].map(([key, spec]) => ({ key, spec }));
+  undecided.clear();
+  return out;
 }
 
 export function platformKey(): string {
@@ -88,6 +142,12 @@ export function ensureInstalled(
   const already = resolveInstalled(key, spec);
   if (already) return Promise.resolve(already);
   if (!autoInstallEnabled()) return Promise.resolve(null);
+  const decision = installDecision(key);
+  if (decision === "never") return Promise.resolve(null);
+  if (decision !== "yes") {
+    undecided.set(key, spec);
+    return Promise.resolve(null);
+  }
 
   let p = inflight.get(key);
   if (!p) {
@@ -164,7 +224,11 @@ async function installNpm(key: string, spec: NpmInstall): Promise<boolean> {
   );
   // Pass the whole command as one string for the shell (npm is a .cmd shim on
   // Windows). Args are from the curated registry, not user input.
-  const cmd = `npm install ${spec.package}@${spec.version} --no-save --no-audit --no-fund --loglevel=error`;
+  //
+  // --ignore-scripts: no package here needs an install script, and without the flag the
+  // server's and EVERY dependency's install scripts ran as the user, from whatever
+  // versions the registry served that day.
+  const cmd = `npm install ${spec.package}@${spec.version} --ignore-scripts --no-save --no-audit --no-fund --loglevel=error`;
   return runBounded(cmd, [], { cwd: dir, shell: true, stdio: "ignore" }, NPM_INSTALL_TIMEOUT_MS);
 }
 
@@ -177,7 +241,7 @@ async function installGithub(key: string, spec: GithubInstall): Promise<boolean>
   const url = `https://github.com/${spec.repo}/releases/download/${spec.version}/${asset}`;
   const archive = join(dir, asset);
 
-  if (!(await download(url, archive))) return false;
+  if (!(await download(url, archive, target.sha256))) return false;
   try {
     if (asset.endsWith(".zip")) {
       new AdmZip(archive).extractAllTo(dir, true);
@@ -208,14 +272,16 @@ async function installGithub(key: string, spec: GithubInstall): Promise<boolean>
   return existsSync(bin);
 }
 
-/** Download `url` to `dest` (follows GitHub's redirect to the CDN). */
-async function download(url: string, dest: string): Promise<boolean> {
+/** Download `url` to `dest` (follows GitHub's redirect to the CDN), only if it has the expected SHA-256. */
+async function download(url: string, dest: string, sha256: string): Promise<boolean> {
   // AbortSignal.timeout covers the whole exchange, body included — a stalled
   // download mid-body is the realistic failure, not a stalled connect.
   try {
     const res = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) });
     if (!res.ok) return false;
-    await fs.writeFile(dest, Buffer.from(await res.arrayBuffer()));
+    const bytes = Buffer.from(await res.arrayBuffer());
+    if (createHash("sha256").update(bytes).digest("hex") !== sha256.toLowerCase()) return false;
+    await fs.writeFile(dest, bytes);
     return true;
   } catch {
     return false;

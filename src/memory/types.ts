@@ -206,6 +206,13 @@ export interface SessionMeta {
    * strip a tool the model was mid-way through using, and it could no longer call it.
    */
   activatedTools?: string[];
+  /**
+   * The task list (ToolContext.todos). It lived only in memory, so `/continue` started with
+   * none, and once its result had been cleared nothing remained to rewrite it from.
+   */
+  todos?: { content: string; activeForm: string; status: "pending" | "in_progress" | "completed" }[];
+  /** What the session did, counted live. See memory/counters.ts. */
+  counters?: import("./counters.js").SessionCounters;
   /** A running or finished Marathon on this session. See `dynamo/marathon.ts`. */
   marathon?: import("../dynamo/marathon.js").MarathonState;
 }
@@ -240,6 +247,28 @@ export interface CallUsage {
    * history rewrites itself every time someone runs `/model`.
    */
   model: string;
+  /**
+   * Why the cached prefix did not survive since the previous call, when it did not
+   * ("history: message 41 changed"). Without it a low-hit call can only be guessed at.
+   */
+  broke?: string;
+  /** Whether thinking was on for this call, and at what effort. */
+  thinking?: boolean;
+  effort?: string;
+  /**
+   * Generated tokens nobody saw: what the provider counted as output minus an estimate
+   * of the reply text and tool-call arguments. Hidden reasoning is most of the output of
+   * the thinking models people run, and it was not visible anywhere.
+   */
+  hidden?: number;
+  /** Estimated tokens of the per-call tail (rules, plan, notes) sent after the conversation, which never caches. */
+  tail?: number;
+  /**
+   * Set on a call the person did not ask for: the notes update, the compaction summary, the
+   * page distiller. The log held only the main conversation's calls, so a third of what a
+   * session cost could not be seen.
+   */
+  aux?: "notes" | "summary" | "fetch";
 }
 
 /** Accumulated, cache-aware usage for one session. All token counts are sums; `costUsd`
@@ -419,4 +448,8 @@ export interface Session {
    *  how far it's gotten, and how it ended, if it has. See `dynamo/marathon.ts`.
    *  Persisted so a goal survives a restart instead of vanishing mid-run. */
   marathon?: import("../dynamo/marathon.js").MarathonState;
+  /** What the session did, counted live and saved with it. See memory/counters.ts. */
+  counters?: import("./counters.js").SessionCounters;
+  /** SessionStart hooks have run for this live session (not saved: a resume starts again). */
+  hooksStarted?: boolean;
 }

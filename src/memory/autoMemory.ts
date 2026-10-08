@@ -261,6 +261,7 @@ function renderMemoryFile(m: MemoryInput): string {
     `name: ${oneLine(m.name)}`,
     `description: ${oneLine(m.description)}`,
     `type: ${m.type}`,
+    `origin: saved by the agent on ${new Date().toISOString().slice(0, 10)}`,
     "---",
     "",
     m.body.trim(),

@@ -23,6 +23,8 @@ import { createSession } from "../memory/session.js";
 import type { Session } from "../memory/types.js";
 import type { Tool, ToolSchema } from "../tools/types.js";
 import { stopChassis } from "../alternator/lane.js";
+import { projectDir } from "../memory/store.js";
+import { parseCommandRules } from "../tools/commandPolicy.js";
 
 // ── the scripted provider ────────────────────────────────────────────────────
 
@@ -462,4 +464,74 @@ test("a provider that reports no cache figures counts the whole prompt as uncach
   await respond(session, {});
   const [call] = session.callLog ?? [];
   assert.deepEqual([call?.prompt, call?.hit, call?.miss], [500, 0, 500]);
+});
+
+// ── Sentinel and what is plainly harmless ───────────────────────────────────────────────────
+// Every run_command asked a question, however harmless, which teaches people to answer yes
+// without reading. A command that is read-only in every part, or covered by the user's own
+// allow rule, no longer asks; everything else still does.
+
+test("Sentinel does not ask about a read-only command, still asks about the rest, and honours the user's allow rule", async () => {
+  const { session, root } = await lab();
+  session.toolContext.guarded = true;
+  const asked: string[] = [];
+  session.toolContext.requestApproval = async (_q, _options, detail) => {
+    asked.push(detail ?? "");
+    return "No";
+  };
+  const turn = async (command: string) => {
+    script = [{ tools: [{ name: "run_command", args: { command } }] }, { text: "ok" }];
+    session.transcript.push({ role: "user", content: `run ${command}` });
+    await respond(session, {});
+  };
+
+  await turn("git status");
+  assert.equal(asked.length, 0, `asked about a read-only command: ${asked.join(" | ")}`);
+
+  await turn("npm test");
+  assert.equal(asked.length, 1, "npm test is not read-only and must still ask");
+
+  await turn("git status; rm -rf build");
+  assert.equal(asked.length, 2, "one read-only part does not make the rest harmless");
+
+  session.governance.commandRules = parseCommandRules("allow npm test");
+  await turn("npm test");
+  assert.equal(asked.length, 2, "the user's allow rule lifts the question for that command only");
+  await turn("npm publish");
+  assert.equal(asked.length, 3);
+});
+
+test("answering 'never ask again' for a command prefix saves an allow rule for the project and stops the question", async () => {
+  const { session, root } = await lab();
+  session.toolContext.guarded = true;
+  const asked: string[][] = [];
+  let pick = 2;
+  session.toolContext.requestApproval = async (_q, options) => {
+    asked.push(options);
+    return options[pick] ?? "No";
+  };
+  const turn = async (command: string) => {
+    script = [{ tools: [{ name: "run_command", args: { command } }] }, { text: "ok" }];
+    session.transcript.push({ role: "user", content: `run ${command}` });
+    await respond(session, {});
+  };
+
+  await turn("node -e 0");
+  assert.equal(asked[0]!.length, 2, "an interpreter gets no standing answer");
+
+  await turn("npm --version");
+  assert.equal(asked[1]!.length, 2, "a command with no safe prefix gets none either");
+
+  await turn("npm ls --depth=0");
+  assert.equal(asked[2]!.length, 3, "a nameable command offers one");
+  assert.match(asked[2]![2]!, /"npm ls"/);
+  const rules = readFileSync(join(projectDir(root), "command-rules.md"), "utf8");
+  assert.match(rules, /^allow npm ls$/m);
+
+  const before = asked.length;
+  await turn("npm ls --all");
+  assert.equal(asked.length, before, "the saved prefix covers the next command that starts with it");
+  await turn("npm publish");
+  assert.equal(asked.length, before + 1, "other npm commands still ask");
+  assertAllWellFormed("prefix-allow");
 });

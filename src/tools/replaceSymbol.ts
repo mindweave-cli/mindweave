@@ -99,7 +99,7 @@ export const replaceSymbolBody: Tool = {
 
     const span = spans[0]!;
     const abs = resolvePath(ctx, span.file);
-    const target = await prepareEditTarget(ctx, abs, "editing");
+    const target = await prepareEditTarget(ctx, abs, "editing", typeof args.new_definition === "string" ? args.new_definition : "");
     if (!target.ok) return target.error;
     // Unlike `edit`, this tool quotes NOTHING of what is already there — it names a
     // symbol and hands over a whole new body. So there is no match that could serve as

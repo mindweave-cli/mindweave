@@ -37,11 +37,14 @@ import { promises as fs, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Tool, ToolCallChannel, ToolContext, ToolResult } from "./types.js";
-import { catastrophicCommandReason, sensitiveCommandReason } from "./guard.js";
+import { catastrophicCommandReason, riskyCommandReason, sensitiveCommandReason } from "./guard.js";
 import { forbiddenCommandReason, forbiddenCommandPatternReason } from "../governor/forbidden.js";
 import { requestForbiddenLift } from "./approval.js";
 import { posixShell, shellMismatchNote } from "./posixShell.js";
 import { killTree, spawnManaged } from "./killTree.js";
+import { childEnv } from "./childEnv.js";
+import { ripgrepShellEnv } from "./ripgrepShell.js";
+import { dialectFor, parseCommand, protectedArgsReason, ruleVerdict } from "./commandPolicy.js";
 import { captureAfterCommand, looksReadOnly, snapshotBeforeCommand } from "./shellCheckpoint.js";
 import { canonicalRoot, relativize } from "./paths.js";
 import { FULL_DETAIL_MAX, SHELL_ROWS_FAILED, SHELL_ROWS_OK, formatDuration, shellOutput, withOutcome } from "./detail.js";
@@ -211,6 +214,37 @@ export const runCommand: Tool = {
     const blocked = catastrophicCommandReason(command);
     if (blocked) {
       return fail(`Refusing to run this command: it looks like ${blocked}.`);
+    }
+    // The command read as the commands it contains, for the user's own rules and for the
+    // files it names (see commandPolicy.ts). Anything this cannot read is left to the
+    // checks above and below, which never depended on it.
+    const parsed = parseCommand(command, dialectFor(args));
+    const verdict = ruleVerdict(parsed, ctx.governance?.commandRules ?? []);
+    if (verdict.forbid) {
+      const why = verdict.forbid.justification ? ` ${verdict.forbid.justification}` : "";
+      return fail(`Refusing to run this command: your rule forbids \`${verdict.forbid.words.join(" ")}\`.${why}`);
+    }
+    const named = await protectedArgsReason(parsed, ctx.cwd);
+    if (named) {
+      return fail(
+        `Refusing to run this command: ${named}. A command may list it, delete it, or write to it, but not read it, copy it out or send it. ` +
+          `Nothing here can read it for you; ask the user for the value you need.`,
+      );
+    }
+    // Commands that throw work away or run code from the internet ask first in every mode,
+    // with what they would lose. In a mode that already asked about this exact call, once
+    // is enough.
+    const risky = riskyCommandReason(command) ?? (verdict.prompt ? `matches your rule to ask first (\`${verdict.prompt.words.join(" ")}\`)` : null);
+    const justAsked =
+      ctx.guarded === true && !ctx.guardAllowed?.has("run_command") && !ctx.governance?.sentinelAllow?.includes("run_command");
+    if (risky && !justAsked) {
+      if (!ctx.requestApproval) {
+        return fail(`Refusing to run this command: it ${risky}, which needs the user's agreement and there is no way to ask from here.`);
+      }
+      const choice = await ctx.requestApproval(`Run this command? It ${risky}.`, ["Yes, run it", "No"], command, "Permission Request");
+      if (!choice.startsWith("Yes")) {
+        return fail(`Stopped: the user declined running a command that ${risky}. Find another way, or explain why it is needed.`);
+      }
     }
     // A shell would sidestep every per-file gate the read/write tools enforce.
     const sensitive = sensitiveCommandReason(command);
@@ -454,28 +488,38 @@ async function runShell(
       : [...args, wrapped],
     {
     cwd: ctx.cwd,
-    // stdin stays a pipe so an interactive prompt sees a closed stream and gives up
-    // rather than waiting; stdout and stderr are the SAME descriptor, so the two
-    // interleave in the order they were written instead of being reassembled after.
-    stdio: ["pipe", outFile.handle.fd, outFile.handle.fd],
-    env: {
-      ...process.env,
+    // stdin is the null device: nobody will ever type into this command, so a prompt
+    // ("Proceed? [y/N]", a credential request) sees end-of-input straight away and takes
+    // its default or gives up instead of waiting out the timeout. It used to be a pipe
+    // closed at once, which looks like piped input: `rg pattern` with no path then
+    // searched that empty pipe instead of the folder and found nothing, silently.
+    // stdout and stderr are the SAME descriptor, so the two interleave in the order they
+    // were written instead of being reassembled after.
+    stdio: ["ignore", outFile.handle.fd, outFile.handle.fd],
+    // The user's environment, not Mindweave's: no provider keys (see childEnv.ts).
+    env: childEnv({
       GIT_EDITOR: "true", // never drop into an interactive editor and hang
       GIT_PAGER: "cat",
+      GIT_TERMINAL_PROMPT: "0", // a credential prompt would wait on input that never comes
       PAGER: "cat",
-    },
+      NO_COLOR: "1", // colour codes are noise in a transcript
+      // Python writes its output in the ANSI code page when piped on Windows, and fails
+      // outright on text that page cannot hold. The shell now reads UTF-8 (see UTF8_PRELUDE).
+      ...(IS_WINDOWS ? { PYTHONIOENCODING: "utf-8" } : {}),
+      // The bundled rg, with the search tool's exclusions (see ripgrepShell.ts).
+      ...ripgrepShellEnv(),
+    }),
   });
-
-  // Nobody will ever type into this command, so its input ends now. Left open, a prompt
-  // ("Proceed? [y/N]", `npm init`, a credential request) waited on a stream that never
-  // closed until the two-minute timeout, and then got moved to the background still
-  // waiting. Closed, it sees end-of-input straight away and takes its default or gives up.
-  child.stdin?.end();
 
   // Our copy of the descriptor. The child dup'd it at spawn, so closing here leaves it
   // writing happily and means the file is released the moment the command ends rather
   // than whenever this process happens to exit.
-  await outFile.handle.close().catch(() => {});
+  //
+  // NOT awaited. Nothing may yield between the spawn and the `exit` / `close` listeners that are attached
+  // further down (and `mgr.adopt`'s, for a background command): a fast command can finish inside that gap,
+  // its events then fire with nobody listening, and the call waits out the whole timeout for an exit it
+  // already missed. Seen on Linux under CPU load as a two-minute hang on `echo`. `finish` waits for this.
+  const descriptorClosed = outFile.handle.close().catch(() => {});
 
   const mgr = ctx.backgroundShells;
 
@@ -642,6 +686,7 @@ async function runShell(
       clearTimeout(startProgress);
       stopProgress();
       detachAbort();
+      await descriptorClosed;
       await applyCwd(cwdFile, ctx);
       if (tempFile) await fs.rm(tempFile, { force: true }).catch(() => {});
       const out = await collected();
@@ -775,6 +820,22 @@ function backgroundedResult(id: number, command: string, lead: string, notify: N
   };
 }
 
+/**
+ * Make Windows PowerShell 5.1 speak UTF-8. By default it writes its output in the old
+ * console code page and reads a file without a byte-order mark as ANSI, so any text
+ * outside that page came back as "?" or as mojibake: a file named résumé-数据.txt was
+ * listed as r?sum?-??.txt, and the model then asked for a file that does not exist.
+ * Output, programs piped through the shell, and the file cmdlets now all use UTF-8
+ * (writing UTF-8 with a byte-order mark, the only form 5.1 offers, where `>` used to
+ * write UTF-16). An explicit -Encoding still wins. Setting the console encoding can fail
+ * when there is no console, which changes nothing else.
+ */
+const UTF8_PRELUDE =
+  `try { [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false) } catch {}; ` +
+  `$OutputEncoding = [System.Text.UTF8Encoding]::new($false); ` +
+  `foreach ($__c in 'Get-Content','Set-Content','Add-Content','Out-File','Select-String','Import-Csv','Export-Csv') ` +
+  `{ $PSDefaultParameterValues["$($__c):Encoding"] = 'utf8' }`;
+
 /** Build the shell invocation: which binary, its flags, and the wrapped command. */
 function buildInvocation(
   command: string,
@@ -819,8 +880,10 @@ function buildInvocation(
     //     so a successful build read as a broken one. So when `$?` is false, the
     //     command failed only if an error was recorded that is neither a native
     //     program's stderr line nor raised by a command that asked for silence.
+    // UTF8_PRELUDE shares the first line so the line numbers PowerShell reports for the
+    // command stay what they were.
     const wrapped =
-      `$global:LASTEXITCODE = $null; $Error.Clear()\n` +
+      `${UTF8_PRELUDE}; $global:LASTEXITCODE = $null; $Error.Clear()\n` +
       `${command}\n` +
       `$__ok = $?\n` +
       `$__native = $LASTEXITCODE\n` +

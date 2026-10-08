@@ -124,3 +124,29 @@ test("another project can be viewed and edited without touching the open one", a
   assert.equal(await defaultModeFor(other), "architect");
   assert.equal(await defaultModeFor(s.cwd), null);
 });
+
+test("command rules are listed, added, moved and removed like the other lists, and apply at once", async () => {
+  const s = await fresh();
+  assert.equal((await addPermission(s, "commandRule", "allow npm test", "project")).ok, true);
+  assert.equal((await addPermission(s, "commandRule", "forbid npm publish :: releases are done by hand", "global")).ok, true);
+  assert.deepEqual(file(projectDir(s.cwd), "command-rules.md"), ["allow npm test"]);
+  assert.deepEqual(file(stateRoot(), "command-rules.md"), ["forbid npm publish :: releases are done by hand"]);
+  assert.deepEqual(
+    live(s).commandRules?.map((r) => `${r.decision} ${r.words.join(" ")}`),
+    ["forbid npm publish", "allow npm test"],
+    "the live session already has both",
+  );
+  const view = await permissionsView(s);
+  assert.deepEqual(view.lists.commandRule.map((i) => `${i.scope}:${i.value}`), ["project:allow npm test", "global:forbid npm publish :: releases are done by hand"]);
+  // A line that is not a rule is refused, not written.
+  const bad = await addPermission(s, "commandRule", "please run tests", "project");
+  assert.equal(bad.ok, false);
+  assert.deepEqual(file(projectDir(s.cwd), "command-rules.md"), ["allow npm test"]);
+  // Twice is once.
+  assert.equal((await addPermission(s, "commandRule", "allow   npm   test", "project")).ok, false);
+  assert.equal((await movePermission(s, "commandRule", "allow npm test", "project")).ok, true);
+  assert.deepEqual(file(projectDir(s.cwd), "command-rules.md"), []);
+  assert.ok(file(stateRoot(), "command-rules.md").includes("allow npm test"));
+  assert.equal((await removePermission(s, "commandRule", "allow npm test", "global")).ok, true);
+  assert.deepEqual(live(s).commandRules?.map((r) => r.decision), ["forbid"]);
+});

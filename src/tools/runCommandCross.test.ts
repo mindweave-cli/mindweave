@@ -268,3 +268,16 @@ test("canonicalRoot is idempotent, so a path cannot drift between forms", async 
   const once = await canonicalRoot(dir);
   assert.equal(await canonicalRoot(once), once);
 });
+
+test("a burst of instant commands all come back (a fast exit must not be missed before the listeners are attached)", async () => {
+  // Found as an intermittent two-minute hang on Linux under CPU load: the child had already exited by the
+  // time exit and close were listened for, so the call waited out its whole timeout. Many instant commands
+  // at once is the shape that makes the gap likely; each must return its own output well inside the limit.
+  const run = (i: number) => runCommand.execute({ command: SH.echo(`burst-${i}`) }, ctx(process.cwd()));
+  const started = Date.now();
+  for (let round = 0; round < 4; round++) {
+    const results = await Promise.all(Array.from({ length: 24 }, (_, i) => run(round * 100 + i)));
+    results.forEach((r, i) => assert.equal(r.output.trim(), `burst-${round * 100 + i}`));
+  }
+  assert.ok(Date.now() - started < 60_000, "some command waited for a timeout instead of returning");
+});

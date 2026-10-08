@@ -432,6 +432,12 @@ export interface ToolContext {
    */
   allowedOutsideDirs?: Set<string>;
   /**
+   * Files that run code later (editor tasks, git hooks, CI workflows, shell startup
+   * files) the user has allowed writing to this session, by real path. See runsLater.ts.
+   * Never inherited by a sub-agent.
+   */
+  runsLaterAllowed?: Set<string>;
+  /**
    * How deep in a sub-agent chain this context is (0 = the main agent, 1 = a
    * sub-agent it spawned). `spawn_subagent` refuses once at the cap, so sub-agents
    * can't recurse without bound.
@@ -496,26 +502,6 @@ export interface ToolContext {
    */
   emitEvent?: (event: import("../dynamo/engine.js").EngineEvent) => void;
   /**
-   * Files whose CURRENT full content is in this turn's working-set block (the volatile
-   * tail). Set by the engine each turn. read_file short-circuits a read of one of these
-   * — the model already has it, fresh — instead of re-sending it.
-   */
-  workingSetFull?: Set<string>;
-  /** Line ranges the working-set block actually PUT ON SCREEN this turn, per file.
-   *  Derived from what was rendered (never from the read ledger), so a tool can prove
-   *  the model is already looking at a span instead of assuming it. */
-  workingSetSpans?: Map<string, { start: number; end: number }[]>;
-  /**
-   * Last built working-set block, with the disk state it was built from.
-   *
-   * The block is rebuilt on every model STEP so it can never be stale, and that
-   * unconditional freshness is worth keeping — a `run_command` can write files with no
-   * tool the engine could hook. So instead of trusting a "nothing was mutated" flag,
-   * the rebuild is skipped only when a fresh `stat` of every active file says nothing
-   * changed. Same guarantee, without re-reading and re-tokenizing whole files each step.
-   */
-  workingSetCache?: { key: string; value: import("../memory/workingSet.js").WorkingSetBlock };
-  /**
    * Files whose WHOLE content is still present in the TRANSCRIPT — a full read whose
    * result microcompaction has not cleared to a stub. Derived by the engine each turn
    * (see `memory/presence.ts`), never stored on the ledger: "the model can see this"
@@ -544,6 +530,8 @@ export interface ToolContext {
    * context that never attached a pool.
    */
   mcp?: import("../mcp/manager.js").McpManager;
+  /** Project MCP servers held until the user is asked (see mcp/projectApproval.ts). */
+  mcpPending?: import("../mcp/projectApproval.js").PendingServer[];
 
   /**
    * Tell the UI its mode flags moved underneath it.

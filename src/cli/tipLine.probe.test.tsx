@@ -16,6 +16,8 @@ import { EventEmitter } from "node:events";
 // statically here — a static import is hoisted above this line and the setting is lost,
 // which is silent: the frames simply come back with no colour in them.
 process.env.FORCE_COLOR = process.env.FORCE_COLOR ?? "3";
+// Chalk takes FORCE_COLOR as a minimum: a 256-colour TERM (most Linux shells) still downgrades hex colours unless this says otherwise.
+process.env.COLORTERM = "truecolor";
 const { render } = await import("ink");
 const { TIPS, TipLine, nextTip, randomTipIndex } = await import("./components/TipLine.js");
 

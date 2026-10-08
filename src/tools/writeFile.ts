@@ -16,8 +16,9 @@
 import { promises as fs } from "node:fs";
 import { dirname } from "node:path";
 import type { Tool, ToolResult } from "./types.js";
-import { foreignAgentReason, protectedPathReason } from "./guard.js";
-import { forbiddenPathReason } from "../governor/forbidden.js";
+import { foreignAgentReason, guardedPathReason } from "./guard.js";
+import { forbiddenRealPathReason } from "../governor/forbidden.js";
+import { requestRunsLaterWrite } from "./runsLater.js";
 import { requestAgentDataAccess, requestForbiddenLift, requestOutsideWorkspaceWrite } from "./approval.js";
 import { recordWrite, relativize, resolvePath } from "./paths.js";
 import { FULL_DETAIL_MAX, writeDetail, withScope } from "./detail.js";
@@ -73,7 +74,7 @@ export const writeFile: Tool = {
     const content = args.content;
 
     const filePath = resolvePath(ctx, rawPath);
-    const blocked = protectedPathReason(filePath);
+    const blocked = await guardedPathReason(filePath);
     if (blocked) {
       return fail(`Refusing to write ${rawPath}: it is ${blocked}.`);
     }
@@ -83,7 +84,7 @@ export const writeFile: Tool = {
       const denied = await requestAgentDataAccess(ctx, otherTool, `Writing ${rawPath}`);
       if (denied) return denied;
     }
-    const forbidden = forbiddenPathReason(ctx.governance?.forbidden, filePath, ctx.roots ?? []);
+    const forbidden = await forbiddenRealPathReason(ctx.governance?.forbidden, filePath, ctx.roots ?? []);
     if (forbidden) {
       const lift = await requestForbiddenLift(
         ctx,
@@ -97,6 +98,10 @@ export const writeFile: Tool = {
     // The workspace boundary — see requestOutsideWorkspaceWrite.
     const outside = await requestOutsideWorkspaceWrite(ctx, filePath, `writing ${rawPath}`);
     if (outside) return outside;
+
+    // A file that runs code later (an editor task, a hook, a workflow) asks first.
+    const later = await requestRunsLaterWrite(ctx, filePath, rawPath, content);
+    if (later) return later;
 
     let existed = false;
     try {

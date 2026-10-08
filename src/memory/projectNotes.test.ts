@@ -9,7 +9,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import {
   assembleNotes,
   directoryNotesFor,
@@ -269,4 +269,95 @@ test("folder notes are as binding as the project's own", async () => {
   const { volatileContext } = await import("../dynamo/engine.js");
   const out = volatileContext("", false, "", "", [{ path: "/p/src/MINDWEAVE.md", text: "x" }]);
   assert.match(out, /binding/i, "nothing tells the model these carry weight");
+});
+
+// ── what an import may reach ─────────────────────────────────────────────────
+// Imports are read at session start into the system prompt, so they decide what the
+// first request sends to the provider. A cloned repository must not be able to choose.
+
+test("project notes cannot import a secrets file, even inside the project", async () => {
+  const root = project();
+  put(root, ".env", "API_KEY=hunter2-FAKE-env");
+  put(root, NOTES_FILE, "See @.env for the configuration.");
+  const notes = await assembleNotes(root, { includeUser: false });
+  assert.ok(!notes.text.includes("hunter2-FAKE-env"), "a secret reached the notes");
+  assert.equal(notes.refused.length, 1);
+  assert.match(notes.text, /was not loaded/);
+});
+
+test("project notes cannot import a file outside the project", async () => {
+  const root = project();
+  const elsewhere = project();
+  const outside = put(elsewhere, "deploy.txt", "hunter2-FAKE-outside");
+  put(root, NOTES_FILE, `Deploy access: @${outside.split("\\").join("/")}`);
+  const notes = await assembleNotes(root, { includeUser: false });
+  assert.ok(!notes.text.includes("hunter2-FAKE-outside"), "a file outside the project reached the notes");
+  assert.deepEqual(notes.refused, [outside]);
+});
+
+test("project notes still import their own docs, and the user's notes may import from anywhere", async () => {
+  const root = project();
+  put(root, "docs/arch.md", "The architecture is layered.");
+  put(root, NOTES_FILE, "See @./docs/arch.md for the layers");
+  const state = project();
+  const elsewhere = project();
+  const shared = put(elsewhere, "style.md", "Prefer small functions.");
+  put(state, NOTES_FILE, `My style: @${shared.split("\\").join("/")}`);
+  const notes = await assembleNotes(root, { stateDir: state });
+  assert.match(notes.text, /layered/);
+  assert.match(notes.text, /Prefer small functions/);
+  assert.deepEqual(notes.refused, []);
+});
+
+// ── the instruction files other tools leave in a repository ───────────────────────────────
+// A repo that ships AGENTS.md or CLAUDE.md is telling every agent how it wants to be worked on.
+// Mindweave started without it, which is the first thing someone moving from another tool notices.
+
+test("a repository's AGENTS.md or CLAUDE.md is read as notes, labelled as written for another tool", async () => {
+  const onlyClaude = project();
+  put(onlyClaude, "CLAUDE.md", "Run `npm run check` before committing.");
+  const a = await assembleNotes(onlyClaude, { includeUser: false });
+  assert.match(a.text, /Run `npm run check` before committing\./);
+  assert.match(a.text, /CLAUDE\.md \(written for another coding tool; read it as notes/);
+  assert.deepEqual(a.sources.map((s) => s.kind), ["other"]);
+
+  // The first found wins: AGENTS.md, then CLAUDE.md, then GEMINI.md, so a repo that mirrors one into
+  // another is not read twice.
+  const both = project();
+  put(both, "AGENTS.md", "Use the agents rules.");
+  put(both, "CLAUDE.md", "Use the claude rules.");
+  const b = await assembleNotes(both, { includeUser: false });
+  assert.match(b.text, /agents rules/);
+  assert.ok(!b.text.includes("claude rules"));
+});
+
+test("Mindweave's own notes come first, and the other tool's file is cut first when over budget", async () => {
+  const root = project();
+  put(root, NOTES_FILE, "Mindweave notes: prefer small functions.");
+  put(root, "AGENTS.md", "x".repeat(MAX_NOTES_CHARS * 2));
+  const notes = await assembleNotes(root, { includeUser: false });
+  assert.ok(notes.text.indexOf("prefer small functions") < notes.text.indexOf("written for another coding tool"));
+  assert.equal(notes.truncated, true);
+  assert.ok(notes.text.includes("prefer small functions"), "the project's own notes survived the cut");
+});
+
+test("the same import rule applies: an instruction file cannot pull in a secrets file", async () => {
+  const root = project();
+  put(root, ".env", "API_KEY=hunter2-FAKE-agents");
+  put(root, "CLAUDE.md", "Configuration is in @.env");
+  const notes = await assembleNotes(root, { includeUser: false });
+  assert.ok(!notes.text.includes("hunter2-FAKE-agents"));
+  assert.equal(notes.refused.length, 1);
+});
+
+test("a folder being worked in uses its own notes, else the instruction file another tool left there", async () => {
+  const root = project();
+  put(root, "src/api/AGENTS.md", "API folder rules.");
+  put(root, "src/ui/MINDWEAVE.md", "UI folder notes.");
+  put(root, "src/ui/AGENTS.md", "UI agents file.");
+  const notes = await directoryNotesFor(root, ["src/api/a.ts", "src/ui/b.ts"]);
+  const byFolder = Object.fromEntries(notes.map((n) => [n.path.replace(root, "").split(sep).join("/"), n.text]));
+  assert.equal(byFolder["/src/api/AGENTS.md"], "API folder rules.");
+  assert.equal(byFolder["/src/ui/MINDWEAVE.md"], "UI folder notes.");
+  assert.equal(byFolder["/src/ui/AGENTS.md"], undefined, "Mindweave's own file wins in a folder that has both");
 });

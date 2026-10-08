@@ -240,6 +240,8 @@ test("a memory the agent saved in the removed turns is taken back, and the sessi
 
 test("a rule the user edited after the agent wrote it is left alone", async () => {
   const s = session([{ role: "user", content: "add a rule" }]);
+  // Saving a rule asks the user; here they agree.
+  s.toolContext.requestApproval = async () => "Yes";
   script = [{ name: "governor", args: { action: "remember_rule", name: "tabs", value: "Indent with tabs." } }];
   await respond(s, {});
   const ruleFile = readdirSync(join(projectDir(s.cwd), "rules")).map((f) => join(projectDir(s.cwd), "rules", f))[0];

@@ -77,6 +77,7 @@ export async function writeRule(
   body: string,
   description = "",
   globs: string[] = [],
+  origin = "",
 ): Promise<Rule> {
   const dir = join(projectDir(cwd), "rules");
   await fs.mkdir(dir, { recursive: true });
@@ -85,9 +86,16 @@ export async function writeRule(
     name,
     description,
     globs: globs.join(", "),
+    origin,
   });
   await fs.writeFile(file, `${header}${body}\n`, "utf8");
-  return { name: oneLine(name), description: oneLine(description), body, ...(globs.length > 0 ? { globs } : {}) };
+  return {
+    name: oneLine(name),
+    description: oneLine(description),
+    body,
+    ...(globs.length > 0 ? { globs } : {}),
+    ...(origin ? { origin: oneLine(origin) } : {}),
+  };
 }
 
 /** Fields for creating a skill (everything but where it lives). */
@@ -310,4 +318,51 @@ export async function appendSentinelAllow(
 
 export async function removeSentinelAllow(cwd: string, tool: string, scope: GovernanceScope = "project"): Promise<boolean> {
   return removeForbiddenLine(cwd, "sentinel-allow.md", tool, scope);
+}
+
+// ── command rules (command-rules.md) ─────────────────────────────────────────
+
+/**
+ * Add one line to command-rules.md: `allow npm test`, `prompt git push`, `forbid rm -rf :: why`.
+ * Idempotent; the same decision for the same words is one line. Returns the line as written.
+ */
+export async function appendCommandRule(
+  cwd: string,
+  decision: "allow" | "prompt" | "forbid",
+  words: string,
+  scope: GovernanceScope = "project",
+  why = "",
+): Promise<{ added: boolean; line: string }> {
+  const prefix = words.trim().replace(/\s+/g, " ").replace(/[\r\n]/g, " ");
+  const reason = why.replace(/[\r\n]+/g, " ").replace(/::/g, ":").trim();
+  const line = `${decision} ${prefix}${reason ? ` :: ${reason}` : ""}`;
+  if (!prefix) return { added: false, line };
+  const base = governanceDir(cwd, scope);
+  const file = join(base, "command-rules.md");
+  let text = "";
+  try {
+    text = await fs.readFile(file, "utf8");
+  } catch {
+    /* none yet */
+  }
+  const same = (l: string) => l.trim().toLowerCase().replace(/\s*::.*$/, "") === `${decision} ${prefix}`.toLowerCase();
+  if (text.split(/\r?\n/).some(same)) return { added: false, line };
+  await fs.mkdir(base, { recursive: true });
+  const separator = text && !text.endsWith("\n") ? "\n" : "";
+  await fs.writeFile(file, `${text}${separator}${line}\n`, "utf8");
+  return { added: true, line };
+}
+
+/** The rule lines of command-rules.md, comments and blanks left out. */
+export async function readCommandRuleLines(cwd: string, scope: GovernanceScope = "project"): Promise<string[]> {
+  try {
+    const text = await fs.readFile(join(governanceDir(cwd, scope), "command-rules.md"), "utf8");
+    return text.split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
+  } catch {
+    return [];
+  }
+}
+
+export async function removeCommandRule(cwd: string, line: string, scope: GovernanceScope = "project"): Promise<boolean> {
+  return removeForbiddenLine(cwd, "command-rules.md", line, scope);
 }

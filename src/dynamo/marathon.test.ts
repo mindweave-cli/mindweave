@@ -16,8 +16,10 @@ import { join } from "node:path";
 import type { Entry } from "../memory/types.js";
 import type { VerdictReport } from "../tools/verifyReport.js";
 import {
+  DEFAULT_MARATHON_LIMITS,
   MAX_MARATHON_VERIFY_FAILS,
   decide,
+  describeLimits,
   detectStuck,
   initMarathon,
   runMarathon,
@@ -399,8 +401,9 @@ test("events tell a front end the whole story, in order", async () => {
     sleep: async () => {},
   };
   await runMarathon(session, "goal", { onMarathon: (e) => events.push(e) }, deps);
+  // The cost line (`spend`) is reported after each turn and check; the story itself is the rest.
   assert.deepEqual(
-    events.map((e) => e.type),
+    events.filter((e) => e.type !== "spend").map((e) => e.type),
     ["started", "turn", "planned", "turn", "verifying", "verified", "finished"],
   );
   const finished = events[events.length - 1] as Extract<MarathonEvent, { type: "finished" }>;
@@ -659,7 +662,7 @@ test("the opening turn ends with a handover, never a verification of work not ye
     },
     sleep: async () => {},
   });
-  assert.deepEqual(events.slice(0, 3).map((e) => e.type), ["started", "turn", "planned"]);
+  assert.deepEqual(events.filter((e) => e.type !== "spend").slice(0, 3).map((e) => e.type), ["started", "turn", "planned"]);
   assert.equal((events[1] as Extract<MarathonEvent, { type: "turn" }>).phase, "plan");
   assert.equal(verifyCalls, 1, "only after real work, on turn 2");
 });
@@ -818,4 +821,94 @@ test("the goal is written to disk before the first model call", async () => {
   };
   await runMarathon(session, "ship it", { persist: () => { order.push("persist"); } }, deps);
   assert.deepEqual(order.slice(0, 2), ["persist", "respond"], "saved before the model is asked");
+});
+
+// ── the budget: verification counts, the tally survives a resume, a ceiling always exists ────
+
+/** A model reply that the provider billed `out` output tokens for. */
+const usageEvent = (out: number) =>
+  ({ type: "usage", promptTokens: 1000, completionTokens: out, totalTokens: 1000 + out, cacheHitTokens: 0, cacheMissTokens: 1000 }) as never;
+
+/** A respond like scriptedRespond that also reports usage, as the real engine does. */
+function billedRespond(out: number): MarathonDeps["respond"] {
+  const base = scriptedRespond([]);
+  return async (session, options) => {
+    const reply = await base(session, options);
+    options?.onEvent?.(usageEvent(out));
+    return reply;
+  };
+}
+
+test("the checker's own spending counts toward the ceiling", async () => {
+  const session = await freshSession();
+  session.modelConfig = { model: "deepseek-v4-flash", thinking: false, effort: "high" };
+  const deps: MarathonDeps = {
+    respond: billedRespond(100), // the work itself is cheap
+    verify: async (_s, _goal, o) => {
+      o?.onEvent?.(usageEvent(50_000_000)); // the check is the expensive part, and runs in a forked session
+      return verdict("fail", "not done");
+    },
+    sleep: async () => {},
+  };
+  const state = await runMarathon(session, "goal", { limits: { maxUsd: 1, maxSeconds: 0 } }, deps);
+  assert.equal(state.status, "budgetExceeded", `ended as ${state.status}: ${state.outcome}`);
+  assert.match(state.outcome ?? "", /cost ceiling/);
+  assert.ok((state.costUsd ?? 0) > 1, `the tally missed the checker: ${state.costUsd}`);
+});
+
+test("a resumed run remembers what it already spent", async () => {
+  const session = await freshSession();
+  session.modelConfig = { model: "deepseek-v4-flash", thinking: false, effort: "high" };
+  const limits = { maxUsd: 1, maxSeconds: 0 };
+  // First run: one expensive turn, then the user presses Esc.
+  const stop = new AbortController();
+  const first: MarathonDeps = {
+    respond: async (s, o) => {
+      await billedRespond(50_000_000)(s, o);
+      stop.abort();
+      return "turn";
+    },
+    verify: async () => verdict("pass"),
+    sleep: async () => {},
+  };
+  const paused = await runMarathon(session, "goal", { limits, signal: stop.signal }, first);
+  assert.equal(paused.status, "running");
+  assert.ok((paused.costUsd ?? 0) > 1, "the spend before the stop was not recorded");
+
+  // Resume: a CHEAP turn. Before, the tally restarted at zero and the run carried on.
+  const second: MarathonDeps = { respond: billedRespond(10), verify: async () => verdict("pass"), sleep: async () => {} };
+  const resumed = await runMarathon(session, "goal", {}, second);
+  assert.equal(resumed.status, "budgetExceeded", `ended as ${resumed.status}: ${resumed.outcome}`);
+});
+
+test("a run always has a ceiling: the default, or 'none' chosen and written down", async () => {
+  const quick = (): MarathonDeps => ({ respond: scriptedRespond([null, null]), verify: async () => verdict("pass"), sleep: async () => {} });
+
+  const byDefault = await runMarathon(await freshSession(), "goal", {}, quick());
+  assert.deepEqual(byDefault.limits, DEFAULT_MARATHON_LIMITS);
+  assert.ok(DEFAULT_MARATHON_LIMITS.maxUsd > 0 && DEFAULT_MARATHON_LIMITS.maxSeconds > 0);
+
+  const chosen = await runMarathon(await freshSession(), "goal", { limits: "none" }, quick());
+  assert.equal(chosen.limits, "none", "'no limit' has to be on the record");
+
+  const events: string[] = [];
+  await runMarathon(await freshSession(), "goal", { onMarathon: (e) => events.push(describeMarathonEvent(e)) }, quick());
+  assert.match(events[0]!, /^Marathon started \(stops at ~\$5\.00 or 4h\)$/);
+  assert.equal(describeLimits("none"), "no spending or time limit");
+});
+
+test("the cost so far is reported after each turn and check, against the ceiling", async () => {
+  const session = await freshSession();
+  const events: MarathonEvent[] = [];
+  const deps: MarathonDeps = {
+    respond: scriptedRespond([null]),
+    verify: async () => verdict("pass"),
+    sleep: async () => {},
+  };
+  await runMarathon(session, "goal", { onMarathon: (e) => events.push(e) }, deps);
+  const spends = events.filter((e): e is Extract<MarathonEvent, { type: "spend" }> => e.type === "spend");
+  assert.ok(spends.length >= 2, "after a work turn and after the check");
+  assert.equal(spends[0]!.limitUsd, 5, "the default ceiling is named");
+  assert.equal(typeof spends[0]!.spentUsd, "number");
+  assert.match(describeMarathonEvent(spends[0]!), /of ~\$5\.00$/);
 });

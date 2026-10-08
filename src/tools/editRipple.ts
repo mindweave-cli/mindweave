@@ -102,13 +102,30 @@ export function formatRippleNote(
   editedSet: ReadonlySet<string>,
   label: (abs: string) => string,
 ): string {
-  if (diags.length === 0) return "";
+  // Compared case- and slash-insensitively on Windows: diagnostics arrive with forward
+  // slashes and the edited paths with backslashes, so a plain comparison marked every
+  // diagnostic, the edited file's included, as a caller's.
+  const key = (p: string) => {
+    const s = p.split("\\").join("/");
+    return process.platform === "win32" ? s.toLowerCase() : s;
+  };
+  const edited = new Set([...editedSet].map(key));
+  const isEdited = (d: CodeDiagnostic) => edited.has(key(d.file));
+  // What is worth interrupting the model with: anything in a file it just edited, but only
+  // ERRORS in a caller (a warning over there is not something this edit caused), and never
+  // a server failing to load its own schema. In real sessions the only notes this check
+  // ever produced were such warnings from the JSON server about files the model had not
+  // touched, which sent it off to fix what was not broken.
+  const relevant = diags.filter(
+    (d) => !/\bschema\b.*\b(unable|could not|failed|ENOENT|not found)|\b(unable|could not|failed) to load schema/i.test(d.message) && (isEdited(d) || d.severity === "error"),
+  );
+  if (relevant.length === 0) return "";
   const rank = (d: CodeDiagnostic) => (d.severity === "error" ? 0 : 1);
-  const sorted = [...diags].sort((a, b) => rank(a) - rank(b));
+  const sorted = [...relevant].sort((a, b) => rank(a) - rank(b));
   const shown = sorted.slice(0, MAX_REPORTED);
 
   const lines = shown.map((d) => {
-    const where = editedSet.has(d.file) ? "" : " (caller)";
+    const where = isEdited(d) ? "" : " (caller)";
     return `- ${label(d.file)}:${d.line}${where} ${d.severity}: ${d.message}`;
   });
   const hidden = sorted.length - shown.length;

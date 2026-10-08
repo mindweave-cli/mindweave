@@ -50,7 +50,7 @@ import type { TodoItem } from "../tools/types.js";
 import type { ImageRef } from "../memory/images.js";
 import { forkSession } from "../memory/session.js";
 import { respond, type PauseReason, type RespondOptions } from "./engine.js";
-import { summarizeTask, taskLimitReason, type TaskLimits } from "./pricing.js";
+import { formatCost, summarizeTask, taskLimitReason, type TaskLimits } from "./pricing.js";
 import { VERIFIER_PROMPT, VERDICT_INSTRUCTION, parseVerdict, type VerdictReport } from "../tools/verifyReport.js";
 
 /** How many consecutive non-passing verifications before Marathon gives up and
@@ -91,6 +91,18 @@ export interface MarathonState {
    *  0 the moment one does. */
   consecutiveVerifyFails: number;
   status: MarathonStatus;
+  /**
+   * What this run may spend, fixed when it started and kept with it: "none" is a choice
+   * somebody made, written down. Absent only on a run saved before ceilings existed.
+   */
+  limits?: TaskLimits | "none";
+  /**
+   * Dollars spent on this goal so far, work AND verification, across every resume. The tally
+   * used to be a list rebuilt each time the loop started, so after an Esc and a resume, or a
+   * restart, spending so far counted as zero; and the checker ran in its own forked session
+   * whose usage never reached it, though one check can run 40 rounds and ten can fail.
+   */
+  costUsd?: number;
   /** The goal message is already in the transcript. A run stopped in its opening turn then
    *  picks up from there when resumed, instead of planning (and asking questions) again. */
   goalSent?: boolean;
@@ -104,8 +116,34 @@ export interface MarathonState {
 }
 
 /** A fresh Marathon over `goal`, not yet run. */
-export function initMarathon(goal: string): MarathonState {
-  return { goal, startedAt: Date.now(), turnsSpent: 0, resumes: 0, consecutiveVerifyFails: 0, status: "running" };
+export function initMarathon(goal: string, limits?: TaskLimits | "none"): MarathonState {
+  return {
+    goal,
+    startedAt: Date.now(),
+    turnsSpent: 0,
+    resumes: 0,
+    consecutiveVerifyFails: 0,
+    status: "running",
+    ...(limits !== undefined ? { limits } : {}),
+  };
+}
+
+/**
+ * What a run may spend unless the person chose otherwise: a few dollars and a few hours.
+ * A run is unattended and on the user's own key; one that is not stuck, keeps making small
+ * progress and can never be verified was bounded only by ten failed checks of forty rounds
+ * each, a worst case in the hundreds of model rounds. "No limit" has to be asked for.
+ */
+export const DEFAULT_MARATHON_LIMITS: TaskLimits = { maxUsd: 5, maxSeconds: 4 * 60 * 60 };
+
+/** The ceiling in words, for the start line. */
+export function describeLimits(limits: TaskLimits | "none" | undefined): string {
+  if (limits === "none") return "no spending or time limit";
+  if (!limits) return "no recorded limit";
+  const parts: string[] = [];
+  if (limits.maxUsd > 0) parts.push(formatCost(limits.maxUsd));
+  if (limits.maxSeconds > 0) parts.push(limits.maxSeconds % 3600 === 0 ? `${limits.maxSeconds / 3600}h` : `${Math.round(limits.maxSeconds / 60)} min`);
+  return parts.length ? `stops at ${parts.join(" or ")}` : "no spending or time limit";
 }
 
 // ---------------------------------------------------------------------------
@@ -304,8 +342,8 @@ export async function verifyGoal(
 // ---------------------------------------------------------------------------
 
 export type MarathonEvent =
-  | { type: "started"; goal: string }
-  | { type: "resumed"; goal: string; turnsSpent: number }
+  | { type: "started"; goal: string; ceiling?: string }
+  | { type: "resumed"; goal: string; turnsSpent: number; ceiling?: string; spentUsd?: number }
   /** A turn is about to run. `plan` is the opening turn, the only one where questions
    *  are allowed; every turn after it is `work`. */
   | { type: "turn"; n: number; phase: "plan" | "work" }
@@ -321,7 +359,9 @@ export type MarathonEvent =
   | { type: "finished"; status: Exclude<MarathonStatus, "running">; outcome: string }
   /** The loop stopped without reaching an outcome (the user stopped it): still
    *  "running" on the session, so it can be resumed. */
-  | { type: "paused"; reason?: "limit" };
+  | { type: "paused"; reason?: "limit" }
+  /** What the goal has cost so far, work and checks together, and the ceiling it is held to. */
+  | { type: "spend"; spentUsd: number; limitUsd?: number };
 
 const PAUSE_WORDS: Partial<Record<PauseReason, string>> = {
   stepBudget: "step limit reached",
@@ -333,9 +373,11 @@ const PAUSE_WORDS: Partial<Record<PauseReason, string>> = {
 export function describeMarathonEvent(e: MarathonEvent): string {
   switch (e.type) {
     case "started":
-      return "Marathon started";
+      return e.ceiling ? `Marathon started (${e.ceiling})` : "Marathon started";
     case "resumed":
-      return `Marathon resumed at turn ${e.turnsSpent + 1}`;
+      return e.ceiling
+        ? `Marathon resumed at turn ${e.turnsSpent + 1} (${e.ceiling}; ${formatCost(e.spentUsd ?? 0)} spent so far)`
+        : `Marathon resumed at turn ${e.turnsSpent + 1}`;
     case "turn":
       return e.phase === "plan" ? "Understanding the goal (questions open)" : `Working, turn ${e.n}`;
     case "planned":
@@ -360,6 +402,8 @@ export function describeMarathonEvent(e: MarathonEvent): string {
             : `Stopped, over budget: ${e.outcome}`;
     case "paused":
       return e.reason === "limit" ? "Paused: your usage limit is reached" : "Paused";
+    case "spend":
+      return e.limitUsd ? `${formatCost(e.spentUsd)} of ${formatCost(e.limitUsd)}` : `${formatCost(e.spentUsd)} spent`;
   }
 }
 
@@ -384,11 +428,11 @@ const defaultDeps: MarathonDeps = {
 };
 
 export interface MarathonOptions {
-  /** Optional cost/time ceiling for the WHOLE goal — independent of any per-turn,
-   *  env-configured ceiling `respond()` already enforces (reused via `costTimeLimit`
-   *  in `decide`, not duplicated). Absent means no cost/time cap for the goal itself;
-   *  stuck-detection and the verify-fail counter remain as backstops regardless. */
-  limits?: TaskLimits;
+  /** The cost/time ceiling for the WHOLE goal, independent of any per-turn ceiling
+   *  `respond()` already enforces. Absent means DEFAULT_MARATHON_LIMITS; "none" is the
+   *  deliberate choice to run without one. Fixed when the run starts and kept in its
+   *  state, so a resume keeps the same ceiling. */
+  limits?: TaskLimits | "none";
   onEvent?: RespondOptions["onEvent"];
   onActivity?: RespondOptions["onActivity"];
   /** A long run compacts along the way; a front end draws it exactly as it does inside
@@ -459,16 +503,24 @@ async function runLoop(
   const resumed = session.marathon !== undefined;
   const state = session.marathon ?? initMarathon(goal);
   session.marathon = state;
+  // The ceiling is decided once and kept: the caller's choice, else what the run already
+  // has (a resume), else the default. A run saved before ceilings existed gets the default.
+  state.limits = options.limits ?? state.limits ?? DEFAULT_MARATHON_LIMITS;
+  const limits = state.limits === "none" ? undefined : state.limits;
   const emit = options.onMarathon;
   if (state.status === "running") {
     for (const tool of MARATHON_TOOLS) session.toolContext.activatedTools?.add(tool);
+    const ceiling = describeLimits(state.limits);
     emit?.(
       resumed && state.turnsSpent > 0
-        ? { type: "resumed", goal: state.goal, turnsSpent: state.turnsSpent }
-        : { type: "started", goal: state.goal },
+        ? { type: "resumed", goal: state.goal, turnsSpent: state.turnsSpent, ceiling, spentUsd: state.costUsd ?? 0 }
+        : { type: "started", goal: state.goal, ceiling },
     );
   }
 
+  // Spending from earlier runs of this goal, then this run's own usage on top: work turns
+  // and the checker both push here.
+  const spentBefore = state.costUsd ?? 0;
   const usages: Usage[] = [];
   // Feedback from a non-passing verification, queued for the NEXT turn rather than
   // pushed immediately — the turn that just ran already recorded its own pause
@@ -525,6 +577,9 @@ async function runLoop(
         pauseReason = reason;
       },
     });
+    // Whatever happens next (a stop, a pause, a decision), this turn's spend is on the record.
+    state.costUsd = withEarlierSpend(summarizeTask(usages, session.modelConfig.model), spentBefore)?.costUsd ?? state.costUsd;
+    emit?.({ type: "spend", spentUsd: state.costUsd ?? 0, ...(limits?.maxUsd ? { limitUsd: limits.maxUsd } : {}) });
     // Esc mid-turn ends respond() with no pause and no finished answer, which the
     // decision below would read as "looks done" and spend a verification on. A stop
     // the user asked for is not an outcome: leave the run resumable and say so.
@@ -552,8 +607,8 @@ async function runLoop(
     }
 
     const stuck = detectStuck(session.transcript.slice(-STUCK_WINDOW));
-    const usage = summarizeTask(usages, session.modelConfig.model);
-    const budgetExceeded = options.limits ? taskLimitReason(usage, Date.now() - state.startedAt, options.limits) : null;
+    const usage = withEarlierSpend(summarizeTask(usages, session.modelConfig.model), spentBefore);
+    const budgetExceeded = limits ? taskLimitReason(usage, Date.now() - state.startedAt, limits) : null;
 
     const decision = decide({ pauseReason, stuck, budgetExceeded });
     switch (decision.action) {
@@ -570,6 +625,9 @@ async function runLoop(
         const report = await deps.verify(session, state.goal, {
           signal: options.signal,
           onEvent: (e) => {
+            // The checker's own tokens count toward the ceiling: it is the largest single
+            // spender of a run, and it ran in a session whose usage never reached the tally.
+            if (e.type === "usage") usages.push(e);
             if (e.type !== "tool" || e.phase !== "start") return;
             const arg = ["path", "command", "cmd", "pattern", "query", "url"].map((k) => e.args[k]).find((v) => typeof v === "string");
             emit?.({ type: "verifyStep", line: `${e.name}${arg ? ` ${String(arg).slice(0, 80)}` : ""}` });
@@ -581,6 +639,10 @@ async function runLoop(
           return state;
         }
         state.lastVerification = { at: Date.now(), verdict: report.verdict, note: report.body.slice(0, 2000) };
+        // What the check cost, counted now: the ceiling is judged after the next turn, and a
+        // run that is about to stop should say so with the true figure.
+        state.costUsd = withEarlierSpend(summarizeTask(usages, session.modelConfig.model), spentBefore)?.costUsd ?? state.costUsd;
+        emit?.({ type: "spend", spentUsd: state.costUsd ?? 0, ...(limits?.maxUsd ? { limitUsd: limits.maxUsd } : {}) });
         if (report.verdict === "pass") {
           state.consecutiveVerifyFails = 0;
           state.status = "done";
@@ -612,6 +674,12 @@ async function runLoop(
   return state;
 }
 
+/** The usage so far with the dollars spent in earlier runs of the same goal added (pure). */
+function withEarlierSpend<T extends { costUsd: number }>(usage: T | null, before: number): T | null {
+  if (before <= 0) return usage;
+  return usage ? { ...usage, costUsd: usage.costUsd + before } : null;
+}
+
 /**
  * Begin a NEW goal, replacing whatever Marathon the session already holds (a finished
  * one, or one the user is abandoning by starting over). The front ends call this when
@@ -623,7 +691,7 @@ export function startMarathon(
   options: MarathonOptions = {},
   deps: MarathonDeps = defaultDeps,
 ): Promise<MarathonState> {
-  session.marathon = initMarathon(goal);
+  session.marathon = initMarathon(goal, options.limits);
   return runMarathon(session, goal, options, deps);
 }
 

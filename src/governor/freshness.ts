@@ -30,7 +30,7 @@ import { join } from "node:path";
 import { projectDir, stateRoot } from "../memory/store.js";
 
 /** The files and directories a project's governance is read from. */
-const FORBIDDEN_FILES = ["forbidden.md", "forbidden-commands.md", "forbidden-mcp-tools.md", "sentinel-allow.md", "context.json"];
+const FORBIDDEN_FILES = ["forbidden.md", "forbidden-commands.md", "forbidden-mcp-tools.md", "sentinel-allow.md", "command-rules.md", "context.json"];
 
 /** One directory's entries as `name:mtime:size`, sorted so the stamp is order-stable. */
 async function dirStamp(dir: string, depth: number): Promise<string> {

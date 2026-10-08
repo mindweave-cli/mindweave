@@ -61,7 +61,17 @@ test("the installed providers all report a non-empty list without discovery", ()
 test("refreshModels is a no-op for a lineup that declares no discovery", async () => {
   clearDiscovered();
   const before = allModels().map((m) => m.id);
-  const refreshed = await refreshModels();
+  // A local runtime is asked on every refresh. Point it at a port nothing listens on, so the answer does not
+  // depend on whether this machine (or the Windows host a Linux shell can reach) happens to run Ollama.
+  const saved = process.env.MINDWEAVE_OLLAMA_URL;
+  process.env.MINDWEAVE_OLLAMA_URL = "http://127.0.0.1:1";
+  let refreshed: string[];
+  try {
+    refreshed = await refreshModels();
+  } finally {
+    if (saved === undefined) delete process.env.MINDWEAVE_OLLAMA_URL;
+    else process.env.MINDWEAVE_OLLAMA_URL = saved;
+  }
   assert.deepEqual(refreshed, [], "no installed provider discovers yet");
   assert.deepEqual(
     allModels().map((m) => m.id),

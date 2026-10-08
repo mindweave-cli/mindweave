@@ -43,13 +43,65 @@ function projectRoot(ctx: { cwd: string; governance?: { forbidden: { root: strin
 
 type Ctx = Parameters<Tool["execute"]>[1];
 
+/**
+ * Ask the user before a change to what binds every later session: saving or dropping a
+ * rule, creating or deleting a skill, or lifting a protection. Returns null when they
+ * agreed, or the result to hand back instead.
+ *
+ * A rule is sent on every request as the user's own binding instruction, and a skill is
+ * followed as written. Without this, ONE injected instruction (a web page, a README, a
+ * tool result) could become a permanent rule every future session obeys as the user's,
+ * or quietly lift a path the user had forbidden. The tool's text always said the user
+ * decides; this is what makes that true. Adding a protection only restricts, so it does
+ * not ask. With nobody to ask (a sub-agent), the change is refused.
+ */
+async function confirmStanding(ctx: Ctx, question: string, detail: string): Promise<ToolResult | null> {
+  if (!ctx.requestApproval) {
+    return failQuietly(
+      "Not done: this changes what applies to every later session, which needs the user's agreement, " +
+        "and there is no way to ask from here. Say what you would change in your result instead.",
+    );
+  }
+  const choice = await ctx.requestApproval(question, ["Yes", "No"], detail, "Standing change");
+  if (choice.startsWith("Yes")) return null;
+  return { output: "The user declined; nothing was changed.", summary: "declined by the user" };
+}
+
+/** Most rules the agent may have proposed at once, and the longest one. */
+export const MAX_AGENT_RULES = 20;
+export const MAX_AGENT_RULE_CHARS = 1000;
+
 async function doRememberRule(args: Record<string, unknown>, ctx: Ctx): Promise<ToolResult> {
   const body = typeof args.value === "string" ? args.value.trim() : "";
   if (!body) return failQuietly("`value` is required — the rule text.");
   const name = (typeof args.name === "string" && args.name.trim()) || deriveRuleName(body);
   const globs = parseGlobs(typeof args.globs === "string" ? args.globs : undefined);
+  const where = globs.length > 0 ? `files matching ${globs.join(", ")}` : "every request";
+  // Agent-made rules are capped in size and number: each one is read back as the user's binding instruction in
+  // every later session, so a runaway or injected stream of them must run out of room. A rule the user wrote by
+  // hand has no origin line and is not counted. Re-stating an existing rule (same slug) is not a new one.
+  if (body.length > MAX_AGENT_RULE_CHARS) {
+    return failQuietly(
+      `Not saved: a rule is at most ${MAX_AGENT_RULE_CHARS} characters (this one is ${body.length}). Say it shorter.`,
+    );
+  }
+  const slugOfName = slugify(name);
+  const agentRules = (ctx.governance?.rules ?? []).filter((r) => r.origin && slugify(r.name) !== slugOfName);
+  if (agentRules.length >= MAX_AGENT_RULES) {
+    return failQuietly(
+      `Not saved: there are already ${MAX_AGENT_RULES} rules you proposed. Ask the user which to drop, ` +
+        `or tell them to edit the rules folder themselves.`,
+    );
+  }
+  const declined = await confirmStanding(
+    ctx,
+    `Save this as a standing rule for this project? It will apply to ${where}, in this session and future ones.`,
+    `${name}\n\n${body}`,
+  );
+  if (declined) return declined;
 
-  const saved = await writeRule(projectRoot(ctx), name, body, "", globs);
+  const origin = `agent, confirmed by the user ${new Date().toISOString().slice(0, 10)}`;
+  const saved = await writeRule(projectRoot(ctx), name, body, "", globs, origin);
   // Mirror into the live session so the rule is in the very next prompt.
   //
   // Deduplicate by SLUG, not by the display name. The rule FILE is `<slug>.md`, so
@@ -154,6 +206,8 @@ async function doForbidMcpTool(args: Record<string, unknown>, ctx: Ctx): Promise
 async function doForgetRule(args: Record<string, unknown>, ctx: Ctx): Promise<ToolResult> {
   const name = typeof args.value === "string" ? args.value.trim() : "";
   if (!name) return failQuietly("`value` is required — the rule's name.");
+  const declined = await confirmStanding(ctx, `Drop the standing rule '${name}' for this project?`, name);
+  if (declined) return declined;
   const gone = await removeRule(projectRoot(ctx), name);
   // The live session drops it too, so the very next turn is built without it.
   if (ctx.governance && gone) {
@@ -169,6 +223,8 @@ async function doForgetRule(args: Record<string, unknown>, ctx: Ctx): Promise<To
 async function doUnforbidPath(args: Record<string, unknown>, ctx: Ctx): Promise<ToolResult> {
   const pattern = typeof args.value === "string" ? args.value.trim() : "";
   if (!pattern) return failQuietly("`value` is required — the forbidden path pattern to lift.");
+  const declinedPath = await confirmStanding(ctx, `Lift the protection on '${pattern}', so it can be edited again?`, pattern);
+  if (declinedPath) return declinedPath;
   const normalized = pattern.replace(/^\.\//, "").replace(/\/$/, "");
   const gone = await removeForbiddenPath(projectRoot(ctx), pattern);
   if (ctx.governance && gone) {
@@ -185,6 +241,8 @@ async function doUnforbidPath(args: Record<string, unknown>, ctx: Ctx): Promise<
 async function doUnforbidCommand(args: Record<string, unknown>, ctx: Ctx): Promise<ToolResult> {
   const pattern = typeof args.value === "string" ? args.value.trim() : "";
   if (!pattern) return failQuietly("`value` is required — the forbidden command to lift.");
+  const declined = await confirmStanding(ctx, `Allow the forbidden command '${pattern}' to run again?`, pattern);
+  if (declined) return declined;
   const gone = await removeForbiddenCommand(projectRoot(ctx), pattern);
   if (ctx.governance && gone) {
     ctx.governance.forbidden = {
@@ -200,6 +258,8 @@ async function doUnforbidCommand(args: Record<string, unknown>, ctx: Ctx): Promi
 async function doUnforbidMcpTool(args: Record<string, unknown>, ctx: Ctx): Promise<ToolResult> {
   const name = typeof args.value === "string" ? args.value.trim() : "";
   if (!name) return failQuietly("`value` is required — the full MCP tool name to lift.");
+  const declined = await confirmStanding(ctx, `Make the forbidden MCP tool '${name}' available again?`, name);
+  if (declined) return declined;
   const gone = await removeForbiddenMcpTool(projectRoot(ctx), name);
   if (ctx.governance && gone) {
     const mcpTools = (ctx.governance.forbidden.mcpTools ?? []).filter((t) => t !== name);
@@ -376,6 +436,8 @@ export const skillTool: Tool = {
     if (!name) return failQuietly("`name` is required.");
 
     if (args.action === "delete") {
+      const declinedDelete = await confirmStanding(ctx, `Delete the skill '${slugify(name)}' from this project?`, name);
+      if (declinedDelete) return declinedDelete;
       const gone = await removeSkill(projectRoot(ctx), name);
       // Out of the live catalog too, so /name stops offering it immediately.
       if (ctx.governance && gone) {
@@ -388,6 +450,12 @@ export const skillTool: Tool = {
     }
 
     if (!body) return failQuietly("`steps` is required — the skill needs a body.");
+    const declined = await confirmStanding(
+      ctx,
+      `Save this as the skill '/${slugify(name)}' for this project? A skill is followed as written whenever it runs.`,
+      description ? `${description}\n\n${body}` : body,
+    );
+    if (declined) return declined;
 
     const saved = await writeSkill(projectRoot(ctx), {
       name,

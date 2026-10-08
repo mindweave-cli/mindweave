@@ -36,10 +36,31 @@ test("a mime type becomes an extension that opens natively", () => {
   assert.equal(extensionForMime("application/json"), "json");
   assert.equal(extensionForMime("text/plain; charset=utf-8"), "txt", "parameters are not part of the type");
   assert.equal(extensionForMime("image/svg+xml"), "svg");
-  // Unknown but plausibly an extension: better than .bin.
   assert.equal(extensionForMime("application/x-parquet"), "parquet");
   assert.equal(extensionForMime(""), "bin");
   assert.equal(extensionForMime("application/vnd.some.absurdly.long.vendor.type"), "bin");
+});
+
+test("a server cannot choose an extension that runs or opens as a program", () => {
+  for (const mime of [
+    "application/bat",
+    "application/x-bat",
+    "application/cmd",
+    "application/x-ps1",
+    "application/hta",
+    "application/vbs",
+    "application/js",
+    "application/javascript",
+    "application/jar",
+    "application/lnk",
+    "application/x-sh",
+    "application/x-msdownload",
+    "application/exe",
+    "application/x-scr",
+    "application/msi",
+  ]) {
+    assert.equal(extensionForMime(mime), "bin", mime);
+  }
 });
 
 test("names are made filesystem-safe without becoming unreadable", () => {

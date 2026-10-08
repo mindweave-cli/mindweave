@@ -18,6 +18,7 @@
 import { isAbsolute, relative, resolve } from "node:path";
 import { globToRegExp, literalPrefix } from "./glob.js";
 import type { ForbiddenConfig } from "./types.js";
+import { realPathOf } from "../tools/guard.js";
 
 /** Parse the raw text of a forbidden.md into a clean pattern list. */
 export function parseForbidden(text: string): string[] {
@@ -151,6 +152,27 @@ export function forbiddenPathReason(
   // costs one refusal they can adjust; the other direction costs the protection itself.
   for (const base of [cfg.root, ...roots]) {
     const hit = matchUnderRoot(cfg, abs, base);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+/**
+ * `forbiddenPathReason`, also judged by where the path really leads. A link inside the
+ * project to a forbidden folder (`docs` pointing at `src/legacy`) reached it under a name
+ * no pattern matched. The real path is compared with the real roots, links resolved on
+ * both sides.
+ */
+export async function forbiddenRealPathReason(
+  cfg: ForbiddenConfig | undefined,
+  absPath: string,
+  roots: readonly string[] = [],
+): Promise<string | null> {
+  const textual = forbiddenPathReason(cfg, absPath, roots);
+  if (textual || !cfg || cfg.patterns.length === 0) return textual;
+  const real = await realPathOf(isAbsolute(absPath) ? absPath : resolve(cfg.root, absPath));
+  for (const base of [cfg.root, ...roots]) {
+    const hit = matchUnderRoot(cfg, real, await realPathOf(base));
     if (hit) return hit;
   }
   return null;

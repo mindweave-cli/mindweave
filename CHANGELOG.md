@@ -3,6 +3,128 @@
 Notable changes to Mindweave. Dates are release dates.
 
 
+## v3.1.0 (2026-10-08): a safer agent, fewer pointless questions, hooks, and sessions that remember their work
+
+This release is mostly about trust. A repository you open, a web page the agent reads or a
+note it saved earlier can no longer quietly make Mindweave run a program, read a secret or
+change its own rules. Around that sit fewer questions about harmless commands, a way to run
+your own commands at set moments, lower cost on long sessions, and a set of fixes for
+things that went missing or hung. It was tested on Windows and on Linux. It has not been
+run on a real Mac yet.
+
+### What a repository can no longer do
+
+- **Servers named in a project's own config no longer start by themselves.** Opening a
+  folder used to start every MCP server its `.mindweave/mcp.json` named, which meant the
+  folder could run a program on your machine. Now you are shown the exact command and asked:
+  yes once, always for this project, or no. The answer is tied to the whole definition, so a
+  changed command asks again, and a project cannot replace a server of the same name that you
+  set up yourself.
+- **Language servers and other helpers ask before they are installed**, say where they come
+  from, remember a "never", and are checked against a published hash before they run. Install
+  scripts are not run.
+- **Files that run code later ask before they are written.** A commit hook, a CI workflow, an
+  editor task, a shell startup file and Mindweave's own project config can all run something
+  later, when nobody is watching. The file tools now show you what is being written first.
+- **A project's `.env` can supply a provider key and nothing else.** It can no longer choose
+  the program used as a browser, move the state folder, redirect feedback or change Node's
+  options.
+- **Commands no longer inherit your keys.** A key Mindweave loaded after it started is not
+  passed to the commands it runs, so `env` or a script cannot print it.
+
+### What the agent can no longer do by itself
+
+- **Saving a rule or a skill, or lifting a protection, always asks.** It shows you the exact
+  text first, in every mode. With nobody to ask it refuses. A rule the agent proposed is
+  labelled as such, and the agent can hold at most 20 of them, of 1000 characters each.
+- **Notes the agent saved are presented as its own notes.** They no longer read like
+  instructions from you, and the agent is told not to act on one that asks for a command, a
+  network call or a rule change you did not ask for.
+- **Protected files are judged by the file, not by how the path is spelled.** A link into
+  `.git` or a key folder, a Windows stream name, a trailing dot or a short name all land on
+  the same decision as the plain path. Reading, copying out or sending a protected file with
+  a shell command is refused whatever the verb (`cp .env notes.txt`, `curl -F f=@key.pem`).
+  Mindweave's own state folder is protected, apart from the project notes, large results and
+  cleared-output folders the agent is pointed at. The system's own saved passwords (Keychains,
+  keyrings, Windows credential vaults) are protected too.
+- **Text you cannot see no longer reaches the model.** Invisible characters in notes, files,
+  pasted messages and web pages are removed before a request goes out, and the model is told
+  when that happened. A web page also cannot close its own frame early or pose as one of
+  Mindweave's own markers.
+- **Web pages are fetched by their real address.** A name is resolved first and refused if any
+  address it points to is private, loopback or link-local, and the connection goes to the
+  address that was checked.
+- **More risky commands ask.** Force-pushing, deleting a remote branch, `git reset --hard`,
+  discarding every change, `curl | sh` and publishing a package ask first. Deleting a drive,
+  the home folder or a system folder is refused outright.
+- **Folder names that differ only in case are one folder on Windows and macOS**, so the
+  protected-folder checks no longer miss `.Mindweave` on a Mac.
+
+### Fewer questions that do not matter
+
+- **Sentinel stops asking about commands that only read** (`ls`, `cat`, `git status`, `git
+  log`, `rg` and the like). Anything it cannot read with certainty, anything that writes a
+  file and anything in a repository whose git config can run programs still asks.
+- **Your own command rules.** A `command-rules.md` file in the project or in your state folder
+  takes lines like `allow npm test`, `prompt git push` and `forbid rm -rf :: use the trash`.
+  A forbidden command is refused in every mode and the agent is told your reason.
+- **"Never ask again for this command".** The Sentinel prompt offers it for a command that can
+  be named safely, such as `npm test`. It is not offered for a shell, an interpreter, a
+  delete or a command with more than one part.
+
+### Hooks
+
+Your own commands, run at five moments: before a tool, after a tool, when you send a message,
+when the agent finishes and when a session starts. A hook that exits with code 2 stops the
+action and tells the agent why. Hooks live in `hooks.json` in your state folder, never in the
+repository, so a cloned project cannot plant one and the agent cannot write one.
+
+### Notes from other tools
+
+An `AGENTS.md` at the project root, or the instruction file another coding tool left there,
+is now read as project notes. It is labelled as written for another tool, comes after
+`MINDWEAVE.md` and is cut first when space is short.
+
+### Lower cost on long sessions
+
+- **The session notes are no longer re-sent on every call.** They are added only once
+  something has been cleared, shortened or resumed, which are the cases where they carry
+  something the conversation no longer does. On recorded sessions that had notes, this is
+  about 8% to 40% less uncached input, estimated from their sizes.
+- **Background calls are counted.** The notes update, the summary and page reading each make a
+  model call nobody asked for. They are now rows in the call log and part of the session's
+  spend, and the desktop app shows how much of your total they were.
+- **Clearing old tool output is more careful.** Results that cannot be fetched again, the
+  latest result of each kind and anything smaller than its own replacement are left alone, and
+  the original of a cleared result is saved to a file the replacement points at.
+- **Attachments have a budget.** Twelve big files no longer become one huge message; the rest
+  are attached by reference, and old attachment bodies are cleared like any other result.
+
+### Things that were lost or hung
+
+- **The task list survives a resume**, and a one-line reminder appears when it has gone ten
+  rounds without an update while work is still open.
+- **A stalled stream is retried** once and then pauses the task, instead of waiting for ever.
+- **A reply cut off by the output limit carries on by itself**, up to three times.
+- **One reply can run at most 32 tool calls.** The rest are answered with a note, so a runaway
+  reply cannot flood a turn.
+- **A fast command could hang for two minutes**, mostly on Linux and under load. The shell
+  tool waited for a file step before listening for the command to end, so a command that ended
+  in that gap was never noticed. It listens first now. Background commands had the same gap.
+- **An app that died at launch sometimes reported that it had printed nothing.** About one launch in thirty lost the output that said why, because two reads of the same output file raced. The report now waits for the last read.
+- **Marathon runs have a default ceiling** of five dollars and four hours, shown beside the
+  task count as the run spends, and the cost of the checking step counts toward it.
+
+### Smaller things
+
+- Per-session counters (tool calls, failures, files read again, results shortened) are kept
+  with the session.
+- The working-set block that used to be re-sent on every call, and the code that supported it,
+  are gone. Nothing had used it since it stopped being sent.
+- The test suite now passes on Linux. Continuous testing still runs on Windows.
+- `adm-zip` moves to 0.6.1.
+
+
 ## v3.0.1 (2026-10-02): the terminal shows its name as Mindweave 2
 
 The terminal now shows its name as Mindweave 2, in the header, on the first-run screen and in

@@ -35,7 +35,8 @@ import { providerOf, modelLabel, refreshModels, DISCOVERY_TTL_MS, withModel, sav
 import type { ThinkLevel, Effort } from "../drivers/types.js";
 import { allProviders, modelsOf } from "../drivers/registry.js";
 import { errText } from "../tools/editTarget.js";
-import { loadConfig, hasApiKey, saveApiKey, removeApiKey } from "../cli/bootstrap.js";
+import { loadConfig, hasApiKey, saveApiKey, removeApiKey, saveSetting } from "../cli/bootstrap.js";
+import { parseAddress } from "../drivers/ollama/endpoint.js";
 import { describeImage, isRejection, type ImageRef } from "../memory/images.js";
 import { resolveAttachments, stripAttachments, attachedFiles, hideAttachedNames } from "../cli/attachments.js";
 export { attachedFiles, hideAttachedNames } from "../cli/attachments.js";
@@ -54,6 +55,7 @@ import { stopUi } from "../tools/ui.js";
 import { runCommand } from "../tools/runCommand.js";
 import { APPROVAL_TEXT, APPROVAL_DISMISSED } from "../tools/approval.js";
 import { MODES, DEFAULT_MODE, modeById, modeFromFlags, type Mode, type ModeId } from "../cli/modes.js";
+import { sharpContextWindow } from "../dynamo/contextWindow.js";
 
 /**
  * The interaction modes (Lightning/Architect/Sentinel) — a client concept, same
@@ -247,6 +249,27 @@ export function providerSummaries(): ProviderSummary[] {
  *  any local-runtime provider) — same TTL the CLI's own picker uses. */
 export function refreshDiscoveredModels(): Promise<string[]> {
   return refreshModels({ maxAgeMs: DISCOVERY_TTL_MS });
+}
+
+/** Where the Ollama server is, when it was pointed somewhere other than this computer ("" = this computer). */
+export function ollamaAddress(): string {
+  return process.env.MINDWEAVE_OLLAMA_URL?.trim() ?? "";
+}
+
+/**
+ * Point Ollama at another address (a server on the network), or back at this computer with an empty
+ * value. Saved like a key, so the terminal uses it too; the next look at the provider list asks that
+ * address.
+ */
+export function setOllamaAddress(input: string | null): { ok: true; url: string | null } | { ok: false; error: string } {
+  if (input === null || !input.trim()) {
+    saveSetting("MINDWEAVE_OLLAMA_URL", null);
+    return { ok: true, url: null };
+  }
+  const url = parseAddress(input);
+  if (!url) return { ok: false, error: "That does not look like an address. Try 192.168.1.20:11434 or http://my-server:11434." };
+  saveSetting("MINDWEAVE_OLLAMA_URL", url);
+  return { ok: true, url };
 }
 
 /** Save a key for a provider (slot 1 — the primary key). Takes effect immediately;
@@ -624,6 +647,11 @@ export async function appendInterruptedReply(session: Session, text: string): Pr
  * with a note. Pastes are wrapped with the CLI's `wrapPastedText`. So a message reads the
  * same to the model whichever front end it was typed in.
  */
+/** A quarter of the model's window, in tokens: what one message may attach (see cli/attachments.ts). */
+export function attachmentBudget(model: string): number {
+  return Math.max(8_000, Math.floor(sharpContextWindow(model) * 0.25));
+}
+
 export async function prepareMessage(
   session: Session,
   input: { text: string; filePaths?: string[]; pastes?: string[] },
@@ -635,7 +663,7 @@ export async function prepareMessage(
     : input.text;
   const model = session.modelConfig.model;
   const canSee = manifestForModel(model).acceptsImages?.(model) ?? false;
-  const resolved = await resolveAttachments(withPaths, session.cwd, canSee);
+  const resolved = await resolveAttachments(withPaths, session.cwd, canSee, undefined, attachmentBudget(model));
   // Only what went wrong is news; "attached a.ts (+40 lines)" is already on screen as a chip.
   for (const note of resolved.notes) {
     if (/^skipped |can't see images/.test(note)) onEvent({ type: "activity", line: note, error: true });

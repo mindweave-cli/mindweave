@@ -46,6 +46,8 @@ export interface SpendView {
   monthly: SpendBucket[];
   sessionsScanned: number;
   projectsScanned: number;
+  /** The part of the total that was background work nobody asked for (session notes, summaries, page fetches). */
+  background: { billed: number; calls: number };
 }
 
 function dayKey(ms: number): string {
@@ -119,12 +121,18 @@ export async function spendView(): Promise<SpendView> {
   const projects = new Set<string>();
   let totalBilled = 0;
   let totalOutput = 0;
+  const background = { billed: 0, calls: 0 };
 
   for (const meta of metas) {
     projects.add(meta.cwd);
     for (const call of callRecords(meta)) {
-      totalBilled += accumulateCall(call, byModel, daily, weekly, monthly);
+      const billed = accumulateCall(call, byModel, daily, weekly, monthly);
+      totalBilled += billed;
       totalOutput += call.out;
+      if (call.aux) {
+        background.billed += billed;
+        background.calls += 1;
+      }
     }
   }
 
@@ -137,5 +145,6 @@ export async function spendView(): Promise<SpendView> {
     monthly: recentBuckets(monthly, 12),
     sessionsScanned: metas.length,
     projectsScanned: projects.size,
+    background,
   };
 }

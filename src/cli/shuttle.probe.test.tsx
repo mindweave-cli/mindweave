@@ -20,6 +20,8 @@ import { readFileSync } from "node:fs";
 
 // Before Ink: chalk fixes colour support at import time from the real process.stdout.
 process.env.FORCE_COLOR = "3";
+// Chalk takes FORCE_COLOR as a minimum: a 256-colour TERM (most Linux shells) still downgrades hex colours unless this says otherwise.
+process.env.COLORTERM = "truecolor";
 const { render, Box } = await import("ink");
 const { Banner } = await import("./App.js");
 

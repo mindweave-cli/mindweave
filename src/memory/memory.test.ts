@@ -34,7 +34,8 @@ function sampleTranscript(): Entry[] {
   return [
     { role: "user", content: "find the bug" },
     { role: "assistant", content: "", toolCalls: [{ id: "1", name: "read_file", arguments: "{}" }] },
-    { role: "tool", toolCallId: "1", content: "src/a.ts\nline1\nline2\nline3" },
+    // Long enough to be worth clearing: a result smaller than its own stub is left alone.
+    { role: "tool", toolCallId: "1", content: "src/a.ts\nline1\nline2\nline3" + "\n// more of the file, enough to be worth clearing".repeat(8) },
     { role: "assistant", content: "", toolCalls: [{ id: "2", name: "read_file", arguments: "{}" }] },
     { role: "tool", toolCallId: "2", content: "src/b.ts\nfresh content" },
     { role: "assistant", content: "found it" },

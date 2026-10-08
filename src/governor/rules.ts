@@ -46,6 +46,7 @@ export async function loadRules(stateDir: string): Promise<Rule[]> {
         name: data.name || basename(name, ".md"),
         description: data.description || "",
         body,
+        ...(data.origin ? { origin: data.origin } : {}),
         ...(globs.length > 0 ? { globs } : {}),
       });
     } catch {

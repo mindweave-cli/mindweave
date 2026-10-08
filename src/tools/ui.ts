@@ -59,6 +59,8 @@ import { launchBrowser } from "./browser.js";
 import { hideAppWindows, restoreAppWindows, type MovedWindow } from "./uiHide.js";
 import { HIDDEN_MARK } from "./hiddenDesktop.js";
 import { frameExternal } from "./untrusted.js";
+import { guardedPathReason } from "./guard.js";
+import { fileURLToPath } from "node:url";
 
 type Action = "look" | "click" | "type" | "key" | "scroll" | "hover" | "back" | "wait" | "resize" | "inspect" | "close";
 const ACTIONS: Action[] = ["look", "click", "type", "key", "scroll", "hover", "back", "wait", "resize", "inspect", "close"];
@@ -339,6 +341,16 @@ export function findControl(controls: UiControl[], raw: string): { n: number } |
   return { error: `no control in the latest list is named "${raw}". Look again, or use a number from the list.` };
 }
 
+/** Why a file:// address may not be shown (the read_file guard on its path), or null. */
+async function fileUrlReason(url: string): Promise<string | null> {
+  if (!/^file:/i.test(url)) return null;
+  try {
+    return await guardedPathReason(fileURLToPath(url));
+  } catch {
+    return "not a file path that can be checked";
+  }
+}
+
 /** An address as typed ("localhost:5173") made into one the browser opens. Pure. */
 export function normalizeUrl(raw: string): string | null {
   const s = raw.trim();
@@ -555,6 +567,12 @@ export const ui: Tool = {
   async execute(args, ctx, call): Promise<ToolResult> {
     const req = parseUiArgs(args);
     if (!req.ok) return { output: `Error: ${req.error}`, isError: true, summary: "invalid ui call", quiet: true };
+    // A file:// address is a file read, and gets the same guard read_file does. Opened in
+    // the browser, .env came back as page text that read_file had just refused.
+    if (req.url) {
+      const blocked = await fileUrlReason(req.url);
+      if (blocked) return fail(`Refusing to open ${req.url}: it is ${blocked}.`);
+    }
     const state = states.get(ctx);
 
     if (req.action === "close") {
@@ -1032,6 +1050,13 @@ async function runPage(req: UiRequest, ctx: ToolContext, prior: UiState | undefi
 
   // ── read it again, and take a picture ──
   const snap = await page().read();
+  // Whatever the page ended up on, not only what was asked for: a link or a redirect can
+  // take a file:// page to another file. A protected one is never described or pictured.
+  const fileBlocked = await fileUrlReason(snap.page?.url ?? "");
+  if (fileBlocked) {
+    await page().navigate("about:blank").catch(() => {});
+    return fail(`Refusing to show ${snap.page?.url}: it is ${fileBlocked}.`);
+  }
   if (acc.errors.length || acc.warnings.length || acc.dialogs.length) {
     snap.errors = [...acc.errors, ...(snap.errors ?? [])].slice(0, 12);
     snap.warnings = [...acc.warnings, ...(snap.warnings ?? [])].filter((w, i, all) => all.indexOf(w) === i).slice(0, 6);

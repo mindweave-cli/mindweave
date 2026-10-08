@@ -22,8 +22,12 @@
  * Neither do we now: turning the gate off entirely is a mode change, and shift-tab is
  * where modes are chosen, deliberately and visibly.
  */
-export function guardOptions(name: string): string[] {
-  return ["Yes, do it", `Yes, and don't ask again for ${actionLabel(name)} this session`];
+export function guardOptions(name: string, prefix?: string | null): string[] {
+  const options = ["Yes, do it", `Yes, and don't ask again for ${actionLabel(name)} this session`];
+  // A shell command that can be named safely also offers a standing answer for just that prefix, kept in the
+  // project and editable under Permissions. Never offered for an interpreter, a shell or a risky command.
+  if (prefix) options.push(`Yes, and never ask again for "${prefix}" in this project`);
+  return options;
 }
 
 /** The refusal, offered as a typed answer so the user can say what to do instead. */
@@ -32,7 +36,7 @@ export const GUARD_REFUSAL_INPUT = {
   placeholder: "and tell it what to do instead",
 };
 
-export type GuardDecision = "proceed" | "allow-kind" | "refuse";
+export type GuardDecision = "proceed" | "allow-kind" | "allow-prefix" | "refuse";
 
 /**
  * Map the user's chosen option to an action. Anything unrecognized — including a
@@ -42,10 +46,11 @@ export type GuardDecision = "proceed" | "allow-kind" | "refuse";
  * Matched on the STABLE prefix rather than the whole string, because the second
  * option now names the action it covers and so differs from call to call.
  */
-export function interpretGuardChoice(choice: string | undefined, name = ""): GuardDecision {
-  const options = guardOptions(name);
+export function interpretGuardChoice(choice: string | undefined, name = "", prefix?: string | null): GuardDecision {
+  const options = guardOptions(name, prefix);
   if (choice === options[0]) return "proceed";
   if (choice === options[1]) return "allow-kind";
+  if (options[2] !== undefined && choice === options[2]) return "allow-prefix";
   return "refuse";
 }
 

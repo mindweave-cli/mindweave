@@ -19,7 +19,8 @@ type Entry = import("./types.js").Entry;
 
 const id = (p: string) => p; // paths in these fixtures are already "absolute"
 
-function transcript(args: string, result = "the file contents"): Entry[] {
+// Long enough to be worth clearing: a result smaller than its own stub is left alone.
+function transcript(args: string, result = "the file contents" + "\n// more of the file, enough to be worth clearing".repeat(8)): Entry[] {
   return [
     { role: "user", content: "read it" },
     { role: "assistant", content: "", toolCalls: [{ id: "1", name: "read_file", arguments: args }] },

@@ -7,7 +7,7 @@
  * way every CLI does, lowest priority first:
  *
  *   1. ~/.mindweave/.env   — the global store (write your key here once).
- *   2. <project>/.env  — per-project overrides (optional).
+ *   2. <project>/.env  — a per-project provider key (optional; nothing else is read from it).
  *   3. real shell env  — always wins (export a provider's key for a one-off).
  *
  * We parse `.env` ourselves (a tiny, dependency-free reader) so we control that
@@ -16,6 +16,9 @@
  * naturally. On first run we also drop a commented template at ~/.mindweave/.env so
  * the user has an obvious place to paste their key.
  */
+// Loaded first, so it records the environment the shell gave Mindweave before the settings
+// files below add keys to it; child processes get that environment, not this one.
+import "../tools/childEnv.js";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { stateRoot } from "../memory/store.js";
@@ -59,7 +62,12 @@ export function loadConfig(cwd: string = process.cwd()): void {
  * blank key lines in the fresh template never count as "set".)
  */
 export function reloadConfig(cwd: string = process.cwd()): void {
-  applyEnvFile(join(cwd, ".env"));
+  // A project's .env arrives with the project, so it may supply a provider key and nothing
+  // else. Loaded whole, a downloaded folder could choose the program run as the browser,
+  // move the state folder (and with it the file keys are read from and written to), point
+  // feedback elsewhere, or set NODE_OPTIONS for Mindweave's own Node worker.
+  const keyNames = new Set(allProviders().map((p) => p.apiKeyEnv));
+  applyEnvFile(join(cwd, ".env"), (name) => keyNames.has(name));
   applyEnvFile(globalEnvPath());
   activateStoredKeys();
 }
@@ -140,6 +148,17 @@ function writeEnvVar(envVar: string, value: string | null): void {
       : (existing ? existing.replace(/\s*$/, NL) : "") + line + NL;
   }
   writeFileSync(path, next, { mode: 0o600 });
+}
+
+/**
+ * Save one plain setting (not a key) the same way a key is saved: into the global env file, so it is
+ * there next launch and in the terminal too, and into this process, so it counts at once. `null`
+ * removes it from both.
+ */
+export function saveSetting(envVar: string, value: string | null): void {
+  writeEnvVar(envVar, value);
+  if (value === null) delete process.env[envVar];
+  else process.env[envVar] = value;
 }
 
 /**
@@ -293,7 +312,7 @@ function ensureGlobalTemplate(): void {
 }
 
 /** Apply a single .env file (set-if-absent), tolerating a missing/garbled file. */
-function applyEnvFile(path: string): void {
+function applyEnvFile(path: string, allowed: (name: string) => boolean = () => true): void {
   let text: string;
   try {
     text = readFileSync(path, "utf8");
@@ -308,6 +327,7 @@ function applyEnvFile(path: string): void {
     if (eq <= 0) continue;
     const key = body.slice(0, eq).trim();
     if (!key || key in process.env) continue; // already set wins
+    if (!allowed(key)) continue;
     let value = body.slice(eq + 1).trim();
     if (value.length >= 2 && (value[0] === '"' || value[0] === "'") && value[value.length - 1] === value[0]) {
       value = value.slice(1, -1);

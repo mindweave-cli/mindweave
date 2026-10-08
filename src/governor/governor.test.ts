@@ -15,6 +15,8 @@ import { parseFrontmatter } from "./frontmatter.js";
 import { loadRules, renderRules, parseGlobs } from "./rules.js";
 import { createRuleScope, noteScopePath, rescope } from "./scope.js";
 import { loadSkillCatalog, loadSkillBody, findSkill, renderSkillCatalog, activeSkills, substituteSkillArgs } from "./skills.js";
+// A root that is absolute on every platform: "D:" alone is a drive on Windows and a relative folder name elsewhere.
+const DRIVE = process.platform === "win32" ? "D:" : "/mnt-d";
 import { parseForbidden, forbiddenPathReason, forbiddenCommandReason, parseForbiddenCommands, forbiddenCommandPatternReason } from "./forbidden.js";
 
 async function tempDir(): Promise<string> {
@@ -272,7 +274,7 @@ test("the deny-list is not escaped by changing a path's case", () => {
   // with the first, and nothing adversarial was needed to hit it: a model that writes
   // `.ENV` because it saw that spelling somewhere escaped the deny-list and wrote the
   // very file it was forbidden. Windows is the platform this ships on.
-  const cfg = { root: join("D:", "proj"), patterns: [".env", "src/legacy", "secrets/**"] };
+  const cfg = { root: join(DRIVE, "proj"), patterns: [".env", "src/legacy", "secrets/**"] };
   const cases: [string, string[]][] = [
     [".env", [[".env"], [".ENV"], [".Env"]].flat()],
     ["src/legacy", ["src/legacy/a.ts", "src/Legacy/a.ts", "SRC/legacy/a.ts"]],
@@ -288,7 +290,7 @@ test("the deny-list is not escaped by changing a path's case", () => {
 
 test("a path that traverses back into a forbidden folder is still caught", () => {
   // `..` is resolved before matching, so dressing the path up does not help.
-  const cfg = { root: join("D:", "proj"), patterns: ["src/legacy"] };
+  const cfg = { root: join(DRIVE, "proj"), patterns: ["src/legacy"] };
   for (const rel of ["src/legacy/../legacy/secret.ts", "harmless/../src/legacy/secret.ts"]) {
     assert.equal(forbiddenPathReason(cfg, join(cfg.root, ...rel.split("/"))), "src/legacy", rel);
   }
@@ -297,13 +299,13 @@ test("a path that traverses back into a forbidden folder is still caught", () =>
 test("paths outside the project root stay unmatched by relative patterns", () => {
   // Deliberate: a relative pattern describes this project. Matching it against another
   // tree would deny files the rule was never about.
-  const cfg = { root: join("D:", "proj"), patterns: ["src/legacy"] };
-  assert.equal(forbiddenPathReason(cfg, join("D:", "other", "src", "legacy", "a.ts")), null);
+  const cfg = { root: join(DRIVE, "proj"), patterns: ["src/legacy"] };
+  assert.equal(forbiddenPathReason(cfg, join(DRIVE, "other", "src", "legacy", "a.ts")), null);
 });
 
 test("the shell bypass check is not escaped by case either", () => {
   // `cat SRC/LEGACY/keys` names the same file on Windows as the lower-case spelling.
-  const cfg = { root: join("D:", "proj"), patterns: ["src/legacy"] };
+  const cfg = { root: join(DRIVE, "proj"), patterns: ["src/legacy"] };
   for (const cmd of ["cat src/legacy/keys", "cat SRC/LEGACY/keys", "type Src/Legacy/keys"]) {
     assert.equal(forbiddenCommandReason(cfg, cmd), "src/legacy", cmd);
   }
@@ -315,8 +317,8 @@ test("the deny-list covers every folder in the workspace, not just the first", (
   // project, and judging them only against the one you opened meant a rule blocking
   // `src/legacy` there quietly did nothing in the folder you added — still listed by
   // /forbidden, still shown as active, simply not in force.
-  const primary = join("D:", "backend");
-  const added = join("D:", "frontend");
+  const primary = join(DRIVE, "backend");
+  const added = join(DRIVE, "frontend");
   const cfg = { root: primary, patterns: ["src/legacy", "secrets/**"] };
   const roots = [primary, added];
 
@@ -328,12 +330,12 @@ test("the deny-list covers every folder in the workspace, not just the first", (
   }
 
   // A folder that is not part of this workspace is still none of the rule's business.
-  assert.equal(forbiddenPathReason(cfg, join("D:", "elsewhere", "src", "legacy", "a.ts"), roots), null);
+  assert.equal(forbiddenPathReason(cfg, join(DRIVE, "elsewhere", "src", "legacy", "a.ts"), roots), null);
 });
 
 test("with no extra roots the deny-list behaves exactly as before", () => {
   // The added argument defaults to empty, so a single-root session is unchanged.
-  const cfg = { root: join("D:", "proj"), patterns: ["src/legacy"] };
-  assert.equal(forbiddenPathReason(cfg, join("D:", "proj", "src", "legacy", "a.ts")), "src/legacy");
-  assert.equal(forbiddenPathReason(cfg, join("D:", "other", "src", "legacy", "a.ts")), null);
+  const cfg = { root: join(DRIVE, "proj"), patterns: ["src/legacy"] };
+  assert.equal(forbiddenPathReason(cfg, join(DRIVE, "proj", "src", "legacy", "a.ts")), "src/legacy");
+  assert.equal(forbiddenPathReason(cfg, join(DRIVE, "other", "src", "legacy", "a.ts")), null);
 });

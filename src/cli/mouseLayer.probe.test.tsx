@@ -22,6 +22,8 @@ import { useRef } from "react";
 // process.stdout, not the stream it is handed. Nothing reaching ink may be imported
 // statically here.
 process.env.FORCE_COLOR = process.env.FORCE_COLOR ?? "3";
+// Chalk takes FORCE_COLOR as a minimum: a 256-colour TERM (most Linux shells) still downgrades hex colours unless this says otherwise.
+process.env.COLORTERM = "truecolor";
 const { render, useInput } = await import("ink");
 const { PromptInput } = await import("./components/PromptInput.js");
 const { readMouse } = await import("./mouse.js");

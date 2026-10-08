@@ -9,8 +9,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { basename, join, parse, resolve } from "node:path";
 import { canonicalRoot, relativize, resolvePath, rootsOf, searchUnits, anchorOf } from "./paths.js";
 import { addRoot, removeRoot, workspaceTool } from "./workspace.js";
 import { grepDef } from "./grep.js";
@@ -145,12 +145,38 @@ test("a proactive add with no way to ask does not add", async () => {
   });
 });
 
-test("an explicit add still works without a channel — consent was already given", async () => {
-  // The distinction the `proactive` flag exists to draw: the user asked for this one.
+test("an add without `proactive` asks too: 'the user asked' is only the model's claim", async () => {
+  // Leaving the flag out used to add any folder with no question, the home folder
+  // included, and writes there then no longer counted as outside the workspace.
   await twoRoots(async (a, b) => {
-    const c = ctx(a, [a]);
+    const silent = ctx(a, [a]); // no requestApproval
+    const r = await workspaceTool.execute({ path: b }, silent);
+    assert.deepEqual(silent.roots, [a], "the workspace was widened without consent");
+    assert.match(r.output, /no way to ask/i);
+
+    let asked = 0;
+    const c: ToolContext = {
+      ...ctx(a, [a]),
+      requestApproval: async () => {
+        asked++;
+        return "Yes, include it";
+      },
+    };
     await workspaceTool.execute({ path: b }, c);
+    assert.equal(asked, 1);
     assert.deepEqual(c.roots, [a, await canonicalRoot(b)]);
+  });
+});
+
+test("the home folder, a drive root and a system folder are refused even with a yes", async () => {
+  await twoRoots(async (a) => {
+    const c: ToolContext = { ...ctx(a, [a]), requestApproval: async () => "Yes, include it" };
+    const tooBroad = [homedir(), parse(a).root, process.platform === "win32" ? process.env["SystemRoot"] ?? "C:\\Windows" : "/etc"];
+    for (const folder of tooBroad) {
+      const r = await workspaceTool.execute({ path: folder }, c);
+      assert.deepEqual(c.roots, [a], `${folder} was added`);
+      assert.match(r.output, /\/include/, "the user is told how to add it themselves");
+    }
   });
 });
 

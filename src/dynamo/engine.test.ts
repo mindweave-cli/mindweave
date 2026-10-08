@@ -235,7 +235,8 @@ test("microcompaction's result is never discarded on a counter nobody remembered
   const body = engineSource.match(/if \(used\(\) >= microBar[^)]*\) \{[\s\S]*?\n  \}/)?.[0];
   assert.ok(body, "microcompact block not found");
   assert.match(body, /const proposed = microcompact\(/, "the result must still be computed in full");
-  assert.match(body, /session\.transcript = proposed;/, "and committed as a whole, not merged piecemeal");
+  // Committed whole; keepClearedOriginals only adds where each cleared original was saved.
+  assert.match(body, /session\.transcript = keepClearedOriginals\(session, proposed\);/, "and committed as a whole, not merged piecemeal");
   // The decision must be a token measurement over the WHOLE proposed transcript.
   assert.match(body, /estimateEntriesTokens\(session\.transcript\)/, "the before size must be measured");
   assert.match(body, /estimateEntriesTokens\(proposed\)/, "and the after size, from the proposal itself");

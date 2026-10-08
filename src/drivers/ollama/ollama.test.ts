@@ -9,7 +9,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { clearDiscovered, manifestForModel, seedDiscovered } from "../registry.js";
 import type { ModelRequest } from "../types.js";
-import { baseUrl, DEFAULT_URL, RUNNING_ENV } from "./endpoint.js";
+import { baseUrl, DEFAULT_URL, parseAddress, RUNNING_ENV } from "./endpoint.js";
 import { discoverModels, isUsable, toChoice, trainedWindow } from "./catalog.js";
 import { buildRequest, toNativeMessages } from "./client.js";
 import { LOCAL_WINDOW, localWindow, ownsModel, PREFIX, wireId } from "./manifest.js";
@@ -20,6 +20,20 @@ test("the server address follows OLLAMA_HOST the way Ollama reads it", () => {
   assert.equal(baseUrl({ OLLAMA_HOST: "0.0.0.0:9999" }), "http://127.0.0.1:9999");
   assert.equal(baseUrl({ OLLAMA_HOST: "http://gpu-box:11434/" }), "http://gpu-box:11434");
   assert.equal(baseUrl({ OLLAMA_HOST: "x", MINDWEAVE_OLLAMA_URL: "http://elsewhere:1/" }), "http://elsewhere:1");
+});
+
+test("an address typed into the app becomes the server's root URL, or is refused", () => {
+  assert.equal(parseAddress("192.168.1.20"), "http://192.168.1.20:11434", "a bare host gets Ollama's port");
+  assert.equal(parseAddress("gpu-box:9999"), "http://gpu-box:9999");
+  assert.equal(parseAddress("  http://gpu-box:11434/  "), "http://gpu-box:11434", "spaces and the trailing slash go");
+  assert.equal(parseAddress("https://ollama.example.com"), "https://ollama.example.com", "https keeps its own port");
+  assert.equal(parseAddress("https://example.com/ollama/"), "https://example.com/ollama", "a path behind a proxy is kept");
+  assert.equal(parseAddress(""), null);
+  assert.equal(parseAddress("   "), null);
+  assert.equal(parseAddress("ftp://gpu-box"), null, "only http and https");
+  assert.equal(parseAddress("http://user:secret@gpu-box:11434"), null, "no password in a plain file");
+  assert.equal(parseAddress("not an address"), null);
+  assert.equal(baseUrl({ MINDWEAVE_OLLAMA_URL: parseAddress("gpu-box") ?? "" }), "http://gpu-box:11434", "and baseUrl uses it");
 });
 
 test("local ids are namespaced, so a local model is never taken for a cloud one", () => {

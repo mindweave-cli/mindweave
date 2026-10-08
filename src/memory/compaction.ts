@@ -97,6 +97,71 @@ function clearMutationArgs(raw: string): string | null {
 }
 
 /** Cheap token estimate for a string. */
+/**
+ * What kind of result a tool makes, for clearing (pure).
+ *
+ *   pinned   never cleared while the work lives: what cannot be had again, or is the
+ *            record of a decision. The user's answer to a question, a loaded skill's
+ *            steps, a sub-agent's report (up to 60 rounds of work), what a memory,
+ *            rule or skill save said, an approved plan, and a workspace add (which names
+ *            the label every later path uses).
+ *   latest   a SNAPSHOT of a changing thing: only the newest is kept whole, older ones
+ *            are history. The task list, running shells, the app inspection, the session
+ *            list, the tool search.
+ *   history  everything else: a finished command, a file read, a search, a page. Old ones
+ *            may be cleared, and their originals are saved (memory/clearedArchive.ts).
+ *
+ * Before this every result was history, so the task list was cleared down to its first
+ * line, a user's answer could be stubbed, and a sub-agent's whole report could go.
+ */
+export function clearKind(toolName: string): "pinned" | "latest" | "history" {
+  if (PINNED_TOOLS.has(toolName)) return "pinned";
+  if (LATEST_TOOLS.has(toolName)) return "latest";
+  return "history";
+}
+const PINNED_TOOLS = new Set([
+  "ask_user",
+  "use_skill",
+  "spawn_subagent",
+  "save_memory",
+  "governor",
+  "skill",
+  "exit_plan",
+  "workspace",
+  "mcp_server",
+]);
+const LATEST_TOOLS = new Set(["todo_write", "shells", "ui", "sessions", "find_tools"]);
+
+/**
+ * Whether the session notes say anything the conversation does not (pure).
+ *
+ * The notes ride in the per-call tail, after the conversation, so they are never served
+ * from the provider's cache: they were the largest recurring uncached cost, a median of
+ * 2.7K tokens on every call. While the conversation still holds everything they
+ * summarise they are a second copy, so they are sent only once something is gone: a
+ * compaction, a cleared tool result or image, a condensed reply, an edit's cleared body.
+ * And not when the notes are already in the conversation as the summary a compaction made
+ * from them, which sent the same text twice on every call.
+ */
+export function notesAddSomething(transcript: readonly Entry[], notes: string): boolean {
+  const text = notes.trim();
+  if (!text) return false;
+  let lost = false;
+  for (const e of transcript) {
+    if (e.role === "summary") {
+      if (e.content.includes(text)) return false;
+      lost = true;
+    } else if (e.role === "tool") {
+      if (e.content.includes(CLEARED_STUB)) lost = true;
+    } else if (e.role === "assistant") {
+      if (e.content === RECAP_STUB || e.toolCalls?.some((c) => c.arguments.includes(CLEARED_INPUT_NOTE))) lost = true;
+    } else if (e.role === "user") {
+      if (e.content.includes(IMAGE_CLEARED_STUB) || e.content.includes(ATTACHMENT_CLEARED)) lost = true;
+    }
+  }
+  return lost;
+}
+
 export function estimateTokens(text: string): number {
   return estimateTokensForChars(text.length);
 }
@@ -157,6 +222,8 @@ export function microcompact(
   entries: Entry[],
   keepLastN: number = KEEP_LAST_N,
   supersededPaths: ReadonlySet<string> = new Set(),
+  /** A finished task's sweep: results kept for the task's life may go too (see clearKind). */
+  releasePinned = false,
 ): {
   entries: Entry[];
   cleared: number;
@@ -164,6 +231,7 @@ export function microcompact(
   recapsCleared: number;
   inputsCleared: number;
   imagesCleared: number;
+  attachmentsCleared: number;
 } {
   const toolIdx = entries.flatMap((e, i) => (e.role === "tool" ? [i] : []));
   let clearable = new Set(keepLastN > 0 ? toolIdx.slice(0, -keepLastN) : toolIdx);
@@ -179,11 +247,32 @@ export function microcompact(
     clearable = new Set([...clearable].filter((i) => i < lastRoundStart));
   }
 
-  // A file the WORKING SET carries in full is represented twice: once here in the
-  // transcript, and once again in the <working_files> block that is rebuilt at the
-  // boundary every step. Those copies are not equivalent — the working-set one is
-  // current by construction, and the transcript one is a snapshot of whatever the file
-  // said when it was read — so the transcript copy is the redundant one, and clearing
+  // What each result is FOR decides whether it may go (see clearKind). The tool that made
+  // a result is found through the call it answers.
+  const nameOf = new Map<string, string>();
+  for (const e of entries) {
+    if (e.role === "assistant" && e.toolCalls) for (const tc of e.toolCalls) nameOf.set(tc.id, tc.name);
+  }
+  const newestOfLatest = new Map<string, number>();
+  for (const i of toolIdx) {
+    const e = entries[i];
+    if (e?.role !== "tool") continue;
+    const name = nameOf.get(e.toolCallId);
+    if (name && clearKind(name) === "latest") newestOfLatest.set(name, i);
+  }
+  for (const i of [...clearable]) {
+    const e = entries[i];
+    if (e?.role !== "tool") continue;
+    const name = nameOf.get(e.toolCallId);
+    if (!name) continue;
+    const kind = clearKind(name);
+    if ((kind === "pinned" && !releasePinned) || (kind === "latest" && newestOfLatest.get(name) === i)) clearable.delete(i);
+  }
+
+  // A file whose read is SUPERSEDED (a later read of the same file carries its current
+  // content in full) is represented twice. Those copies are not equivalent — the later one
+  // is current, and the earlier one is a snapshot of whatever the file said when it was
+  // read — so the earlier copy is the redundant one, and clearing
   // it costs the model nothing it cannot already see, fresher.
   //
   // This deliberately overrides BOTH protections above. keepLastN and the live-round
@@ -223,6 +312,15 @@ export function microcompact(
       if (name && CONTENT_CARRYING_TOOLS.has(name)) clearInputIds.add(e.toolCallId);
     }
   }
+  // A result smaller than the stub that would replace it is left as it is: clearing it
+  // made the context bigger (a write_file confirmation is about 16 tokens, its stub about
+  // 36) and moved no cache boundary. Decided AFTER the inputs above, so the large body of
+  // the edit or write that produced such a result still shrinks.
+  const stubTokens = estimateTokens(CLEARED_STUB);
+  for (const i of [...clearable]) {
+    const e = entries[i];
+    if (e?.role === "tool" && estimateTokens(e.content) < stubTokens * 1.5 && !e.content.includes(CLEARED_STUB)) clearable.delete(i);
+  }
 
   // Old assistant recaps are condensed beyond the recent window — this is what stops a
   // finished task from resurfacing. Recent replies (last keepLastN entries) are kept.
@@ -236,6 +334,7 @@ export function microcompact(
   let recapsCleared = 0;
   let inputsCleared = 0;
   let imagesCleared = 0;
+  let attachmentsCleared = 0;
   const clearedIds: string[] = [];
   const out = entries.map((e, i) => {
     // 1) Old tool-result bodies → stub (with first line kept for navigation).
@@ -292,19 +391,47 @@ export function microcompact(
     //    live round could be evicted while every tool result around it was kept —
     //    dropping the picture the model was in the middle of looking at. The comment
     //    here claimed the two windows already matched. They did not.
-    if (i < imageBoundary && e.role === "user" && e.images && e.images.length > 0) {
-      imagesCleared += e.images.length;
-      const names = e.images.map((img) => img.path).join(", ");
-      const { images: _dropped, ...rest } = e;
-      return { ...rest, content: `${e.content}\n\n[${names} ${IMAGE_CLEARED_STUB}]` };
+    if (i < imageBoundary && e.role === "user") {
+      // 5) Old attached files. A file attached with @ or a drop became part of the user
+      //    message, and nothing cleared it: a 250 KB attachment (about 70K tokens) rode in
+      //    every request for the rest of the session, while the same file read through
+      //    read_file is cleared after a few results. It is on disk, so the stub says so.
+      const att = clearAttachmentBodies(e.content);
+      attachmentsCleared += att.count;
+      const text = att.count > 0 ? att.content : e.content;
+      if (e.images && e.images.length > 0) {
+        imagesCleared += e.images.length;
+        const names = e.images.map((img) => img.path).join(", ");
+        const { images: _dropped, ...rest } = e;
+        return { ...rest, content: `${text}\n\n[${names} ${IMAGE_CLEARED_STUB}]` };
+      }
+      return att.count > 0 ? { ...e, content: text } : e;
     }
     return e;
   });
 
-  if (cleared === 0 && recapsCleared === 0 && inputsCleared === 0 && imagesCleared === 0) {
-    return { entries: [...entries], cleared: 0, clearedIds: [], recapsCleared: 0, inputsCleared: 0, imagesCleared: 0 };
+  if (cleared === 0 && recapsCleared === 0 && inputsCleared === 0 && imagesCleared === 0 && attachmentsCleared === 0) {
+    return { entries: [...entries], cleared: 0, clearedIds: [], recapsCleared: 0, inputsCleared: 0, imagesCleared: 0, attachmentsCleared: 0 };
   }
-  return { entries: out, cleared, clearedIds, recapsCleared, inputsCleared, imagesCleared };
+  return { entries: out, cleared, clearedIds, recapsCleared, inputsCleared, imagesCleared, attachmentsCleared };
+}
+
+/** What replaces an old attachment's body (see clearAttachmentBodies). */
+export const ATTACHMENT_CLEARED = "attachment cleared to save context";
+
+/**
+ * Replace each attached file's body in a user message with a one-line stub that keeps its
+ * path, size and where to get it back (pure). Small ones stay: a stub would be bigger.
+ */
+export function clearAttachmentBodies(content: string): { content: string; count: number } {
+  let count = 0;
+  const out = content.replace(/<attached_file path="([^"]*)">\n([\s\S]*?)\n<\/attached_file>/g, (whole, path: string, body: string) => {
+    if (body.startsWith(`[${ATTACHMENT_CLEARED}`) || estimateTokens(body) < estimateTokens(CLEARED_STUB) * 1.5) return whole;
+    count++;
+    const lines = body.split("\n").length - (body.endsWith("\n") ? 1 : 0);
+    return `<attached_file path="${path}">\n[${ATTACHMENT_CLEARED} · ${lines} lines · ~${estimateTokens(body)} tokens · it is still on disk: read_file ${path} with a line range if you need it]\n</attached_file>`;
+  });
+  return { content: out, count };
 }
 
 // Trivial continuations that do NOT open a new task — so a "continue"/"yes" after a

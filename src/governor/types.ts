@@ -22,6 +22,11 @@ export interface Rule {
   /** The rule text the model must follow. */
   body: string;
   /**
+   * Who proposed it, when it was not typed by the user: "agent, confirmed by the user <date>". Absent for a
+   * rule the user wrote by hand. It counts against the cap on agent-made rules.
+   */
+  origin?: string;
+  /**
    * Optional path globs (frontmatter `globs`) that SCOPE the rule: when present,
    * it's injected only on turns whose working set touches a matching file —
    * "fires when the work heads that way." Absent/empty ⇒ always-on (the default).
@@ -98,6 +103,11 @@ export interface Governance {
    * `ToolContext.guardAllowed`, which only lasts the session.
    */
   sentinelAllow?: string[];
+  /**
+   * The user's command rules by prefix (command-rules.md): `allow git status`, `prompt git push`,
+   * `forbid rm -rf :: use the trash instead`. See tools/commandPolicy.ts.
+   */
+  commandRules?: import("../tools/commandPolicy.js").CommandRule[];
   /**
    * One-shot, user-facing lines from a governance DECISION rather than a tool
    * result — today just "a forbidden pattern was lifted for this session."

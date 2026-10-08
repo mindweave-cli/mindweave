@@ -202,3 +202,25 @@ test("a server in active use is NOT reaped", { timeout: 60_000 }, async () => {
     await lsp.dispose();
   }
 });
+
+// The TypeScript server sends diagnostics only to a client that declares it can take them,
+// and on Windows it names the file `c:/...` when it was opened as `C:/...`. Between the two
+// the diagnostics tool and the after-edit check answered "nothing" for every TypeScript
+// project. This is the check that an edit which breaks a caller is actually caught.
+test("an edit that breaks a caller is reported as an error in the caller", { timeout: 45_000 }, async () => {
+  const dir = await tsProject();
+  const lsp = new LspManager(dir);
+  try {
+    const main = join(dir, "src/main.ts");
+    lsp.noteFile(join(dir, "src/util.ts"));
+    lsp.noteFile(main);
+    await fs.writeFile(join(dir, "src/util.ts"), "export function helper(x: number): string { return String(x); }\n");
+    await fs.writeFile(main, "import { helper } from './util';\nexport function run(): number { return helper(); }\n");
+    await lsp.diagnostics(join(dir, "src/util.ts"));
+    const found = await lsp.diagnostics(main);
+    assert.ok(found.some((d) => d.severity === "error"), `no error reported: ${JSON.stringify(found)}`);
+    assert.ok(found.every((d) => d.file.endsWith("src/main.ts")), "reported under the file's own path");
+  } finally {
+    await lsp.dispose();
+  }
+});

@@ -23,7 +23,7 @@ import { createRuleScope } from "../governor/scope.js";
 import type { Governance } from "../governor/types.js";
 import { loadModelConfig } from "../dynamo/model.js";
 import { ensureMemoryDir, loadMemoryIndex, memoryDir } from "./autoMemory.js";
-import { loadMcpConfig } from "../mcp/config.js";
+import { planMcpServers } from "../mcp/projectApproval.js";
 import { McpManager } from "../mcp/manager.js";
 import { assembleNotes, NOTES_FILE } from "./projectNotes.js";
 
@@ -88,9 +88,12 @@ function attachMcp(ctx: ToolContext, cwd: string): void {
   // spilled results have to land in this project's state dir rather than wherever the
   // process happened to start.
   manager.setProjectRoot(cwd);
-  void loadMcpConfig(cwd)
-    .then(async (configs) => {
-      await manager.start(configs);
+  // The user's own servers, and project servers already approved, start now. The rest
+  // wait for a question when the first turn starts (see mcp/projectApproval.ts).
+  void planMcpServers(cwd)
+    .then(async ({ ready, pending }) => {
+      ctx.mcpPending = pending;
+      await manager.start(ready);
       // Governance is applied AFTER connecting, because both gates are about the tools
       // a server actually turned out to advertise: a forbidden name only matters once
       // it exists, and a changed description can only be noticed against a live one.
@@ -461,7 +464,7 @@ export async function resumeSession(
   // that existed (or one whose history was pruned) has none even though its turns really
   // did change files, and marking it lets /undo and rewind say so rather than claim
   // nothing happened.
-  const kept = (await toolContext.checkpoints?.restoreFrom(checkpointDir(cwd, meta.id))) ?? 0;
+  const kept = (await toolContext.checkpoints?.restoreFrom(checkpointDir(cwd, meta.id), cwd)) ?? 0;
   if (kept === 0) toolContext.checkpoints?.noteResumed();
   toolContext.sessionId = meta.id;
   // Re-advertise the deferred tools this session had already surfaced, so a continued
@@ -469,6 +472,8 @@ export async function resumeSession(
   if (meta.activatedTools && meta.activatedTools.length > 0) {
     toolContext.activatedTools = new Set(meta.activatedTools);
   }
+  // The task list, so a continued session still has the work it was tracking.
+  if (Array.isArray(meta.todos)) toolContext.todos = meta.todos;
   attachMcp(toolContext, cwd);
   await seedProjectMemoryRead(toolContext, projectMemory);
   // What the model has already read is in the transcript it is about to be handed, so the
@@ -508,6 +513,8 @@ export async function resumeSession(
     // what happened, and what happened does not stop being true.
     ...(meta.spend ? { spend: meta.spend } : {}),
     ...(meta.callLog ? { callLog: meta.callLog } : {}),
+    // What the session did so far, so the counts of a continued session are the whole session's.
+    ...(meta.counters ? { counters: meta.counters } : {}),
     // A measurement of this session, true after a resume as long as the model is the
     // same (the engine checks that before using it). Without it a reopened session read
     // as nearly empty until its first call.

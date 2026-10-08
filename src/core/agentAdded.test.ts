@@ -22,6 +22,8 @@ async function fresh() {
   return createSession(mkdtempSync(join(tmpdir(), "agent-add-proj-")));
 }
 async function agent(s: Awaited<ReturnType<typeof fresh>>, tool: string, args: Record<string, unknown>) {
+  // Saving a rule or a skill asks the user; here they agree.
+  s.toolContext.requestApproval = async () => "Yes";
   const result = await findTool(tool)!.execute(args, s.toolContext);
   assert.ok(!result.isError, `${tool} failed: ${result.output}`);
 }

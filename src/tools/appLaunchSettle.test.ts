@@ -126,3 +126,19 @@ test("Esc while the launch is being watched stops the app instead of leaving it 
   assert.equal(mgr.running().length, 0, "the app the user cancelled is not left running");
   mgr.dispose();
 });
+
+test("a launch that dies at once always reports its output, however the final read and the report interleave", { timeout: 90_000 }, async () => {
+  // The last read of a finished shell's output file and the report that quotes it ran side by side on one reader,
+  // and the report sometimes won: "It has printed nothing so far" for an app that had printed the reason. It showed
+  // up as about one failure in thirty on the test above, so this runs a run of them and wants every one.
+  process.env.MINDWEAVE_READY_WINDOW_MS = "3000";
+  const { mgr, ctx } = rig();
+  for (let i = 0; i < 40; i++) {
+    const r = await runCommand.execute(
+      { command: nodeCmd(`console.error('reason-${i}');process.exit(3)`), run_in_background: true, notify: "on_failure" },
+      ctx,
+    );
+    assert.match(r.output, new RegExp(`reason-${i}`), `launch ${i} lost its output: ${r.output.slice(0, 160)}`);
+  }
+  mgr.dispose();
+});

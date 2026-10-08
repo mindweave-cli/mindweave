@@ -29,6 +29,8 @@ export interface MarathonUi {
   line: string;
   turn: number;
   todos: TodoItem[];
+  /** What the goal has cost so far against its ceiling ("~$0.42 of ~$5.00"), once a turn has run. */
+  spend?: string;
 }
 
 export type MarathonUiAction =
@@ -79,6 +81,8 @@ export function marathonUiReduce(ui: MarathonUi | null, action: MarathonUiAction
         case "waiting":
         case "verified":
           return { ...base, phase: "running", line };
+        case "spend":
+          return ui ? { ...ui, spend: line } : ui;
       }
     }
   }

@@ -30,21 +30,6 @@ test("recordWrite marks the file full:false with recency + focus", async () => {
   assert.deepEqual(rec.focus, [{ start: 2, end: 2 }]);
 });
 
-test("a working-set flag can no longer suppress a read", async () => {
-  // The <working_files> block is gone, so `workingSetFull` has no producer. If a stale
-  // one is ever set — by an old session, a test, a future caller — it must NOT stop the
-  // content coming back: refusing a read on the strength of a block nothing renders is
-  // the exact "context that lies" failure removing the block exists to end.
-  const ctx = freshCtx();
-  const p = join(ctx.cwd, "a.ts");
-  await fs.writeFile(p, "const value = 42;\n");
-  await readFile.execute({ path: "a.ts" }, ctx); // populate the ledger
-
-  ctx.workingSetFull = new Set([resolvePath(ctx, "a.ts")]);
-  const r = await readFile.execute({ path: "a.ts" }, ctx);
-  assert.doesNotMatch(r.output, /<working_files>/, "nothing may point at a block that is not sent");
-});
-
 test("an unchanged file already in the transcript is not re-sent", async () => {
   // The ONLY dedup left, and the honest one: the content really is still in the
   // conversation, where the provider has cached it.

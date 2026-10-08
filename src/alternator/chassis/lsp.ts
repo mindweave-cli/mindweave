@@ -26,6 +26,28 @@ import { flattenDocSymbols, pickNearest, type LineSpan, type RawDocSymbol } from
 import { killTreeSync, spawnManaged } from "../../tools/killTree.js";
 
 const INIT_TIMEOUT = 15_000;
+
+/**
+ * What this client can do, told to every server at initialize.
+ *
+ * It was `{}`, and a server only sends what the client says it can take: the TypeScript
+ * server published no diagnostics at all to a client that did not declare
+ * publishDiagnostics, so the diagnostics tool and the after-edit check answered
+ * "nothing" for every TypeScript and JavaScript project and spent their full wait doing
+ * it. Declared here: exactly the features this client uses. Nothing that would make a
+ * server send requests this client does not answer (workspace/configuration, progress
+ * tokens), and no hierarchical document symbols, whose different reply shape the symbol
+ * code does not parse.
+ */
+export const CLIENT_CAPABILITIES = {
+  textDocument: {
+    synchronization: { dynamicRegistration: false, willSave: false, willSaveWaitUntil: false, didSave: false },
+    publishDiagnostics: { relatedInformation: false, versionSupport: false },
+    references: { dynamicRegistration: false },
+    documentSymbol: { dynamicRegistration: false },
+  },
+  workspace: { symbol: { dynamicRegistration: false } },
+} as const;
 const REQUEST_TIMEOUT = 10_000;
 /** How long to wait for a server's `shutdown` reply before killing it anyway. */
 const SHUTDOWN_TIMEOUT = 2_000;
@@ -270,7 +292,8 @@ export class LspManager {
     } catch {
       return [];
     }
-    const key = absPath.split("\\").join("/");
+    const shown = absPath.split("\\").join("/");
+    const key = fileKey(absPath);
     const uri = pathToFileURL(absPath).toString();
     // Clear so we can detect a FRESH publish (an empty array is a valid "clean" result).
     this.diagnosticsByFile.delete(key);
@@ -295,7 +318,7 @@ export class LspManager {
     while (Date.now() < deadline && !this.diagnosticsByFile.has(key)) {
       await delay(60);
     }
-    return (this.diagnosticsByFile.get(key) ?? []).map((d) => toCodeDiagnostic(key, d));
+    return (this.diagnosticsByFile.get(key) ?? []).map((d) => toCodeDiagnostic(shown, d));
   }
 
   /** Process ids of the servers currently tracked. Lets a caller (and the tests)
@@ -451,7 +474,7 @@ export class LspManager {
     // latest per file so `diagnostics()` can read them after syncing a file.
     conn.onNotification("textDocument/publishDiagnostics", (params: unknown) => {
       const p = params as { uri?: string; diagnostics?: RawDiagnostic[] };
-      if (p?.uri) this.diagnosticsByFile.set(uriToPath(p.uri), p.diagnostics ?? []);
+      if (p?.uri) this.diagnosticsByFile.set(fileKey(uriToPath(p.uri)), p.diagnostics ?? []);
     });
     conn.listen();
 
@@ -461,7 +484,7 @@ export class LspManager {
         conn.sendRequest("initialize", {
           processId: process.pid,
           rootUri,
-          capabilities: {},
+          capabilities: CLIENT_CAPABILITIES,
           workspaceFolders: [{ uri: rootUri, name: "root" }],
         }),
         INIT_TIMEOUT,
@@ -572,6 +595,17 @@ interface RawSymbol {
   name: string;
   kind: number;
   location: RawLocation;
+}
+
+/**
+ * The key a file's diagnostics are kept under. Windows paths are case-insensitive and
+ * servers do not echo the spelling they were sent: the TypeScript server publishes for
+ * `file:///c%3A/...` a file opened as `C:\...`. Keyed by the raw path, every publish was
+ * stored under a name nobody looked up, and diagnostics() always returned nothing.
+ */
+function fileKey(path: string): string {
+  const slashed = path.split("\\").join("/");
+  return process.platform === "win32" ? slashed.toLowerCase() : slashed;
 }
 
 function uriToPath(uri: string): string {

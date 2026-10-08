@@ -16,6 +16,7 @@
 import type { ToolContext, ToolResult } from "./types.js";
 import { dirname, relative, isAbsolute } from "node:path";
 import { fail } from "./results.js";
+import { realPathOf, withinFolder } from "./guard.js";
 
 const ALLOW = "Yes, allow it this time";
 const DENY = "No, keep it protected";
@@ -208,7 +209,9 @@ export async function requestOutsideWorkspaceWrite(
   filePath: string,
   action: string,
 ): Promise<ToolResult | null> {
-  if (insideWorkspace(ctx, filePath)) return null;
+  // Judged by where the write really lands. A link inside the project to a folder outside
+  // it passed a comparison of path text, and the write went outside with no question.
+  if (await insideWorkspaceReally(ctx, filePath)) return null;
   const dir = dirname(filePath);
   if (ctx.allowedOutsideDirs?.has(dir)) return null;
 
@@ -238,7 +241,18 @@ Workspace: ${(ctx.roots ?? [ctx.cwd]).join(", ")}`,
   );
 }
 
-/** Is this path inside one of the folders the user opened? */
+/** Is this path inside one of the folders the user opened, with links resolved on both sides? */
+export async function insideWorkspaceReally(ctx: ToolContext, filePath: string): Promise<boolean> {
+  if (!insideWorkspace(ctx, filePath)) return false;
+  const roots = ctx.roots && ctx.roots.length > 0 ? ctx.roots : [ctx.cwd];
+  const real = await realPathOf(filePath);
+  for (const root of roots) {
+    if (withinFolder(await realPathOf(root), real)) return true;
+  }
+  return false;
+}
+
+/** Is this path inside one of the folders the user opened? Compares path text; see insideWorkspaceReally. */
 export function insideWorkspace(ctx: ToolContext, filePath: string): boolean {
   const roots = ctx.roots && ctx.roots.length > 0 ? ctx.roots : [ctx.cwd];
   return roots.some((root) => {

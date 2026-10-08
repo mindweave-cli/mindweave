@@ -151,7 +151,8 @@ export const edit: Tool = {
       ops.push({ oldString: e.old_string, newString: e.new_string, replaceAll: e.replace_all === true });
     }
 
-    const target = await prepareEditTarget(ctx, rawPath, "editing");
+    const preview = ops.map((o) => `- ${o.oldString}\n+ ${o.newString}`).join("\n\n");
+    const target = await prepareEditTarget(ctx, rawPath, "editing", preview);
     if (!target.ok) return target.error;
     const { filePath, content, eol } = target;
 

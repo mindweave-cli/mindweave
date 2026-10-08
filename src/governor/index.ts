@@ -20,6 +20,7 @@ import { join } from "node:path";
 import { loadRules } from "./rules.js";
 import { loadSkillCatalog } from "./skills.js";
 import { parseForbidden, parseForbiddenCommands, parseForbiddenMcpTools } from "./forbidden.js";
+import { parseCommandRules } from "../tools/commandPolicy.js";
 import type { Governance } from "./types.js";
 
 /** Read a project state file (forbidden.md / forbidden-commands.md), "" if absent. */
@@ -43,17 +44,19 @@ export type GovernanceScope = "project" | "global";
 /** The deny-lists and Sentinel allowances of ONE scope, unmerged, for a settings screen. */
 export async function loadPermissionLists(cwd: string, scope: GovernanceScope) {
   const dir = governanceDir(cwd, scope);
-  const [paths, commands, mcpTools, sentinel] = await Promise.all([
+  const [paths, commands, mcpTools, sentinel, commandRules] = await Promise.all([
     readStateFile(dir, "forbidden.md"),
     readStateFile(dir, "forbidden-commands.md"),
     readStateFile(dir, "forbidden-mcp-tools.md"),
     readStateFile(dir, "sentinel-allow.md"),
+    readStateFile(dir, "command-rules.md"),
   ]);
   return {
     paths: parseForbidden(paths),
     commands: parseForbiddenCommands(commands),
     mcpTools: parseForbiddenMcpTools(mcpTools),
     sentinelAllow: parseForbiddenCommands(sentinel),
+    commandRules: parseCommandRules(commandRules),
   };
 }
 
@@ -115,6 +118,9 @@ export async function loadGovernance(cwd: string): Promise<Governance> {
   const rules = byName(globalRules, projectRules);
   const skills = byName(globalSkills, projectSkills);
   const sentinelAllow = unique([...global.sentinelAllow, ...project.sentinelAllow]);
+  // A project's rules come after the user's own, so on a conflict the project's line is the one found last;
+  // matching takes forbid over prompt over allow whichever file a rule came from.
+  const commandRules = [...global.commandRules, ...project.commandRules];
   return {
     rules,
     skills,
@@ -125,6 +131,7 @@ export async function loadGovernance(cwd: string): Promise<Governance> {
       root: cwd,
     },
     ...(sentinelAllow.length ? { sentinelAllow } : {}),
+    ...(commandRules.length ? { commandRules } : {}),
     ...(projectContext !== null ? { contextAutoCompactTokens: projectContext } : globalContext !== null ? { contextAutoCompactTokens: globalContext } : {}),
   };
 }

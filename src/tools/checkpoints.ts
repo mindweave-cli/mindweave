@@ -31,8 +31,9 @@
  */
 import { promises as fs } from "node:fs";
 import { createHash } from "node:crypto";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { writeFileAtomic } from "./atomicWrite.js";
+import { guardedPathReason, realPathOf, withinFolder } from "./guard.js";
 
 /**
  * Per-file ceiling on what we will hold. We keep two copies of every checkpointed
@@ -82,6 +83,10 @@ interface StoredStack {
 }
 
 const hashOf = (text: string): string => createHash("sha256").update(text).digest("hex").slice(0, 40);
+
+/** What `hashOf` produces, and so the only name a blob may have. */
+const BLOB_NAME = /^[0-9a-f]{40}$/;
+
 
 /** What we knew about one file when the turn touched it. */
 export interface FileState {
@@ -508,7 +513,7 @@ export class Checkpoints {
    * came back; 0 when there was nothing (a session from before this existed, or one that
    * never changed a file), in which case the caller should `noteResumed()`.
    */
-  async restoreFrom(dir: string): Promise<number> {
+  async restoreFrom(dir: string, root?: string): Promise<number> {
     this.store = dir;
     let stored: StoredStack;
     try {
@@ -516,19 +521,36 @@ export class Checkpoints {
     } catch {
       return 0;
     }
+    // The saved history is a file on disk, and /undo writes what it says, so it is read as
+    // untrusted input. Anything that fails a check is treated like a lost blob: left out,
+    // so that file is simply not undoable. A content file must be named by a hash and
+    // contain what that hash names; a name like `../../somewhere/secret` would otherwise
+    // have /undo read any file and write it wherever the history pointed.
     const blob = async (hash: string | null): Promise<string | null | undefined> => {
       if (hash === null) return null;
+      if (typeof hash !== "string" || !BLOB_NAME.test(hash)) return undefined;
       try {
-        return await fs.readFile(join(dir, "blobs", hash), "utf8");
+        const text = await fs.readFile(join(dir, "blobs", hash), "utf8");
+        return hashOf(text) === hash ? text : undefined;
       } catch {
         return undefined; // lost: the file cannot be restored, so it is left out
       }
+    };
+    // A hash can be made for any content, so the target is checked too: inside the folder
+    // the session was opened in (links resolved), and not a file the agent may never touch.
+    // The root is the folder opened, not anything read back from the session's own files.
+    const realRoot = root === undefined ? null : await realPathOf(root);
+    const restorable = async (path: unknown): Promise<boolean> => {
+      if (typeof path !== "string" || !isAbsolute(path)) return false;
+      if ((await guardedPathReason(path)) !== null) return false;
+      return realRoot === null || withinFolder(realRoot, await realPathOf(path));
     };
     const stack: Checkpoint[] = [];
     for (const cp of stored.stack ?? []) {
       const files = new Map<string, FileState>();
       let bytes = 0;
-      for (const [path, o, w] of cp.files) {
+      for (const [path, o, w] of cp.files ?? []) {
+        if (!(await restorable(path))) continue;
         const original = await blob(o);
         const written = await blob(w);
         if (original === undefined || written === undefined) continue;

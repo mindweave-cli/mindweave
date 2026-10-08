@@ -21,6 +21,20 @@
  * Both return a human reason string when they fire, or `null` to allow. Fail
  * open by design: anything not explicitly matched is allowed.
  */
+import { realpath } from "node:fs/promises";
+import { homedir } from "node:os";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { stateRoot } from "../memory/store.js";
+
+/**
+ * Whether two spellings of a path that differ only in case are the same file. True on Windows and on macOS, whose
+ * default volumes are case-insensitive; a Linux volume is not. Where it is true, protected-folder checks compare
+ * lower-cased paths, so `~/.Mindweave/mcp-auth.json` is the file `~/.mindweave/mcp-auth.json` is. (On a case-sensitive
+ * macOS volume this errs the safe way: a few more paths count as protected.)
+ */
+export function foldsCase(platform: NodeJS.Platform = process.platform): boolean {
+  return platform === "win32" || platform === "darwin";
+}
 
 // Path segments / names that are off-limits. Matched against the POSIX-style
 // path so it works the same on Windows and Unix.
@@ -42,6 +56,19 @@ const PROTECTED_PATTERNS: { test: RegExp; what: string }[] = [
   { test: /(^|\/)id_(rsa|ed25519|ecdsa|dsa)(\.|$)/i, what: "a private SSH key" },
   { test: /\.pem$/i, what: "a private key file" },
   { test: /(^|\/)(secrets?|credentials)(\/|\.|$)/i, what: "a secrets/credentials file" },
+  // Files that routinely hold a token or a private key under an ordinary-looking name.
+  // Each is matched by its exact name or a key-file extension, so source code stays
+  // readable: a model debugging `npm install` reads .npmrc, and that is where the token is.
+  { test: /(^|\/)(\.npmrc|\.yarnrc\.yml|\.netrc|_netrc|\.git-credentials|\.pypirc)$/i, what: "a file holding login tokens" },
+  { test: /(^|\/)\.docker\/config\.json$/i, what: "a file holding login tokens" },
+  { test: /(^|\/)\.kube\/config$/i, what: "a file holding login tokens" },
+  { test: /(^|\/)\.config\/gh\/hosts\.yml$/i, what: "a file holding login tokens" },
+  { test: /(^|\/)(\.config\/gcloud|\.azure|\.aws|\.gnupg)(\/|$)/i, what: "a cloud or signing credentials directory" },
+  // Each system's own place for saved passwords and keys.
+  { test: /(^|\/)(Library\/Keychains|\.local\/share\/keyrings|\.password-store|AppData\/Roaming\/Microsoft\/(Credentials|Protect|Vault))(\/|$)/i, what: "the system's saved passwords and keys" },
+  { test: /\.(key|p12|pfx|jks|keystore|kdbx)$/i, what: "a private key or keystore" },
+  { test: /(^|\/)terraform\.tfstate(\.backup)?$|\.tfvars$/i, what: "an infrastructure state or variables file" },
+  { test: /(^|\/)service-account[^/]*\.json$/i, what: "a cloud service-account key" },
 ];
 
 /**
@@ -62,6 +89,9 @@ const ENV_EXAMPLE = /(^|\/)\.?env\.(example|sample|template|defaults|dist)$/i;
 /**
  * If `absPath` is a file the agent must never touch, return a short reason;
  * otherwise null. `absPath` may use either slash style.
+ *
+ * This reads the path TEXT. A tool that is about to open a file uses
+ * `guardedPathReason`, which judges the file the text leads to.
  */
 export function protectedPathReason(absPath: string): string | null {
   const posix = absPath.split("\\").join("/");
@@ -69,7 +99,81 @@ export function protectedPathReason(absPath: string): string | null {
   for (const { test, what } of PROTECTED_PATTERNS) {
     if (test.test(posix)) return what;
   }
-  return null;
+  return stateFileReason(posix);
+}
+
+/**
+ * The protected-file check for a path a tool is about to open: the file, not the string.
+ *
+ * Text patterns alone let the same file through under another spelling, all proven:
+ * `.env::$DATA` (the NTFS default stream of .env itself), `.env.` and `.env ` (Windows
+ * drops trailing dots and spaces), a short 8.3 name, and a link inside the project that
+ * points at .git or ~/.ssh. So a Windows stream spelling is refused outright, the
+ * trailing dots and spaces are removed, links are resolved, and the patterns run on the
+ * spelled path AND the real one. Every tool that takes a path asks this before opening it.
+ */
+export async function guardedPathReason(absPath: string): Promise<string | null> {
+  const textual = protectedPathReason(absPath);
+  if (textual) return textual;
+  let path = absPath;
+  if (process.platform === "win32") {
+    path = path.replace(/^\\\\\?\\/, "");
+    // A colon anywhere but after the drive letter is an alternate data stream.
+    if (path.slice(2).includes(":")) return "a Windows stream spelling of a file";
+    path = path
+      .split(/[\\/]/)
+      .map((segment, i) => (i === 0 ? segment : segment.replace(/[. ]+$/, "")))
+      .join("\\");
+  }
+  return protectedPathReason(path) ?? protectedPathReason(await realPathOf(path));
+}
+
+/**
+ * The real location of `path` with links, junctions and short names resolved, for a path
+ * that may not exist yet: the nearest existing ancestor is resolved and the rest
+ * appended. Lower-cased on Windows, where two spellings of a path name the same file.
+ */
+export async function realPathOf(path: string): Promise<string> {
+  const fold = (p: string) => (foldsCase() ? p.toLowerCase() : p);
+  const tail: string[] = [];
+  let head = resolve(path);
+  for (;;) {
+    try {
+      return fold(join(await realpath(head), ...tail.reverse()));
+    } catch {
+      const parent = dirname(head);
+      if (parent === head) return fold(resolve(path));
+      tail.push(basename(head));
+      head = parent;
+    }
+  }
+}
+
+/** Is `path` the folder `root` or inside it? Pass real paths from realPathOf. */
+export function withinFolder(root: string, path: string): boolean {
+  const rel = relative(root, path);
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+/**
+ * Mindweave's own state folder (~/.mindweave) is off-limits too, with three exceptions
+ * the agent is pointed at by design: a project's `memory/` folder, where it keeps its
+ * notes, `mcp-results/`, where a large MCP result is saved for it to read, and
+ * `cleared/`, where the originals of cleared tool results are kept for it to read.
+ *
+ * Everything else there is Mindweave's, not the project's: sign-ins to MCP servers
+ * (access and refresh tokens), key labels, the permission and rule files, past sessions,
+ * the undo history, and the programs it installed for code intelligence. Read, they leak;
+ * written, they change what Mindweave allows or runs in every later session.
+ */
+function stateFileReason(posix: string): string | null {
+  const fold = (p: string) => (foldsCase() ? p.toLowerCase() : p);
+  const root = fold(stateRoot().split("\\").join("/").replace(/\/+$/, ""));
+  const path = fold(posix);
+  if (path !== root && !path.startsWith(root + "/")) return null;
+  const rel = path.slice(root.length + 1);
+  if (/^projects\/[^/]+\/(memory|mcp-results|cleared)(\/|$)/.test(rel)) return null;
+  return "Mindweave's own settings, sign-ins and state";
 }
 
 // Another coding agent's private working data: its saved sessions, its memory of
@@ -232,7 +336,6 @@ const CATASTROPHIC_PATTERNS: { test: RegExp; what: string }[] = [
   { test: /\bdd\b[^\n]*\bof=\/dev\/(sd|nvme|disk|hd)/i, what: "overwriting a raw disk device" },
   { test: />\s*\/dev\/(sd|nvme|disk|hd)/i, what: "writing to a raw disk device" },
   { test: /:\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:/, what: "a fork bomb" },
-  { test: /\bRemove-Item\b[^\n]*\b-Recurse\b[^\n]*(\\|\/|\$env:|~)(\s|$)/i, what: "recursively deleting a drive root or home directory" },
 ];
 
 /**
@@ -243,5 +346,135 @@ export function catastrophicCommandReason(command: string): string | null {
   for (const { test, what } of CATASTROPHIC_PATTERNS) {
     if (test.test(command)) return what;
   }
+  return destructiveDeleteReason(command);
+}
+
+/**
+ * Commands a coding agent does run, but that throw work away, rewrite shared history,
+ * skip the project's own checks, publish, or run code straight from the internet. Not a
+ * floor: each asks the user first (see run_command), in every mode, with this as the
+ * warning. A short list on purpose; a long one would be clicked through.
+ */
+const RISKY_COMMANDS: { test: RegExp; what: string }[] = [
+  { test: /\bgit\s+push\b[^\n;|&]*\s(-f|--force)\b(?!-with-lease)/i, what: "force-pushes, which overwrites history others may have" },
+  { test: /\bgit\s+push\b[^\n;|&]*\s(--delete|-d)\b|\bgit\s+push\b[^\n;|&]*\s:[\w./-]+/i, what: "deletes a branch or tag on the remote" },
+  { test: /\bgit\s+push\b[^\n;|&]*\s\+[\w./-]+/i, what: "force-pushes, which overwrites history others may have" },
+  { test: /\bgit\s+reset\b[^\n;|&]*\s--hard\b/i, what: "discards uncommitted changes for good (git reset --hard)" },
+  { test: /\bgit\s+clean\b[^\n;|&]*\s-[a-z]*f/i, what: "deletes untracked files for good (git clean)" },
+  { test: /\bgit\s+branch\b[^\n;|&]*\s-D\b/, what: "deletes a branch even if it was never merged (git branch -D)" },
+  { test: /\bgit\s+(checkout|restore)\b[^\n;|&]*\s(--\s+)?\.(\s|$)/i, what: "discards every uncommitted change in the folder" },
+  { test: /\bgit\s+stash\s+(drop|clear)\b/i, what: "deletes stashed work for good" },
+  { test: /\bgit\s+(commit|push|merge|rebase)\b[^\n;|&]*\s--no-verify\b/i, what: "skips the project's own git hooks (--no-verify)" },
+  { test: /\b(curl|wget|iwr|irm|invoke-webrequest|invoke-restmethod)\b[^\n;]*\|\s*(sudo\s+)?(sh|bash|zsh|iex|invoke-expression|python3?|node)\b/i, what: "runs code downloaded from the internet" },
+  { test: /\b(npm|pnpm|yarn)\s+publish\b|\bcargo\s+publish\b|\btwine\s+upload\b|\bgh\s+release\s+create\b/i, what: "publishes a package or release" },
+];
+
+/** Why `command` should ask the user first even when nothing else does, or null (pure). */
+export function riskyCommandReason(command: string): string | null {
+  for (const { test, what } of RISKY_COMMANDS) if (test.test(command)) return what;
+  return null;
+}
+
+/** Commands that delete, in the shells run_command uses (aliases included). */
+const DELETE_VERBS = /^(rm|rmdir|rd|del|erase|remove-item|ri|rimraf)(\.exe)?$/i;
+/** cmd.exe spells its switches /s /q; for its verbs those are flags, not the root. */
+const CMD_DELETE_VERBS = /^(rmdir|rd|del|erase)(\.exe)?$/i;
+
+/**
+ * Deleting a drive root, the home folder, a folder above it, a system folder, or a
+ * key or settings folder, decided by what the command names rather than how it is
+ * spelled.
+ *
+ * This replaced a PowerShell pattern that could never match (`\b` before `-Recurse`
+ * needs a word character beside the hyphen, and there never is one), so
+ * `Remove-Item -Recurse -Force C:\\` was allowed in every mode. Spelling-based rules miss
+ * argument order, aliases (`ri`, `rd`), named parameters (`-Path`) and variables
+ * (`$env:USERPROFILE`); reading the words does not. Deleting something INSIDE those
+ * folders (a cache, a temp file) is left alone: this is the floor, and it must only ever
+ * fire on what is never a coding action.
+ */
+export function destructiveDeleteReason(command: string): string | null {
+  for (const segment of command.split(/&&|\|\||[;|\n]/)) {
+    const words = shellWords(segment);
+    let at = words.findIndex((w) => w !== "&" && w !== ".");
+    // Look through what only starts another shell or raises privilege: `cmd /c rd ...`,
+    // `powershell -Command Remove-Item ...`, `sudo rm ...` delete just the same.
+    for (;;) {
+      const w = words[at] ?? "";
+      if (/^(sudo|doas)$/i.test(w)) at++;
+      else if (/^cmd(\.exe)?$/i.test(w) && /^\/[ck]$/i.test(words[at + 1] ?? "")) at += 2;
+      else if (/^(powershell|pwsh)(\.exe)?$/i.test(w)) {
+        const c = words.findIndex((x, i) => i > at && /^-(c|command)$/i.test(x));
+        if (c < 0) break;
+        at = c + 1;
+      } else break;
+    }
+    const verb = words[at];
+    if (!verb || !DELETE_VERBS.test(verb)) continue;
+    const cmdStyle = CMD_DELETE_VERBS.test(verb);
+    for (const word of words.slice(at + 1)) {
+      if (word.startsWith("-")) continue;
+      if (cmdStyle && /^\/[a-z?]$/i.test(word)) continue;
+      const target = expandHomeWords(word).replace(/[\\/]\*(\.\*)?$/, "/").replace(/^\*$/, "");
+      if (!target || !(isAbsolute(target) || /^[a-z]:$/i.test(target))) continue;
+      const why = vitalFolderReason(target);
+      if (why) return `deleting ${why}`;
+    }
+  }
+  return null;
+}
+
+/** Split one command into words, keeping quoted text together (quotes removed). */
+function shellWords(segment: string): string[] {
+  const words: string[] = [];
+  for (const m of segment.matchAll(/"([^"]*)"|'([^']*)'|(\S+)/g)) words.push(m[1] ?? m[2] ?? m[3] ?? "");
+  return words;
+}
+
+/** Replace the spellings of the home folder and the Windows folders with real paths. */
+export function expandHomeWords(word: string): string {
+  const env = process.env;
+  const home = homedir();
+  const pairs: [RegExp, string | undefined][] = [
+    [/^~(?=$|[\\/])/, home],
+    [/^\$\{?HOME\}?(?=$|[\\/])/i, home],
+    [/^\$env:(USERPROFILE|HOME)(?=$|[\\/])/i, home],
+    [/^%USERPROFILE%/i, home],
+    [/^%HOMEDRIVE%%HOMEPATH%/i, home],
+    [/^(\$env:SystemDrive|%SystemDrive%)(?=$|[\\/])/i, env.SystemDrive ?? "C:"],
+    [/^(\$env:(windir|SystemRoot)|%(windir|SystemRoot)%)(?=$|[\\/])/i, env.SystemRoot ?? env.windir],
+    [/^(\$env:ProgramFiles|%ProgramFiles%)(?=$|[\\/])/i, env.ProgramFiles],
+  ];
+  for (const [re, value] of pairs) if (value && re.test(word)) return word.replace(re, () => value);
+  return word;
+}
+
+/**
+ * Why deleting `target` would wreck the machine, or null. Exact matches and ancestors
+ * only: a drive or filesystem root, the home folder or one above it, a system folder or
+ * one containing one, and the key and settings folders themselves.
+ */
+function vitalFolderReason(target: string): string | null {
+  const win = process.platform === "win32";
+  const fold = (p: string) => {
+    const r = resolve(/^[a-z]:$/i.test(p) ? p + "\\" : p);
+    return foldsCase() ? r.toLowerCase() : r;
+  };
+  const t = fold(target);
+  const isOrAbove = (dir: string | undefined) => {
+    if (!dir) return false;
+    const rel = relative(t, fold(dir));
+    return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+  };
+  if (dirname(t) === t) return "a drive or filesystem root";
+  const home = homedir();
+  if (isOrAbove(home)) return "the home folder or a folder that contains it";
+  const env = process.env;
+  const system = win
+    ? [env.SystemRoot, env.ProgramFiles, env["ProgramFiles(x86)"], env.ProgramData]
+    : ["/etc", "/usr", "/bin", "/sbin", "/boot", "/lib", "/System", "/Library", "/Applications", "/var"];
+  if (system.some(isOrAbove)) return "a system folder";
+  const vital = [join(home, ".ssh"), join(home, ".gnupg"), join(home, ".mindweave"), ...(win ? [env.APPDATA, env.LOCALAPPDATA, join(home, "AppData")] : [])];
+  if (vital.some((d) => d !== undefined && fold(d) === t)) return "a folder that holds keys or settings";
   return null;
 }

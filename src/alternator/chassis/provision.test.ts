@@ -15,9 +15,25 @@ const FAKE_HOME = mkdtempSync(join(tmpdir(), "mindweave-prov-home-"));
 process.env.USERPROFILE = FAKE_HOME;
 process.env.HOME = FAKE_HOME;
 
-const { resolveInstalled, ensureInstalled, autoInstallEnabled, platformKey, runBounded } = await import("./provision.js");
+const { resolveInstalled, ensureInstalled, autoInstallEnabled, platformKey, runBounded, recordInstallDecision, takeUndecidedInstalls } =
+  await import("./provision.js");
 
 const NPM_SPEC = { source: "npm" as const, package: "bash-language-server", version: "5.4.3", binName: "bash-language-server" };
+
+/** rust-analyzer as servers.ts pins it, with each asset's published SHA-256. */
+const RUST_ANALYZER_SPEC = {
+  source: "github" as const,
+  repo: "rust-lang/rust-analyzer",
+  version: "2026-06-22",
+  targets: {
+    "win32-x64": { asset: "rust-analyzer-x86_64-pc-windows-msvc.zip", sha256: "6071dc5b28aa6d22c715f63c08d75b827c066be4ea866796587e52ed48b2922f", bin: "rust-analyzer.exe" },
+    "win32-arm64": { asset: "rust-analyzer-aarch64-pc-windows-msvc.zip", sha256: "30f873713ea3663db10999c23e95b74fe19968c893d5c0e9b8a896b31dbf8cf8", bin: "rust-analyzer.exe" },
+    "darwin-x64": { asset: "rust-analyzer-x86_64-apple-darwin.gz", sha256: "bf65b0d4586f127ab11bf33476dd6aac82dad173946c5d3b1cede19d63ae85ed", bin: "rust-analyzer" },
+    "darwin-arm64": { asset: "rust-analyzer-aarch64-apple-darwin.gz", sha256: "c8cdf6d5e488752b907d5ee15e31768b59a78d992e9a54b9f9660e1bfdf39f27", bin: "rust-analyzer" },
+    "linux-x64": { asset: "rust-analyzer-x86_64-unknown-linux-gnu.gz", sha256: "feb7c170d2c1a2e4b8a88ac73f937eddb576828e3821b0a63ee0e64bd0bc9440", bin: "rust-analyzer" },
+    "linux-arm64": { asset: "rust-analyzer-aarch64-unknown-linux-gnu.gz", sha256: "9602ca5b24dcaa07a5a021274763bed367d8a32da9a226fe3e139de3306569cb", bin: "rust-analyzer" },
+  },
+};
 
 test("platformKey looks like <platform>-<arch>", () => {
   assert.match(platformKey(), /^(win32|darwin|linux)-(x64|arm64|arm|ia32)$/);
@@ -51,6 +67,7 @@ test(
   { skip: !process.env.MINDWEAVE_TEST_NETWORK, timeout: 180_000 },
   async () => {
     delete process.env.MINDWEAVE_NO_AUTO_INSTALL;
+    await recordInstallDecision("bash-language-server", "yes");
     const cmd = await ensureInstalled("bash-language-server", NPM_SPEC);
     assert.ok(cmd, "should resolve to an installed binary");
     assert.ok(existsSync(cmd!), "the binary should exist on disk");
@@ -62,24 +79,45 @@ test(
   { skip: !process.env.MINDWEAVE_TEST_NETWORK, timeout: 180_000 },
   async () => {
     delete process.env.MINDWEAVE_NO_AUTO_INSTALL;
-    const spec = {
-      source: "github" as const,
-      repo: "rust-lang/rust-analyzer",
-      version: "2026-06-22",
-      targets: {
-        "win32-x64": { asset: "rust-analyzer-x86_64-pc-windows-msvc.zip", bin: "rust-analyzer.exe" },
-        "win32-arm64": { asset: "rust-analyzer-aarch64-pc-windows-msvc.zip", bin: "rust-analyzer.exe" },
-        "darwin-x64": { asset: "rust-analyzer-x86_64-apple-darwin.gz", bin: "rust-analyzer" },
-        "darwin-arm64": { asset: "rust-analyzer-aarch64-apple-darwin.gz", bin: "rust-analyzer" },
-        "linux-x64": { asset: "rust-analyzer-x86_64-unknown-linux-gnu.gz", bin: "rust-analyzer" },
-        "linux-arm64": { asset: "rust-analyzer-aarch64-unknown-linux-gnu.gz", bin: "rust-analyzer" },
-      },
-    };
-    const cmd = await ensureInstalled("rust-analyzer", spec);
+    await recordInstallDecision("rust-analyzer", "yes");
+    const cmd = await ensureInstalled("rust-analyzer", RUST_ANALYZER_SPEC);
     assert.ok(cmd, "should resolve to the downloaded binary");
     assert.ok(existsSync(cmd!), "the binary should exist on disk");
   },
 );
+
+test(
+  "a download whose SHA-256 does not match is refused (network)",
+  { skip: !process.env.MINDWEAVE_TEST_NETWORK, timeout: 180_000 },
+  async () => {
+    delete process.env.MINDWEAVE_NO_AUTO_INSTALL;
+    const wrong = "0".repeat(64);
+    const spec = {
+      ...RUST_ANALYZER_SPEC,
+      targets: Object.fromEntries(Object.entries(RUST_ANALYZER_SPEC.targets).map(([k, t]) => [k, { ...t, sha256: wrong }])),
+    };
+    await recordInstallDecision("rust-analyzer-tampered", "yes");
+    assert.equal(await ensureInstalled("rust-analyzer-tampered", spec), null);
+  },
+);
+
+// ── consent ─────────────────────────────────────────────────────────────────
+
+test("an undecided server is not installed; it waits for the user's answer", async () => {
+  delete process.env.MINDWEAVE_NO_AUTO_INSTALL;
+  takeUndecidedInstalls();
+  assert.equal(await ensureInstalled("undecided-server", RUST_ANALYZER_SPEC), null);
+  assert.deepEqual(takeUndecidedInstalls().map((p) => p.key), ["undecided-server"]);
+  assert.deepEqual(takeUndecidedInstalls(), [], "asked about once");
+});
+
+test("a server the user said never to install is not installed or asked about again", async () => {
+  delete process.env.MINDWEAVE_NO_AUTO_INSTALL;
+  takeUndecidedInstalls();
+  await recordInstallDecision("refused-server", "never");
+  assert.equal(await ensureInstalled("refused-server", RUST_ANALYZER_SPEC), null);
+  assert.deepEqual(takeUndecidedInstalls(), []);
+});
 
 test("a hanging install is bounded, killed, and reported as failure", async () => {
   // The hang shape this guards: provisioning spawned npm/tar with no timeout and

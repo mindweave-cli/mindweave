@@ -107,3 +107,17 @@ test("guardDetail names the file for an edit, and the task for a sub-agent", () 
   assert.match(guardDetail("edit", { path: "src/App.tsx" }), /File: src\/App\.tsx/);
   assert.match(guardDetail("spawn_subagent", { task: "audit the auth flow" }), /Task: audit the auth flow/);
 });
+
+test("a command prefix adds a third, standing answer that maps to its own decision", async () => {
+  const { guardOptions, interpretGuardChoice } = await import("./guard.js");
+  assert.equal(guardOptions("run_command").length, 2, "no prefix, no third option");
+  const options = guardOptions("run_command", "npm test");
+  assert.equal(options.length, 3);
+  assert.match(options[2]!, /never ask again for "npm test" in this project/);
+  assert.equal(interpretGuardChoice(options[0], "run_command", "npm test"), "proceed");
+  assert.equal(interpretGuardChoice(options[1], "run_command", "npm test"), "allow-kind");
+  assert.equal(interpretGuardChoice(options[2], "run_command", "npm test"), "allow-prefix");
+  // The standing answer does not exist without a prefix: the same text is just an unknown answer.
+  assert.equal(interpretGuardChoice(options[2], "run_command"), "refuse");
+  assert.equal(interpretGuardChoice("No", "run_command", "npm test"), "refuse");
+});

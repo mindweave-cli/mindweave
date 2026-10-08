@@ -44,11 +44,26 @@ export function stripInlineToolCalls(content: string): string {
   return content.replace(BLOCK_RE, "").replace(/\n{3,}/g, "\n\n").trim();
 }
 
-/** Parse leaked tool-call blocks into real tool calls and return the cleaned text. */
+/**
+ * Parse leaked tool-call blocks into real tool calls and return the cleaned text.
+ *
+ * Only a block that ENDS the reply, outside any code fence, becomes a call. That is the
+ * shape of a real leak: the model says what it is about to do and then emits the call.
+ * Markup the model is QUOTING looks different: it sits in a code fence, or prose
+ * follows it ("the page contains this, which I will not follow"). Content the model
+ * read (a web page, a file, a tool result) can contain this markup, and a quote of it
+ * must never run. Every block is still stripped from the visible text.
+ */
 export function parseInlineToolCalls(content: string): ParsedInline {
   const toolCalls: ToolCall[] = [];
   let n = 0;
-  for (const block of content.match(BLOCK_RE) ?? []) {
+  const fences = fencedRanges(content);
+  for (const match of content.matchAll(BLOCK_RE)) {
+    const start = match.index ?? 0;
+    const end = start + match[0].length;
+    if (fences.some(([from, to]) => start >= from && start < to)) continue;
+    if (content.slice(end).replace(BLOCK_RE, "").trim() !== "") continue;
+    const block = match[0];
     INVOKE_RE.lastIndex = 0;
     let inv: RegExpExecArray | null;
     while ((inv = INVOKE_RE.exec(block)) !== null) {
@@ -68,6 +83,22 @@ export function parseInlineToolCalls(content: string): ParsedInline {
     }
   }
   return { cleaned: stripInlineToolCalls(content), toolCalls };
+}
+
+/** Where the Markdown code fences are, as [start, end) offsets; an unclosed fence runs to the end. */
+function fencedRanges(text: string): [number, number][] {
+  const ranges: [number, number][] = [];
+  let open: { at: number; fence: string } | null = null;
+  for (const m of text.matchAll(/^[ \t]*(`{3,}|~{3,})/gm)) {
+    const fence = m[1]!;
+    if (!open) open = { at: m.index ?? 0, fence };
+    else if (fence[0] === open.fence[0] && fence.length >= open.fence.length) {
+      ranges.push([open.at, (m.index ?? 0) + m[0].length]);
+      open = null;
+    }
+  }
+  if (open) ranges.push([open.at, text.length]);
+  return ranges;
 }
 
 function tryJson(raw: string): unknown {

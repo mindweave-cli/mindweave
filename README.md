@@ -26,8 +26,9 @@ desktop app, built on the same engine, for Windows, macOS and Linux.
 
 ## Install
 
-Needs **Node.js 24+**. The npm package is supported on **Windows**; on macOS and Linux,
-use the desktop app for now ([why](KNOWN-ISSUES.md)).
+Needs **Node.js 24+**. The npm package is tested on **Windows** and **Linux**. It has not
+been run on a real Mac yet, so on macOS the desktop app is the safe choice
+([details](KNOWN-ISSUES.md)).
 
 ```bash
 npm install -g mindweave
@@ -60,12 +61,43 @@ npm link
   verified done, blocked, or out of budget.
 - **Memory** — project notes in MINDWEAVE.md, compaction that keeps what matters, and
   earlier sessions it can look back at.
-- **Safety nets** — `/undo`, `/rewind`, approval modes, and per-project rules for paths
-  and commands it must not touch.
+- **Safety nets** — `/undo`, `/rewind`, approval modes, per-project rules for paths
+  and commands it must not touch, and a project's own servers and hooks never run unasked.
 - **MCP servers** — connect external tools with `/mcp`. [docs/MCP.md](docs/MCP.md)
 
 `/help` lists every command. `shift+tab` switches modes. Type while it works and your
 message queues.
+
+## Your own rules and hooks
+
+Both live in your state folder (`~/.mindweave`, or `projects/<name>` inside it for one
+project), never in the repository, so a project you clone cannot add them.
+
+**`command-rules.md`** sets what Sentinel asks about, one line per rule, matched on the start
+of the command:
+
+```
+allow npm test
+prompt git push
+forbid rm -rf :: use the trash folder
+```
+
+`forbid` refuses the command in every mode and tells the agent your reason. `prompt` always
+asks. `allow` stops the question for that command, but never for one that writes a file or
+that Mindweave cannot read with certainty.
+
+**`hooks.json`** runs your own commands at set moments. Each gets one JSON object on its
+input, and exit code 2 stops the action and tells the agent why:
+
+```json
+{ "hooks": {
+  "PreToolUse": [ { "matcher": "run_command|edit", "command": "node check.js" } ],
+  "Stop": [ { "command": "npm test --silent" } ]
+} }
+```
+
+The moments are `PreToolUse`, `PostToolUse`, `UserPromptSubmit`, `Stop` and `SessionStart`.
+A hook is stopped after 60 seconds unless it sets `timeoutMs`.
 
 ## More
 

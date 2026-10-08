@@ -13,6 +13,8 @@ import { marathonBoxHeight, type MarathonUi } from "./marathonUi.js";
 
 // Before Ink loads: chalk fixes its colour support at import time.
 process.env.FORCE_COLOR = process.env.FORCE_COLOR ?? "3";
+// Chalk takes FORCE_COLOR as a minimum: a 256-colour TERM (most Linux shells) still downgrades hex colours unless this says otherwise.
+process.env.COLORTERM = "truecolor";
 const { render } = await import("ink");
 const { MarathonBox } = await import("./components/MarathonBox.js");
 

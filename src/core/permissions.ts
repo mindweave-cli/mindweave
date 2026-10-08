@@ -8,6 +8,7 @@
  *   - blocked commands (`forbidden-commands.md`), which it may never run;
  *   - blocked MCP tools (`forbidden-mcp-tools.md`), never offered to it;
  *   - Sentinel allowances (`sentinel-allow.md`), actions Sentinel mode will not ask about.
+ *   - command rules (`command-rules.md`): `allow npm test`, `prompt git push`, `forbid rm -rf :: why`.
  * Plus the mode new chats start in, and the allowances given during THIS session, which
  * can be taken back.
  *
@@ -27,13 +28,18 @@ import {
   removeForbiddenCommand,
   removeForbiddenMcpTool,
   removeSentinelAllow,
+  appendCommandRule,
+  readCommandRuleLines,
+  removeCommandRule,
 } from "../governor/write.js";
+import { parseCommandRules } from "../tools/commandPolicy.js";
+import { hooksOverview } from "../dynamo/hooks.js";
 import { refreshGovernance } from "../dynamo/engine.js";
 import { TOOLS } from "../tools/registry.js";
 import { isMcpToolName, mcpToolName, parseMcpToolName } from "../mcp/catalog.js";
 import { MODES, type ModeId } from "../cli/modes.js";
 
-export type PermissionKind = "path" | "command" | "mcpTool" | "sentinel";
+export type PermissionKind = "path" | "command" | "mcpTool" | "sentinel" | "commandRule";
 export type PermissionScope = GovernanceScope;
 
 /** The built-in actions Sentinel asks about, in words. Two are left out on purpose:
@@ -72,6 +78,8 @@ export interface PermissionsView {
     lifted: string[];
     outsideDirs: string[];
   };
+  /** The user's own hooks (read only here: they are edited in the file, never by the agent). */
+  hooks: Awaited<ReturnType<typeof hooksOverview>>;
   /** What the pickers offer. */
   choices: {
     sentinel: { value: string; label: string }[];
@@ -141,6 +149,10 @@ export async function permissionsView(session: Session, cwd: string = session.cw
     ...project[key].map((value) => ({ value, scope: "project" as const, ...(withLabel ? { label: toolLabel(value) } : {}) })),
     ...global[key].map((value) => ({ value, scope: "global" as const, ...(withLabel ? { label: toolLabel(value) } : {}) })),
   ];
+  const [ruleLinesProject, ruleLinesGlobal] = await Promise.all([
+    readCommandRuleLines(cwd, "project"),
+    readCommandRuleLines(cwd, "global"),
+  ]);
   const ctx = session.toolContext;
   const mcpDefs = ctx.mcp?.snapshot().catalog ?? [];
   return {
@@ -155,6 +167,10 @@ export async function permissionsView(session: Session, cwd: string = session.cw
       command: both("commands"),
       mcpTool: both("mcpTools", true),
       sentinel: both("sentinelAllow", true),
+      commandRule: [
+        ...ruleLinesProject.map((value) => ({ value, scope: "project" as const })),
+        ...ruleLinesGlobal.map((value) => ({ value, scope: "global" as const })),
+      ],
     },
     session: current
       ? {
@@ -163,6 +179,7 @@ export async function permissionsView(session: Session, cwd: string = session.cw
           outsideDirs: [...(ctx.allowedOutsideDirs ?? [])],
         }
       : { sentinel: [], lifted: [], outsideDirs: [] },
+    hooks: await hooksOverview(cwd),
     choices: {
       sentinel: [
         ...TOOLS.filter((t) => !t.readOnly && !NEVER_PRE_ALLOWED.has(t.name)).map((t) => ({ value: t.name, label: toolLabel(t.name) })),
@@ -189,6 +206,14 @@ function normalize(kind: PermissionKind, raw: string): { value: string } | { err
   if (kind === "mcpTool" && !isMcpToolName(value)) {
     return { error: "Pick a tool from the list: MCP tools are named mcp__server__tool." };
   }
+  if (kind === "commandRule") {
+    const rules = parseCommandRules(value);
+    if (rules.length !== 1) {
+      return { error: "Write it as: allow npm test, prompt git push, or forbid rm -rf :: why." };
+    }
+    const r = rules[0]!;
+    return { value: `${r.decision} ${r.words.join(" ")}${r.justification ? ` :: ${r.justification}` : ""}` };
+  }
   if (kind === "sentinel" && NEVER_PRE_ALLOWED.has(value)) {
     return { error: "Changing permissions and adding MCP servers are always asked about." };
   }
@@ -207,6 +232,10 @@ async function write(cwd: string, kind: PermissionKind, value: string, scope: Pe
     case "command": return (await appendForbiddenCommand(cwd, value, scope)).added;
     case "mcpTool": return (await appendForbiddenMcpTool(cwd, value, scope)).added;
     case "sentinel": return (await appendSentinelAllow(cwd, value, scope)).added;
+    case "commandRule": {
+      const r = parseCommandRules(value)[0]!;
+      return (await appendCommandRule(cwd, r.decision, r.words.join(" "), scope, r.justification ?? "")).added;
+    }
   }
 }
 
@@ -216,6 +245,7 @@ async function erase(cwd: string, kind: PermissionKind, value: string, scope: Pe
     case "command": return removeForbiddenCommand(cwd, value, scope);
     case "mcpTool": return removeForbiddenMcpTool(cwd, value, scope);
     case "sentinel": return removeSentinelAllow(cwd, value, scope);
+    case "commandRule": return removeCommandRule(cwd, value, scope);
   }
 }
 

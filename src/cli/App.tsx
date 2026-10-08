@@ -81,7 +81,7 @@ import { applyScreenMode } from "./screenShell.js";
 import { saveScreenMode } from "./screenStore.js";
 import { needsMeasure, pruneHeights } from "./blockHeights.js";
 import { BASE_COMMANDS } from "./commands.js";
-import { dismissMarathon } from "../core/turnRunner.js";
+import { attachmentBudget, dismissMarathon } from "../core/turnRunner.js";
 import { describeMarathonEvent, resumeMarathon, startMarathon, type MarathonEvent } from "../dynamo/marathon.js";
 import { MarathonBox } from "./components/MarathonBox.js";
 import { isFinished, isLive, marathonBoxHeight, marathonUiReduce, type MarathonUi } from "./marathonUi.js";
@@ -1947,6 +1947,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
       s.cwd,
       canSeeImages,
       (abs) => dropHandles.current.labelFor(abs),
+      attachmentBudget(s.modelConfig.model),
     );
     // Restore any collapsed pastes into the model's copy only (the chat keeps chips).
     return { content: expandPastes(modelText), displayText, notes, images };

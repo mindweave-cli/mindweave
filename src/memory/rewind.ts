@@ -21,7 +21,7 @@ import { resolvePath } from "../tools/paths.js";
 import { rebuildReadLedger } from "./session.js";
 import { clearSessionNotes, saveSession } from "./store.js";
 import { loadMemoryIndex } from "./autoMemory.js";
-import { loadMcpConfig } from "../mcp/config.js";
+import { planMcpServers } from "../mcp/projectApproval.js";
 import { refreshGovernance } from "../dynamo/engine.js";
 import { isStateItem, stateKindOf, type StateKind } from "../tools/stateCheckpoint.js";
 import { undoNotice, type UndoResult } from "../tools/checkpoints.js";
@@ -212,7 +212,11 @@ export async function reloadAgentState(session: Session, paths: readonly string[
   if (kinds.has("memory")) session.memoryIndex = await loadMemoryIndex(root);
   const mcp = session.toolContext.mcp;
   if (kinds.has("mcp") && mcp) {
-    const wanted = new Map((await loadMcpConfig(root)).map((c) => [c.name, c]));
+    // Only what may start without asking; a project server that now needs approval is
+    // held and asked about at the next turn, as it is when a session opens.
+    const plan = await planMcpServers(root);
+    session.toolContext.mcpPending = plan.pending;
+    const wanted = new Map(plan.ready.map((c) => [c.name, c]));
     for (const s of mcp.statuses()) if (!wanted.has(s.name)) await mcp.removeServer(s.name);
     // Connecting can take a while (a process to start, a handshake); the rewind itself
     // does not wait for it, the same as a server added any other way.

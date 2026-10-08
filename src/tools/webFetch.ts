@@ -21,6 +21,10 @@
  */
 import type TurndownService from "turndown";
 import { createRequire } from "node:module";
+import { lookup as dnsLookup, type LookupAddress } from "node:dns";
+import { request as httpsRequest } from "node:https";
+import type { LookupFunction } from "node:net";
+import { Readable } from "node:stream";
 import type { Tool, ToolContext, ToolResult, WebDisplay } from "./types.js";
 import { activeDriver } from "../drivers/registry.js";
 import { frameExternal } from "./untrusted.js";
@@ -235,10 +239,9 @@ async function fetchUrl(startUrl: URL): Promise<Fetched | string> {
   let url = startUrl;
   try {
     for (let hop = 0; ; hop++) {
-      const res = await fetch(url, {
-        // Manual, so a redirect target is a value we inspect rather than a request
-        // the client has already made on our behalf.
-        redirect: "manual",
+      // The transport never follows a redirect itself, so a redirect target is a value we
+      // inspect rather than a request already made on our behalf.
+      const res = await webTransport.fetch(url, {
         signal: controller.signal,
         headers: { "User-Agent": "Mindweave/0.1 (+terminal coding agent)", Accept: "text/html,text/*,application/json;q=0.9,*/*;q=0.8" },
       });
@@ -296,6 +299,75 @@ export function redirectStep(location: string, from: URL, hop: number): { url: U
   if (blocked) return { error: `Refusing to follow a redirect from ${from.hostname}: ${blocked}` };
   return { url: next };
 }
+
+/**
+ * An https request whose name is resolved once, checked, and connected to exactly as
+ * checked.
+ *
+ * `ssrfReason` can only read the address TEXT. A public-looking name that resolves to a
+ * private address (an intranet wiki behind a VPN, or a name an attacker points at
+ * 127.0.0.1) passed it, and the page went to the model. Node's fetch resolves names
+ * itself and offers no hook, so this uses https.request with a `lookup` that refuses
+ * when ANY address the name resolves to is private, loopback, link-local or
+ * unique-local. Because the connection uses the addresses that lookup returned, a name
+ * that answers differently a moment later (DNS rebinding) cannot slip past. A literal
+ * address never reaches lookup; ssrfReason has already judged it. Every redirect hop
+ * comes back through here.
+ */
+export function pinnedFetch(url: URL, init: { signal: AbortSignal; headers: Record<string, string> }): Promise<Response> {
+  return new Promise((resolveResponse, reject) => {
+    const req = httpsRequest(url, { method: "GET", headers: init.headers, signal: init.signal, lookup: checkedLookup }, (res) => {
+      const headers = new Headers();
+      for (const [name, value] of Object.entries(res.headers)) {
+        if (Array.isArray(value)) for (const v of value) headers.append(name, v);
+        else if (value !== undefined) headers.set(name, value);
+      }
+      const status = res.statusCode ?? 502;
+      // A Response cannot carry a body for these statuses.
+      const bodyless = status === 204 || status === 205 || status === 304;
+      if (bodyless) res.resume();
+      resolveResponse(
+        new Response(bodyless ? null : (Readable.toWeb(res) as ReadableStream<Uint8Array>), {
+          status: status >= 200 && status <= 599 ? status : 502,
+          headers,
+        }),
+      );
+    });
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+/** dns.lookup, refusing any name that resolves to an address the web tool may not reach. */
+const checkedLookup: LookupFunction = (hostname, options, callback) => {
+  dnsLookup(hostname, { ...options, all: true }, (error, addresses) => {
+    if (error) return callback(error, "", 0);
+    const list = addresses as unknown as LookupAddress[];
+    const blocked = list.find((a) => isPrivateAddress(a.address));
+    if (blocked) {
+      const refusal = Object.assign(
+        new Error(`refusing ${hostname}: it resolves to a private/loopback address (${blocked.address})`),
+        { code: "EPRIVATEADDRESS" },
+      );
+      return callback(refusal, "", 0);
+    }
+    if (list.length === 0) return callback(Object.assign(new Error(`no address for ${hostname}`), { code: "ENOTFOUND" }), "", 0);
+    if ((options as { all?: boolean }).all) return (callback as unknown as (e: null, a: LookupAddress[]) => void)(null, list);
+    return callback(null, list[0]!.address, list[0]!.family);
+  });
+};
+
+/** A resolved address the web tool must not connect to (pure). */
+export function isPrivateAddress(address: string): boolean {
+  if (address.includes(":")) return ssrfReason(new URL(`https://[${address}]/`)) !== null;
+  const v4 = asIPv4(address);
+  return v4 !== null && isPrivateV4(v4);
+}
+
+/** How the web tool makes a request; replaceable so tests need no network. */
+export const webTransport: { fetch: (url: URL, init: { signal: AbortSignal; headers: Record<string, string> }) => Promise<Response> } = {
+  fetch: pinnedFetch,
+};
 
 /** Read a response body, stopping once past the byte cap. */
 async function readCapped(res: Response): Promise<string> {
@@ -382,10 +454,8 @@ export function normalizeUrl(raw: string): URL | string {
  *  - **169.254.0.0/16**, which is where cloud instance metadata lives. It was
  *    already covered, and it is the reason the rest matters.
  *
- * What it does NOT do: resolve DNS. A name that resolves to a private address still
- * passes, and defending against that (or against rebinding between check and connect)
- * means pinning the connection to a checked IP, which Node's fetch does not expose.
- * Stated rather than papered over.
+ * This reads the address TEXT only. A name that resolves to a private address is
+ * caught when connecting instead, by the lookup in `pinnedFetch`.
  */
 export function ssrfReason(url: URL): string | null {
   const host = url.hostname.toLowerCase();

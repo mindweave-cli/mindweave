@@ -205,3 +205,10 @@ test("marking is idempotent, so re-rendering cannot stack markers", async () => 
   assert.equal(once, twice, "a second render must produce the identical string");
   assert.equal((once.match(/over a year old/g) ?? []).length, 1);
 });
+
+test("a saved memory says it was saved by the agent, and when", async () => {
+  const cwd = "/proj/mem-origin";
+  const saved = await saveMemory(cwd, input());
+  const raw = await fs.readFile(join(memoryDir(cwd), saved.file), "utf8");
+  assert.match(raw, /^origin: saved by the agent on \d{4}-\d{2}-\d{2}$/m);
+});

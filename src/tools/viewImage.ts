@@ -20,7 +20,7 @@ import { promises as fs } from "node:fs";
 import { basename } from "node:path";
 import type { Tool, ToolResult } from "./types.js";
 import { describeImage, isImage, isRejection, IMAGE_EXTS } from "../memory/images.js";
-import { protectedPathReason } from "./guard.js";
+import { guardedPathReason } from "./guard.js";
 import { relativize, resolvePath, touch } from "./paths.js";
 import { fail } from "./results.js";
 
@@ -53,7 +53,7 @@ export const viewImage: Tool = {
 
     const path = resolvePath(ctx, raw);
 
-    const blocked = protectedPathReason(path);
+    const blocked = await guardedPathReason(path);
     if (blocked) return fail(`Refusing to open ${raw}: it is ${blocked}.`);
 
     // Checked BEFORE the file is touched, so a wrong extension gets an answer about the

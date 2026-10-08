@@ -155,6 +155,10 @@ test("once the payload is evicted, so is its token cost", () => {
   assert.ok(after < before - 2000, "eviction has to show up in the bars, or it bought nothing");
 });
 
+// A result is only cleared when it is bigger than the stub that would replace it, so a
+// fixture has to look like a real result, not a few words.
+const PAD = "\n" + "// more of the file, enough to be worth clearing\n".repeat(8);
+
 // ── superseded transcript copies ──────────────────────────────────────────────
 
 test("a file the working set carries WHOLE is cleared even inside the protected window", () => {
@@ -166,7 +170,7 @@ test("a file the working set carries WHOLE is cleared even inside the protected 
   const entries: Entry[] = [
     { role: "user", content: "look at a.ts" },
     { role: "assistant", content: "", toolCalls: [{ id: "c1", name: "read_file", arguments: '{"path":"a.ts"}' }] },
-    { role: "tool", toolCallId: "c1", content: "export const a = 1;\nexport const b = 2;", fullContentOf: "/p/a.ts" },
+    { role: "tool", toolCallId: "c1", content: "export const a = 1;\nexport const b = 2;" + PAD, fullContentOf: "/p/a.ts" },
   ];
 
   // Without the signal, the recent result is protected and survives.
@@ -195,7 +199,7 @@ test("a batched read is cleared only when EVERY file it carries is superseded", 
     {
       role: "tool",
       toolCallId: "c1",
-      content: "contents of a, b and c",
+      content: "contents of a, b and c" + PAD,
       fullContentOf: ["/p/a.ts", "/p/b.ts", "/p/c.ts"],
     },
   ];
