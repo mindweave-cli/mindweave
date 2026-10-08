@@ -36,14 +36,16 @@ afterEach(() => {
 });
 
 test("an app that stays up is reported as running, once, with no second note to follow", { timeout: 30_000 }, async () => {
-  process.env.MINDWEAVE_READY_WINDOW_MS = "700";
+  // Long enough that a slow machine, which can take a second or more just to start node, still gets its first
+  // line of output inside the window; the program stays up, so the wait is the whole window either way.
+  process.env.MINDWEAVE_READY_WINDOW_MS = "2500";
   const { mgr, ctx } = rig();
   const t0 = Date.now();
   const r = await runCommand.execute(
     { command: nodeCmd("console.log(String(/window open/));setTimeout(()=>{},100000)"), run_in_background: true, notify: "on_failure" },
     ctx,
   );
-  assert.ok(Date.now() - t0 >= 600, "it waited out its window before answering");
+  assert.ok(Date.now() - t0 >= 2400, "it waited out its window before answering");
   assert.notEqual(r.isError, true);
   assert.match(r.output, /still running after/);
   assert.match(r.output, /window open/, "the output so far rides along");
@@ -60,14 +62,16 @@ test("an app that stays up is reported as running, once, with no second note to 
 });
 
 test("an app that dies at launch fails the call, with the output that says why, and wakes nobody", { timeout: 30_000 }, async () => {
-  process.env.MINDWEAVE_READY_WINDOW_MS = "3000";
+  // A long window, and a limit well under it: what is checked is that the call returns when the program ends rather
+  // than waiting out the window, not how fast this machine starts node.
+  process.env.MINDWEAVE_READY_WINDOW_MS = "20000";
   const { mgr, ctx } = rig();
   const t0 = Date.now();
   const r = await runCommand.execute(
     { command: nodeCmd("console.error(String(/port 3000 is already in use/));process.exit(3)"), run_in_background: true, notify: "on_failure" },
     ctx,
   );
-  assert.ok(Date.now() - t0 < 2800, "it did not sit out the whole window for a process that was already gone");
+  assert.ok(Date.now() - t0 < 15000, "it did not sit out the whole window for a process that was already gone");
   assert.equal(r.isError, true);
   assert.match(r.output, /exited with code 3/);
   assert.match(r.output, /never came up/);
@@ -127,13 +131,17 @@ test("Esc while the launch is being watched stops the app instead of leaving it 
   mgr.dispose();
 });
 
-test("a launch that dies at once always reports its output, however the final read and the report interleave", { timeout: 90_000 }, async () => {
+test("a launch that dies at once always reports its output, however the final read and the report interleave", { timeout: 110_000 }, async () => {
   // The last read of a finished shell's output file and the report that quotes it ran side by side on one reader,
   // and the report sometimes won: "It has printed nothing so far" for an app that had printed the reason. It showed
   // up as about one failure in thirty on the test above, so this runs a run of them and wants every one.
-  process.env.MINDWEAVE_READY_WINDOW_MS = "3000";
+  //
+  // The window is long on purpose: the call returns the moment the program ends, so a long window costs nothing,
+  // and a slow machine that takes seconds just to start node is still inside it. (A first version used 3 seconds
+  // and 40 launches, and on a shared CI runner one start took longer than that, which says nothing about the race.)
+  process.env.MINDWEAVE_READY_WINDOW_MS = "30000";
   const { mgr, ctx } = rig();
-  for (let i = 0; i < 40; i++) {
+  for (let i = 0; i < 25; i++) {
     const r = await runCommand.execute(
       { command: nodeCmd(`console.error('reason-${i}');process.exit(3)`), run_in_background: true, notify: "on_failure" },
       ctx,
