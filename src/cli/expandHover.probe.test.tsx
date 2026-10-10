@@ -62,7 +62,7 @@ function codesBefore(raw: string, glyph: string): string[] {
   return codes;
 }
 
-test("the rail beside the output is dim at rest and bright under the pointer", () => {
+test("the rail beside the output does not change under the pointer", () => {
   const dimLast = (raw: string) => {
     const codes = codesBefore(raw, "│");
     // The most recent of "2" (dim on) and "22" (dim off) before the rail says which it is in.
@@ -73,7 +73,7 @@ test("the rail beside the output is dim at rest and bright under the pointer", (
     return false;
   };
   assert.equal(dimLast(draw(false)), true, "at rest the rail is dim");
-  assert.equal(dimLast(draw(true)), false, "under the pointer it is not");
+  assert.equal(dimLast(draw(true)), true, "and it stays dim under the pointer");
 });
 
 test("the one line that says the row can be pressed goes bold under the pointer, and says the same thing", () => {
@@ -98,20 +98,12 @@ test("lighting a row changes colours only, never what is drawn or how many rows 
   assert.equal(strip(draw(true)), strip(draw(false)));
 });
 
-test("a row that can be pressed has a dimmer verb at rest and a bright one under the pointer, and no underline", () => {
-  const dimBefore = (raw: string) => {
-    const codes = codesBefore(raw, "Run");
-    for (let i = codes.length - 1; i >= 0; i--) {
-      if (codes[i] === "2") return true;
-      if (codes[i] === "22" || codes[i] === "0") return false;
-    }
-    return false;
-  };
+test("the verb of a row that can be pressed does not change under the pointer, and nothing is underlined", () => {
   const rest = draw(false);
   const lit = draw(true);
-  assert.equal(dimBefore(rest), true, "dim at rest");
-  assert.equal(dimBefore(lit), false, "bright under the pointer");
-  assert.ok(!/\x1b\[4m/.test(rest) && !/\x1b\[4m/.test(lit), "nothing is underlined");
+  const weight = (raw: string) => codesBefore(raw, "Run").join(",");
+  assert.equal(weight(rest), weight(lit), "the verb is drawn the same either way");
+  assert.ok(!rest.includes(`${ESC}[4m`) && !lit.includes(`${ESC}[4m`), "nothing is underlined");
 });
 
 test("the commands row is dimmer at rest and bright under the pointer, with no underline", async () => {

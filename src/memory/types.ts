@@ -226,6 +226,13 @@ export interface SessionMeta {
    * none, and once its result had been cleared nothing remained to rewrite it from.
    */
   todos?: { content: string; activeForm: string; status: "pending" | "in_progress" | "completed" }[];
+  /**
+   * How much of the transcript the saved notes cover, so a reopened session still knows how
+   * current they are. `of` is the transcript's length when this was written: the boundary
+   * is trusted only if the transcript is still that long, because an entry added or removed
+   * before it moves what "the first N entries" means.
+   */
+  notesCover?: { entries: number; tokens: number; of: number };
   /** What the session did, counted live. See memory/counters.ts. */
   counters?: import("./counters.js").SessionCounters;
   /** A running or finished Marathon on this session. See `dynamo/marathon.ts`. */
@@ -415,11 +422,17 @@ export interface Session {
   compactFailures?: number;
   /**
    * The maintained "state of this session" notes (session memory) — a structured,
-   * continuously-refreshed document injected into every turn so the model keeps a crisp
-   * picture across compaction. Lives outside the transcript (compaction never touches
-   * it). "" / undefined until the first update. Persisted as a sidecar notes file.
+   * continuously-refreshed document that stands in for the part of the conversation a
+   * compaction cuts away. Not shown to the model otherwise: while the conversation holds
+   * everything it is the only source. Lives outside the transcript (compaction never
+   * touches it). "" / undefined until the first update. Persisted as a sidecar notes file.
    */
   sessionMemory?: string;
+  /**
+   * The refresh in flight, if any (memory only, never saved). One at a time: see
+   * `refreshSessionMemory`. A compaction that wants the notes waits for it first.
+   */
+  sessionMemoryRun?: Promise<boolean>;
   /** Transcript token count at the last session-memory update (the refresh watermark). */
   sessionMemoryTokens?: number;
   /** Whether session memory has been initialized (past the warm-up bar) yet. */

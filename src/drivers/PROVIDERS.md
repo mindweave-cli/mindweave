@@ -10,13 +10,13 @@ lineup below costs nothing until you pick from it.
 
 ## Available now
 
-16 providers, 62 models, plus OpenRouter's catalogue and whatever you run in Ollama. `/provider` moves between them and
+16 providers, 63 models, plus OpenRouter's catalogue and whatever you run in Ollama. `/provider` moves between them and
 `/model` lists what the one you are on offers, so there is nothing here you need to memorise.
 
 | Provider | Models | Key |
 | --- | --- | --- |
 | **DeepSeek** | 2 | `DEEPSEEK_API_KEY` |
-| **Anthropic** | 7 | `ANTHROPIC_API_KEY` |
+| **Anthropic** | 8 | `ANTHROPIC_API_KEY` |
 | **OpenAI** | 6 | `OPENAI_API_KEY` |
 | **Gemini** | 7 | `GEMINI_API_KEY` |
 | **Qwen** | 5 | `DASHSCOPE_API_KEY` |

@@ -193,7 +193,7 @@ export function ToolLine({ id, full, expanded, hovered, name, arg, status, actio
           {working ? <PulseDot glyph={DOT} /> : <Text>{DOT}</Text>}
         </Box>
         <Box flexShrink={0}>
-          <Text bold dimColor={!!full && status !== "running" && !hovered}>{verb}</Text>
+          <Text bold>{verb}</Text>
         </Box>
         {shownArg ? (
           <Box flexShrink={0}>
@@ -232,16 +232,16 @@ export function ToolLine({ id, full, expanded, hovered, name, arg, status, actio
       </Box>
       {(status !== "running" || (working && detailKind === "shell")) && branchLines.length > 0 ? (
         detailKind === "shell" ? (
-          <ShellLines lines={branchLines} columns={columns} errored={errored} headerHasCommand={!!arg} hot={hovered} wrap={open} />
+          <ShellLines lines={branchLines} columns={columns} errored={errored} headerHasCommand={!!arg} wrap={open} />
         ) : action === "screenshot" && detailKind !== "diff" ? (
-          <UiLines lines={branchLines} columns={columns} errored={errored} hot={hovered} wrap={open} />
+          <UiLines lines={branchLines} columns={columns} errored={errored} wrap={open} />
         ) : (
-          <BranchLines lines={branchLines} columns={columns} errored={errored} diff={detailKind === "diff"} hot={hovered} wrap={open} />
+          <BranchLines lines={branchLines} columns={columns} errored={errored} diff={detailKind === "diff"} wrap={open} />
         )
       ) : null}
-      {/* The one place the row says it can be pressed. While the pointer is over the row the
-          frame around the text (the branch mark, the rail, this line, the verb) lights up;
-          the text itself keeps its own colours, so a diff stays a diff. */}
+      {/* The one place the row says it can be pressed, and the only thing that moves while the
+          pointer is over it: this line goes from dim to bright. The verb, the branch mark, the
+          rail and the text keep their look, so a diff stays a diff and nothing else shifts. */}
       {full && status !== "running" ? (
         <Text dimColor={!hovered} bold={hovered}>
           {open ? "    ▾ click to fold" : `    ▸ click to show all ${full.split("\n").length} lines`}

@@ -205,6 +205,17 @@ export async function saveSession(session: Session): Promise<boolean> {
       ...(session.toolContext.activatedTools && session.toolContext.activatedTools.size > 0
         ? { activatedTools: [...session.toolContext.activatedTools] }
         : {}),
+      // Where the saved notes stop, so a reopened session measures how stale they are
+      // from the real point instead of from nothing.
+      ...(session.sessionMemory && session.sessionMemoryEntries !== undefined
+        ? {
+            notesCover: {
+              entries: session.sessionMemoryEntries,
+              tokens: session.sessionMemoryTokens ?? 0,
+              of: session.transcript.length,
+            },
+          }
+        : {}),
       ...(session.counters && session.counters.toolCalls > 0 ? { counters: session.counters } : {}),
       // The task list, so a resumed session still has it.
       ...((session.toolContext.todos?.length ?? 0) > 0 ? { todos: session.toolContext.todos } : {}),

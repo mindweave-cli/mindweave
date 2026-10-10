@@ -23,7 +23,14 @@ const ctx = (sessionId?: string): ToolContext =>
 /** Write a saved session the same shape store.ts does: a meta file + notes + transcript. */
 async function saveFixture(
   id: string,
-  opts: { first: string; last: string; updatedAt: number; notes?: string; transcript?: Array<{ role: string; content: string }> },
+  opts: {
+    first: string;
+    last: string;
+    updatedAt: number;
+    notes?: string;
+    transcript?: Array<{ role: string; content: string }>;
+    notesCover?: { entries: number; tokens: number; of: number };
+  },
 ) {
   const dir = sessionDir(project);
   await fs.mkdir(dir, { recursive: true });
@@ -36,7 +43,8 @@ async function saveFixture(
       updatedAt: opts.updatedAt,
       firstPrompt: opts.first,
       lastPrompt: opts.last,
-      entryCount: 12,
+      entryCount: opts.transcript?.length ?? 12,
+      ...(opts.notesCover ? { notesCover: opts.notesCover } : {}),
     }),
   );
   if (opts.notes) await fs.writeFile(join(dir, `${id}.notes.md`), opts.notes);
@@ -144,6 +152,33 @@ test("a project with no history says so plainly", async () => {
   const emptyCtx = { cwd: empty, roots: [empty], reads: new Map(), todos: [] } as unknown as ToolContext;
   const r = await sessionsTool.execute({}, emptyCtx);
   assert.match(r.output, /No earlier sessions/);
+});
+
+test("notes that stop before the session ended are followed by what came after them", async () => {
+  await saveFixture("cccccccc-3333", {
+    first: "wire the importer",
+    last: "ship it",
+    updatedAt: NOW - 4 * 86400_000,
+    notes: "Importer reads the CSV and writes rows.",
+    notesCover: { entries: 2, tokens: 900, of: 5 },
+    transcript: [
+      { role: "user", content: "wire the importer" },
+      { role: "assistant", content: "Importer is wired to the CSV reader." },
+      { role: "user", content: "now add the retry on timeout" },
+      { role: "assistant", content: "Added a three-try retry with backoff in importer.ts." },
+      { role: "user", content: "ship it" },
+    ],
+  });
+  const r = await sessionsTool.execute({ id: "cccccccc-3333" }, ctx());
+  assert.match(r.output, /Importer reads the CSV and writes rows/);
+  assert.match(r.output, /last written 3 messages before that session ended/);
+  assert.match(r.output, /Added a three-try retry with backoff/, "what came after the notes");
+  assert.doesNotMatch(r.output, /Importer is wired to the CSV reader/, "what the notes already hold is not repeated");
+});
+
+test("notes that reach the end, or whose reach is unknown, get nothing added", async () => {
+  const r = await sessionsTool.execute({ id: "aaaaaaaa-1111" }, ctx());
+  assert.doesNotMatch(r.output, /last written/);
 });
 
 test("timeAgo reads the way a person refers to past work", () => {

@@ -250,7 +250,7 @@ test("two files in the same folder read its notes once", async () => {
  */
 test("folder notes render into the volatile context, with their folder named", async () => {
   const { volatileContext } = await import("../dynamo/engine.js");
-  const out = volatileContext("", false, "", "", [
+  const out = volatileContext("", false, "", [
     { path: "/p/src/api/MINDWEAVE.md", text: "Every endpoint returns a Result." },
   ]);
   assert.match(out, /Every endpoint returns a Result\./, "the folder's notes never reached the model");
@@ -259,15 +259,15 @@ test("folder notes render into the volatile context, with their folder named", a
 
 test("no folder notes adds nothing at all", async () => {
   const { volatileContext } = await import("../dynamo/engine.js");
-  const empty = volatileContext("", false, "", "", []);
-  const withRules = volatileContext("Use pnpm.", false, "", "", []);
+  const empty = volatileContext("", false, "", []);
+  const withRules = volatileContext("Use pnpm.", false, "", []);
   assert.ok(!empty.includes("folders you are working in"), "an empty list still printed a heading");
   assert.match(withRules, /Use pnpm\./, "the existing blocks stopped rendering");
 });
 
 test("folder notes are as binding as the project's own", async () => {
   const { volatileContext } = await import("../dynamo/engine.js");
-  const out = volatileContext("", false, "", "", [{ path: "/p/src/MINDWEAVE.md", text: "x" }]);
+  const out = volatileContext("", false, "", [{ path: "/p/src/MINDWEAVE.md", text: "x" }]);
   assert.match(out, /binding/i, "nothing tells the model these carry weight");
 });
 

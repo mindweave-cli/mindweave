@@ -597,9 +597,9 @@ test("a very long goal is clipped in the block, not sent whole every turn", () =
 });
 
 test("the block reaches the model's context only while running, and never a sub-agent's", () => {
-  const withBlock = volatileContext("", false, "", "", [], "", marathonBlock("the goal"));
+  const withBlock = volatileContext("", false, "", [], "", marathonBlock("the goal"));
   assert.match(withBlock, /A Marathon is running/);
-  assert.doesNotMatch(volatileContext("", false, "", "", [], "", ""), /Marathon/);
+  assert.doesNotMatch(volatileContext("", false, "", [], "", ""), /Marathon/);
   // The gate lives where the request is built: lead agent, status running.
   const source = readFileSync(fileURLToPath(new URL("./engine.ts", import.meta.url)), "utf8");
   assert.match(

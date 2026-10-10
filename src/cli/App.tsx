@@ -81,6 +81,7 @@ import { applyScreenMode } from "./screenShell.js";
 import { saveScreenMode } from "./screenStore.js";
 import { needsMeasure, pruneHeights } from "./blockHeights.js";
 import { expandableAt, hitBlock, hitItem } from "./expandHits.js";
+import { shellNote } from "./shellNotes.js";
 import { readFileSync, statSync } from "node:fs";
 import { compactUiDetail, rebuildFull, writtenFromDisk } from "../tools/rebuildDetail.js";
 import { shownText } from "../memory/compaction.js";
@@ -821,22 +822,9 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
     setBgTick((t) => t + 1);
     const mgr = session.current?.toolContext.backgroundShells;
     for (const { info: sh, kind } of mgr?.takeUiEvents() ?? []) {
-      // A shell reaching "ready" says nothing the tool row did not already say when it
-      // backgrounded the command, and being killed at the user's request is not news
-      // either — they asked for it. A command that DIED ON ITS OWN is news, because
-      // nothing else on screen would tell them their dev server had fallen over.
-      if (kind === "ready") continue;
-      // The watchdog flagged a running shell as stuck — a prompt it is blocked on, or a
-      // long silence on a command that should be working. Worth a line: otherwise it sits
-      // invisible until it times out.
-      if (kind === "stalled") {
-        const why = sh.stallReason === "prompt" ? "waiting for input?" : "no output for a while — stuck?";
-        addTool(`shell #${sh.id} (${clipCmd(sh.command)}) ${why}`, { error: true });
-        continue;
-      }
-      if (sh.status === "killed" && sh.stoppedBy === "user") continue;
-      const verb = sh.status === "killed" ? "killed" : `finished — exit ${sh.exitCode}`;
-      addTool(`shell #${sh.id} (${clipCmd(sh.command)}) ${verb}`, { error: sh.status !== "killed" && sh.exitCode !== 0 });
+      // Only what nothing else on screen says: see shellNotes.
+      const line = shellNote(sh, kind, clipCmd);
+      if (line) addTool(line.text, { error: line.error });
     }
   }
 

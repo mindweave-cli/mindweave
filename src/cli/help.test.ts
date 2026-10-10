@@ -43,3 +43,12 @@ test("the things with no autocomplete entry are still discoverable", () => {
   assert.match(text, /@path/); // attachments
   assert.match(text, /Esc/); // interrupt
 });
+
+test("the folded lines are explained, since nothing on one says how to open it", () => {
+  const text = formatHelp([{ title: "Commands", commands: BUILT_IN }]);
+  assert.match(text, /About the lines that fold/);
+  assert.match(text, /Ran 3 commands, read 2 files/);
+  assert.match(text, /Click\s+a line that ends in ▸ opens it/);
+  assert.match(text, /Ctrl\+O/);
+  assert.match(text, /PageUp \/ wheel/);
+});

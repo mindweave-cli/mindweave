@@ -1,9 +1,12 @@
 /**
- * notesInTail.test.ts — the session notes are sent only when they add something.
+ * notesInTail.test.ts — the session notes are never sent with a turn.
  *
- * They ride in the per-call tail, which is never cached, and were sent on every call: a
- * median of 2.7K uncached tokens a call while the conversation still held everything
- * they summarise, and the same text twice after a compaction made from them.
+ * They stand in for the part of a conversation a compaction cuts away, and are used there.
+ * They used to ride in every request once anything had been cleared, labelled "trust
+ * these", and a copy that lagged behind what had just happened contradicted the
+ * conversation the model was in: a real session spent twenty-five calls saying its own
+ * memory was corrupt. While the conversation holds everything it is the only source; after
+ * a compaction the notes ARE the summary entry. Neither needs a second copy per turn.
  */
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
@@ -11,36 +14,12 @@ import { mkdtempSync, realpathSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CLEARED_STUB, RECAP_STUB, notesAddSomething } from "./compaction.js";
+import { CLEARED_STUB } from "./compaction.js";
 import { respond } from "../dynamo/engine.js";
 import { createSession } from "./session.js";
 import { stopChassis } from "../alternator/lane.js";
-import type { Entry } from "./types.js";
 
 const NOTES = "## Current state\nThe parser is half rewritten; tests in src/parse.test.ts fail on line 40.";
-
-test("nothing lost: the notes are a second copy and are not sent", () => {
-  const whole: Entry[] = [
-    { role: "user", content: "fix the parser" },
-    { role: "assistant", content: "", toolCalls: [{ id: "1", name: "read_file", arguments: '{"path":"a.ts"}' }] },
-    { role: "tool", toolCallId: "1", content: "export const a = 1;" },
-  ];
-  assert.equal(notesAddSomething(whole, NOTES), false);
-  assert.equal(notesAddSomething(whole, ""), false);
-});
-
-test("a cleared result, a condensed reply or a compaction makes them worth sending", () => {
-  assert.equal(notesAddSomething([{ role: "tool", toolCallId: "1", content: `x\n${CLEARED_STUB}` }], NOTES), true);
-  assert.equal(notesAddSomething([{ role: "assistant", content: RECAP_STUB }], NOTES), true);
-  assert.equal(notesAddSomething([{ role: "summary", content: "Earlier: an LLM-written summary." }], NOTES), true);
-});
-
-test("not twice: notes already in the conversation as the compaction summary are not repeated", () => {
-  const transcript: Entry[] = [{ role: "summary", content: `Resuming. ${NOTES}` }, { role: "tool", toolCallId: "1", content: CLEARED_STUB }];
-  assert.equal(notesAddSomething(transcript, NOTES), false);
-  // Once the notes have moved on past the summary, they say something it does not.
-  assert.equal(notesAddSomething(transcript, `${NOTES}\n## Worklog\n- fixed line 40`), true);
-});
 
 // ── on the wire ──────────────────────────────────────────────────────────────
 
@@ -68,25 +47,34 @@ before(async () => {
 
 after(() => server.close());
 
-test("the request carries the notes only after something was cleared", async () => {
+test("the request never carries the notes, whatever has been cleared or summarised", async () => {
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "mw-notes-tail-")));
   const session = await createSession(root);
   session.modelConfig = { model: "gemini-3.7-flash", thinking: false, effort: "high" };
   session.sessionMemory = NOTES;
   session.sessionMemoryInit = true;
+  const THE_NOTES = "tests in src/parse.test.ts fail";
   try {
     bodies = [];
     session.transcript.push({ role: "user", content: "first" });
     await respond(session, {});
-    assert.ok(!bodies.at(-1)!.includes("tests in src/parse.test.ts fail"), "notes sent while nothing was lost");
+    assert.ok(!bodies.at(-1)!.includes(THE_NOTES), "notes sent while nothing was lost");
 
+    // A cleared result used to be what made them worth sending.
     session.transcript.push(
       { role: "assistant", content: "", toolCalls: [{ id: "t1", name: "read_file", arguments: '{"path":"a.ts"}' }] },
-      { role: "tool", toolCallId: "t1", content: `a.ts\n${CLEARED_STUB}` },
+      { role: "tool", toolCallId: "t1", content: `a.ts
+${CLEARED_STUB}` },
       { role: "user", content: "second" },
     );
     await respond(session, {});
-    assert.ok(bodies.at(-1)!.includes("tests in src/parse.test.ts fail"), "notes missing once a result was cleared");
+    assert.ok(!bodies.at(-1)!.includes(THE_NOTES), "notes sent after a result was cleared");
+
+    // And so did a summary in front of the conversation.
+    session.transcript.unshift({ role: "summary", content: "Earlier: the parser was being rewritten." });
+    session.transcript.push({ role: "user", content: "third" });
+    await respond(session, {});
+    assert.ok(!bodies.at(-1)!.includes(THE_NOTES), "notes sent after a compaction summary");
   } finally {
     await stopChassis(session.toolContext.chassis).catch(() => {});
   }

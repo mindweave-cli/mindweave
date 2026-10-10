@@ -54,7 +54,19 @@ export function formatHelp(sections: readonly HelpSection[]): string {
       // QUEUEING is discoverable. Getting back OUT of the queue is not: nothing on
       // screen mentions it until something is already queued, and by then a user who
       // has changed their mind is looking for a way to undo, not to read a hint.
-      "  ↑                 take back a message you queued while it was working",
+      "  ↑                 take back a message you queued while it was working\n" +
+      "  Click             a line that ends in ▸ opens it, and a second click folds it\n" +
+      "  Ctrl+O            opens or folds the newest one, if your terminal sends no mouse\n" +
+      "  PageUp / wheel    scroll back through the conversation; Ctrl+End comes back to the end",
+    // The one thing on screen that is NOT what it looks like: a single line standing for many
+    // calls. It is folded on purpose, and nothing on the line itself says how to open it.
+    "About the lines that fold\n" +
+      "  What the agent runs and reads is folded into one line, such as\n" +
+      "      Ran 3 commands, read 2 files  ✓ ✗ ✓  ▸\n" +
+      "  The marks show how each command ended, so a failure is red without opening anything.\n" +
+      "  Click the line to list them: each command with how it ended, each file with the part\n" +
+      "  that was read (lines 410–551, or the whole file). Click a command to see what it\n" +
+      "  printed. A long output, a file written whole or an edit works the same way.",
     // Sub-agents are the one part of the machinery that visibly does something on
     // screen without explaining itself: a rail of tool calls appears under a worker
     // that is not the agent you were talking to. What it costs you and what it hands

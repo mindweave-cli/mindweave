@@ -57,6 +57,9 @@ export function willHaveBody(block: Block | undefined): boolean {
 export function isTight(all: readonly Block[], i: number): boolean {
   const block = all[i];
   const prev = i > 0 ? all[i - 1] : undefined;
+  // A dim note keeps a blank line above it, so it never sits against the words before it; notes
+  // that follow each other are one list (a command's several lines) and hug.
+  if (block?.kind === "note") return prev?.kind === "note";
   if (!block || block.kind !== "tool" || !prev || prev.kind !== "tool") return false;
   return !willHaveBody(block) && !willHaveBody(prev);
 }

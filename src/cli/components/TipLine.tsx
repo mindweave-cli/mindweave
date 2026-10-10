@@ -33,7 +33,7 @@ export const TIPS: Tip[] = [
   { key: "/think", text: "sets how hard the model reasons" },
   { key: "ctrl+left", text: "moves the cursor a word at a time" },
   { key: "/undo", text: "restores the last checkpoint" },
-  { key: "click", text: "a long output to open it, again to fold it (ctrl+o: the newest)" },
+  { key: "click", text: "a line ending in ▸ to open it, again to fold it (ctrl+o: the newest)" },
   { key: "/screen", text: "chooses the shell — fullscreen, or inline (beta)" },
 ];
 

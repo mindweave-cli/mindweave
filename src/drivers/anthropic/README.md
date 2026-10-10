@@ -15,11 +15,15 @@ Driver for Claude models, built on the official `@anthropic-ai/sdk`.
 | `claude-opus-4-8` | An older Opus. |
 | `claude-fable-5-1` | The toughest work, at the highest rate. Always thinks. |
 | `claude-fable-5` | The previous Fable. Always thinks. |
-| `claude-haiku-4-5` | Cheapest and quickest. |
+| `claude-haiku-5-5` | The fastest and cheapest, for quick, simple work. Compaction is anchored at 100K tokens, since a longer prompt is billed at five times the rate. |
+| `claude-haiku-4-5` | The previous Haiku. |
 
 Four reasoning levels (Standard, Thinking, Deep, Maximum), which map to adaptive
 thinking plus an `effort` budget. On the models that always think, Standard is a
 lighter effort rather than "no thinking", because that request is rejected.
+
+Haiku 5.5 is on this surface too (adaptive thinking plus `effort`, default `medium`). Thinking may
+be turned off, but only at effort `high` or below, as on Opus 5.
 
 Haiku 4.5 predates this request surface: it takes a fixed thinking budget and no
 `effort`, so it gets its own path in `client.ts` and just two levels.

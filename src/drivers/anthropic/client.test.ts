@@ -25,7 +25,7 @@ import {
   toTurn,
   toUsage,
 } from "./client.js";
-import { DEFAULT_MODEL, FABLE, FABLE_51, HAIKU, MODELS, OPUS, OPUS_48, OPUS_55, SONNET, SONNET_55, normalize, price, surfaceOf, thinkLevels } from "./manifest.js";
+import { DEFAULT_MODEL, FABLE, FABLE_51, HAIKU, HAIKU_55, MODELS, OPUS, OPUS_48, OPUS_55, SONNET, SONNET_55, normalize, price, surfaceOf, thinkLevels } from "./manifest.js";
 import type { Effort, ModelRequest, StreamEvent } from "../types.js";
 
 const base: ModelRequest = { system: "SYSTEM", messages: [] };
@@ -33,7 +33,7 @@ const base: ModelRequest = { system: "SYSTEM", messages: [] };
 /** Every model this provider advertises. */
 const ALL = MODELS.map((m) => m.id);
 /** The models on the current request surface — adaptive thinking plus `effort`. */
-const CURRENT_SURFACE = [SONNET, OPUS, OPUS_48];
+const CURRENT_SURFACE = [SONNET, OPUS, OPUS_48, HAIKU_55];
 const EFFORTS: Effort[] = ["low", "medium", "high", "xhigh", "max"];
 
 /** A body for one model at one reasoning setting. */
@@ -733,4 +733,85 @@ test("an unrecognised model name echoed in the response never changes whether re
   } as unknown as Anthropic.Message;
   assert.equal(toTurn(message, surfaceOf(SONNET).progressUpdates).content, "The answer.");
   assert.equal(toTurn(message, true).content, "private reasoning\n\nThe answer.", "sanity: with updates on, it would show");
+});
+
+// ── Claude Haiku 5.5 ─────────────────────────────────────────────────────────
+// The current request surface: adaptive thinking plus `effort` (default medium). Thinking may
+// be turned off with `disabled`, but only at effort high or below (a 400 at xhigh and max, as
+// on Opus 5); `between_tools` and a token budget are both 400s. A prompt over 100,000 tokens
+// is billed at five times every rate. platform.claude.com, "Claude Haiku 5.5" overview,
+// migration guide and "Thinking", checked 2026-10-10.
+
+test("Haiku 5.5 is offered next to Haiku 4.5, which stays", () => {
+  const ids = MODELS.map((m) => m.id);
+  assert.ok(ids.includes(HAIKU_55) && ids.includes(HAIKU));
+  assert.ok(ids.indexOf(HAIKU_55) < ids.indexOf(HAIKU), "the newer one first");
+  assert.equal(MODELS.find((m) => m.id === HAIKU_55)!.label, "Claude Haiku 5.5");
+  assert.equal(HAIKU_55, "claude-haiku-5-5");
+  assert.equal(DEFAULT_MODEL, SONNET_55, "the default did not move");
+  assert.equal(normalize({ model: HAIKU_55, thinking: false, effort: "high" }).model, HAIKU_55, "a saved choice stays");
+  assert.equal(normalize({ model: HAIKU, thinking: false, effort: "high" }).model, HAIKU, "and so does the old Haiku");
+});
+
+test("Haiku 5.5 is priced at the up-to-100K rate, and kept under that line", () => {
+  assert.deepEqual(
+    { hit: price(HAIKU_55).cacheHit, miss: price(HAIKU_55).cacheMiss, out: price(HAIKU_55).output, write: price(HAIKU_55).cacheWrite },
+    { hit: 0.01, miss: 0.1, out: 0.5, write: 0.125 },
+  );
+  // Over 100,000 tokens every rate is five times higher for the whole request, so the window
+  // that compaction is anchored on stops there instead of at the 1M the model stores.
+  assert.equal(surfaceOf(HAIKU_55).window, 100_000);
+  assert.ok(surfaceOf(HAIKU).window > surfaceOf(HAIKU_55).window, "a window of its own, not the old Haiku's");
+});
+
+test("Haiku 5.5 takes effort, and no-thinking is `disabled` at high or below", () => {
+  assert.equal(surfaceOf(HAIKU_55).takesEffort, true);
+  assert.equal(surfaceOf(HAIKU_55).canDisableThinking, true);
+  assert.equal(surfaceOf(HAIKU_55).maxDisabledEffort, "high");
+  assert.equal(surfaceOf(HAIKU_55).thinkingOff, undefined, "`between_tools` is Sonnet 5.5's, and a 400 here");
+  const off = bodyFor(HAIKU_55, false, "high");
+  assert.deepEqual(off.thinking, { type: "disabled" });
+  assert.deepEqual(off.output_config, { effort: "high" });
+  const on = bodyFor(HAIKU_55, true, "medium");
+  assert.deepEqual(on.thinking, { type: "adaptive" });
+  assert.deepEqual(on.output_config, { effort: "medium" });
+});
+
+test("Haiku 5.5 is never sent a token budget, a progress-updates request, or no-thinking above high", () => {
+  for (const thinking of [true, false]) {
+    for (const effort of ["low", "medium", "high", "xhigh", "max"] as Effort[]) {
+      const cfg = normalize({ model: HAIKU_55, thinking, effort });
+      const body = bodyFor(HAIKU_55, cfg.thinking, cfg.effort, 16_000);
+      const t = body.thinking as { type: string; budget_tokens?: number; display?: string } | undefined;
+      assert.ok(t && t.type !== "enabled" && t.type !== "between_tools", `${thinking}/${effort}`);
+      assert.equal(t?.budget_tokens, undefined);
+      assert.equal(t?.display, undefined, "no beta header either");
+      if (t?.type === "disabled") assert.ok(["low", "medium", "high"].includes(cfg.effort), `disabled at ${cfg.effort} is a 400`);
+      for (const key of ["temperature", "top_p", "top_k"]) assert.ok(!(key in body), `${key} must never be sent`);
+    }
+  }
+});
+
+test("Haiku 5.5 gets the full ladder of reasoning levels, with Standard still answering directly", () => {
+  const levels = thinkLevels(HAIKU_55);
+  assert.deepEqual(levels.map((l) => l.label), ["Standard", "Thinking", "Deep", "Maximum"]);
+  assert.equal(levels[0]!.thinking, false);
+  for (const level of levels) {
+    const config = { model: HAIKU_55, thinking: level.thinking, effort: level.effort };
+    assert.deepEqual(normalize(config), config, `${level.label} is a setting the model accepts as it stands`);
+  }
+});
+
+test("Haiku 5.5 searches with the basic web search tool, and is only sent tool_choice auto", () => {
+  assert.equal(surfaceOf(HAIKU_55).searchTool, "web_search_20250305");
+  const body = buildBody(
+    {
+      ...base,
+      messages: [{ role: "user", content: "x" }],
+      model: { model: HAIKU_55, thinking: true, effort: "medium" },
+      tools: [{ type: "function", function: { name: "read", description: "Read a file", parameters: { type: "object", properties: {} } } }],
+    },
+    1000,
+  );
+  assert.deepEqual(body.tool_choice, { type: "auto" });
 });

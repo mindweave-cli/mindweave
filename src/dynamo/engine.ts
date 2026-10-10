@@ -70,7 +70,6 @@ import {
   dropOldestRounds,
   estimateEntriesTokens,
   estimateTokens,
-  notesAddSomething,
   estimateTokensForChars,
   formatTranscriptForSummary,
   isContinuation,
@@ -92,7 +91,7 @@ import {
   type CompactionReport,
 } from "./contextWindow.js";
 import { todoReminderDue, todoReminderText, type TodoQuiet } from "./todoReminder.js";
-import { renderSessionMemory, shouldUpdateSessionMemory, updateSessionMemory } from "../memory/sessionMemory.js";
+import { refreshSessionMemory, sessionMemoryDue, settleSessionMemory } from "../memory/sessionMemory.js";
 import { compactFromSessionMemory } from "../memory/sessionMemoryCompact.js";
 import { isContextOverflowError } from "../drivers/contextOverflow.js";
 import { detailOf, providerMessage } from "../drivers/providerError.js";
@@ -238,7 +237,6 @@ const ACTIVE_FILES_FOR_NOTES = 20;
 export function volatileContext(
   rules: string,
   planMode: boolean,
-  sessionMemory: string,
   approvedPlan = "",
   /** Notes for the folders being worked in right now (see memory/projectNotes.ts). */
   directoryNotes: { path: string; text: string }[] = [],
@@ -292,10 +290,11 @@ export function volatileContext(
   // A running Marathon is standing instruction like the approved plan: rendered fresh
   // every request so compaction cannot lose what the run is for.
   if (marathon) parts.push(marathon);
-  // The maintained session state — first in the volatile tail so the model reads
-  // "here's where we are" before the map/task list. Survives compaction.
-  const memBlock = renderSessionMemory(sessionMemory);
-  if (memBlock) parts.push(memBlock);
+  // The session notes are NOT here. They stand in for the part of a conversation a
+  // compaction cuts away, and are used there (see memory/sessionMemoryCompact.ts). Sent on
+  // every turn as well they were a second source that could lag behind the conversation the
+  // model was in, and a model that found them contradicting what it had just run spent its
+  // turns announcing that its own memory was corrupt.
   // Notes belonging to the FOLDERS currently in play. Volatile on purpose: they change
   // as the agent moves around the repository, and folding them into the cached prefix
   // would rewrite that prefix every time it opened a file in a new directory. Read
@@ -875,7 +874,6 @@ function buildRequest(
     context: volatileContext(
       gov.rules,
       session.toolContext.planMode ?? false,
-      notesAddSomething(session.transcript, session.sessionMemory ?? "") ? (session.sessionMemory ?? "") : "",
       session.toolContext.activePlan
         ? renderPlanBlock({
             plan: session.toolContext.activePlan,
@@ -1305,10 +1303,10 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
 
   // SESSION MEMORY. At a natural break (turn start), if the transcript has grown enough
   // since the last refresh, update the maintained "state of this session" notes. They
-  // live outside the transcript, so compaction never erodes them — which is what lets a
-  // session run indefinitely without slowly losing the thread. One cheap call, gated so
-  // it fires rarely; degrade-safe.
-  await sweepSessionMemory(session, options);
+  // live outside the transcript and are what a compaction keeps of the part it cuts
+  // away. One cheap call, gated so it fires rarely; degrade-safe. In the background: the
+  // turn does not wait for it.
+  void sweepSessionMemory(session, options, "break");
 
 
   // Per-task guards: cost and time ceilings, both opt-in, like the step ceiling above
@@ -1409,9 +1407,12 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
     //
     // Deliberately NOT in the `finally`: that path also runs on abort and on throw, and
     // a user pressing Esc should not be charged for a background model call.
-    if (!options.signal?.aborted) await sweepSessionMemory(session, options);
+    if (!options.signal?.aborted) await sweepSessionMemory(session, options, "end");
     return reply;
   } finally {
+    // A refresh started during the turn is finished (or stopped, on Esc) before the turn is
+    // accounted, so what it cost is part of this turn and the notes it wrote are saved.
+    await settleSessionMemory(session);
     recordSpend();
     const before = session.toolContext.checkpoints?.list().length ?? 0;
     session.toolContext.checkpoints?.seal(turnLabel, opener?.ts);
@@ -2158,6 +2159,11 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
     }
     await options.persist?.(); // durable: tool results recorded, transcript well-formed
 
+    // A long run of tool calls is ONE turn, so a refresh that waited for the turn to end
+    // would leave the notes behind for the whole run. Checked after every round of results,
+    // in the background so the work is not held up.
+    void sweepSessionMemory(session, options, "step");
+
     // A plan approved with a FRESH CONTEXT. Everything the planning turn accumulated —
     // the files opened to understand the problem, the searches that went nowhere — has
     // done its job, and none of it is needed to carry the plan out.
@@ -2771,18 +2777,21 @@ function emitUsage(result: StreamResult, options: RespondOptions): void {
  * (lossless) first, then autocompact (a summary) if still over the higher bar.
  */
 /**
- * Refresh the maintained "state of this session" notes if the transcript has grown
- * enough since the last refresh. They live outside the transcript, so compaction never
- * erodes them — which is what lets a session run indefinitely without losing the thread,
- * and what a later `read_session` reads to answer "what did we do last time".
+ * Refresh the maintained "state of this session" notes when enough has happened since the
+ * last refresh. They live outside the transcript, so compaction never erodes them, and they
+ * are what a compaction keeps of the part it cuts away.
  *
- * Called at BOTH turn start (so this turn's context carries current notes) and turn end
- * (so the last turn of a session is never missing from them). One cheap call, token-gated
- * so it fires rarely and never twice for the same growth. Silent by design: this is
- * background machinery, not something the user watches. Degrade-safe — a failed update
- * keeps the last good notes.
+ * Considered at three moments: when a turn starts (a natural break), after every round of tool
+ * results (a long run of work is ONE turn, and the notes must not wait for it to end), and
+ * when a turn ends (so the last turn of a session is never missing from them). `mode` says
+ * which: only the end of a turn WAITS, because that is the one place nothing is being held
+ * up and the process may be about to stop.
+ *
+ * One cheap call, gated by growth and by how much work has happened, one at a time per
+ * session. Silent by design: this is background machinery, not something the user watches.
+ * Degrade-safe: a failed update keeps the last good notes.
  */
-async function sweepSessionMemory(session: Session, options: RespondOptions): Promise<void> {
+async function sweepSessionMemory(session: Session, options: RespondOptions, mode: "break" | "step" | "end"): Promise<void> {
   // Not for a sub-agent. The notes exist so the MAIN conversation survives being
   // summarised; a child's transcript is thrown away whole the moment it reports back, so
   // there is nothing for them to carry. Writing them costs a real model call on the
@@ -2790,18 +2799,18 @@ async function sweepSessionMemory(session: Session, options: RespondOptions): Pr
   // research worker reaches the threshold at ~9.8K tokens, and a five-way fan-out paid
   // that five times, for notes nothing ever read. The child does not even persist them.
   if ((session.toolContext.subagentDepth ?? 0) > 0) return;
-  const grown = shouldUpdateSessionMemory(
-    estimateEntriesTokens(session.transcript),
-    session.sessionMemoryTokens ?? 0,
-    session.sessionMemoryInit ?? false,
-  );
-  if (!grown) return;
-  await updateSessionMemory(session, options.signal, (usage) => {
+  if (options.signal?.aborted) return;
+  if (!sessionMemoryDue(session, mode !== "step")) return;
+  const run = refreshSessionMemory(session, options.signal, (usage) => {
     options.onEvent?.({ type: "usage", ...usage });
     countUsage(session, usage, options);
     recordAuxCall(session, usage, "notes");
+  }).then(async (wrote) => {
+    if (wrote) await options.persist?.(); // durable: the notes sidecar is written by the persister
+    return wrote;
   });
-  await options.persist?.(); // durable: the notes sidecar is written by the persister
+  if (mode === "end") await run;
+  else void run.catch(() => {});
 }
 
 /**
@@ -3037,7 +3046,9 @@ async function summarizeAndSplice(session: Session, options: RespondOptions): Pr
   // session maintained outside the transcript, which is very nearly what the
   // summarizer is about to be paid to produce. When they are current enough to cover
   // the prefix being dropped, spending a model call buys something already owned.
-  // Declines rather than approximates: stale or empty notes fall through.
+  // Declines rather than approximates: stale or empty notes fall through. A refresh that is
+  // already running is waited for, so the boundary it is about to record is the one used.
+  await settleSessionMemory(session);
   const fromNotes = compactFromSessionMemory(
     session.transcript,
     session.sessionMemory,
@@ -3122,9 +3133,11 @@ async function summarizeAndSplice(session: Session, options: RespondOptions): Pr
   // costing up to 12K per model call. The model re-reads what it still needs, which
   // read_file allows because the summary also clears the presence set the dedup checks.
   replaceTranscript(session, spliceSummary(session.transcript, summary, KEEP_LAST_N));
-  // The notes no longer describe the transcript they were measured against, and the
-  // summary now covers everything before the kept tail.
-  session.sessionMemoryEntries = 1;
+  // The summary covers everything up to the kept tail, which can include what happened after
+  // the notes were last written, so the notes do NOT cover it. Marking them as covering the
+  // summary let the next compaction swap the summary for older notes and lose that stretch.
+  // No boundary means no compaction from notes until a refresh has read the summary into them.
+  session.sessionMemoryEntries = 0;
   session.sessionMemoryTokens = estimateEntriesTokens(session.transcript);
   await finishCompaction(session, options, before);
 }

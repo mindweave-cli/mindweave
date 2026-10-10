@@ -61,19 +61,38 @@ test("no pause helper ends a turn without going through endTurnWith", () => {
   }
 });
 
-test("session memory is swept at turn END, not only at turn start", () => {
+test("session memory is refreshed at turn start, after every round of tool results, and at turn END", () => {
   // The turn-start check works one turn behind: it can only see what happened BEFORE
   // this turn ran. A session whose last turn did the real work therefore ended with
-  // notes that never mentioned it, and a later read_session found nothing useful.
-  // This bug cannot fail loudly — the notes are just quietly thinner — so it is pinned
+  // notes that never mentioned it, and a later read_session found nothing useful. And a
+  // long run of tool calls is ONE turn, so waiting for a turn boundary left the notes
+  // behind for the whole run, which is when a compaction is most likely to need them.
+  // This bug cannot fail loudly: the notes are just quietly older. So it is pinned
   // structurally, the same way endTurnWith is.
-  const sweeps = [...engineSource.matchAll(/sweepSessionMemory\(session, options\)/g)];
-  assert.ok(sweeps.length >= 2, `expected a sweep at turn start AND turn end, found ${sweeps.length}`);
+  for (const mode of ["break", "step", "end"]) {
+    assert.match(engineSource, new RegExp(`sweepSessionMemory\\(session, options, "${mode}"\\)`), `no "${mode}" sweep`);
+  }
   assert.match(
     engineSource,
-    /if \(!options\.signal\?\.aborted\) await sweepSessionMemory/,
+    /if \(!options\.signal\?\.aborted\) await sweepSessionMemory\(session, options, "end"\)/,
     "the end-of-turn sweep must be skipped on abort — Esc should not buy a background model call",
   );
+  // Only the end of a turn waits: the others must not hold the work up.
+  assert.match(engineSource, /void sweepSessionMemory\(session, options, "break"\)/);
+  assert.match(engineSource, /void sweepSessionMemory\(session, options, "step"\)/);
+});
+
+test("a refresh still running is finished before the turn is accounted and before a compaction reads the notes", () => {
+  const finallyBody = engineSource.match(/\} finally \{([\s\S]*?)\n  \}/)?.[1];
+  assert.ok(finallyBody, "the turn's finally block not found — did it get restructured?");
+  assert.match(finallyBody, /await settleSessionMemory\(session\);[\s\S]*recordSpend\(\)/, "settle before spend is recorded");
+  const compact = engineSource.match(/async function summarizeAndSplice[\s\S]*?compactFromSessionMemory\(/)?.[0];
+  assert.ok(compact, "summarizeAndSplice not found");
+  assert.match(compact, /await settleSessionMemory\(session\)/, "a compaction must wait for the refresh whose boundary it is about to use");
+});
+
+test("the notes are not part of what a turn sends", () => {
+  assert.doesNotMatch(engineSource, /renderSessionMemory|notesAddSomething/);
 });
 
 test("the end-of-turn sweep is not in the finally block", () => {

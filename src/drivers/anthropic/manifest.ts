@@ -12,7 +12,7 @@
  *     `effort` rung, and rejects the older fixed thinking budget and the sampling
  *     parameters outright.
  *   - The LEGACY surface (Haiku 4.5) predates both: it takes a thinking budget in
- *     tokens and rejects `effort`.
+ *     tokens and rejects `effort`. Haiku 5.5 is on the current surface.
  *
  * Some models add a rule of their own on top of that. Both Fables and Opus 5.5
  * cannot be asked NOT to think — an explicit no-thinking request is rejected at any
@@ -33,6 +33,7 @@ export const OPUS = "claude-opus-5";
 export const OPUS_48 = "claude-opus-4-8";
 export const SONNET_55 = "claude-sonnet-5-5";
 export const SONNET = "claude-sonnet-5";
+export const HAIKU_55 = "claude-haiku-5-5";
 export const HAIKU = "claude-haiku-4-5";
 
 /** The model used when nothing is saved and no env override is set. */
@@ -54,7 +55,8 @@ export const MODELS: ModelChoice[] = [
   { id: OPUS_48, label: "Claude Opus 4.8", description: "an older Opus — proven and steady" },
   { id: FABLE_51, label: "Claude Fable 5.1", description: "the toughest challenges, at the highest rate" },
   { id: FABLE, label: "Claude Fable 5", description: "the previous Fable, at the same rate" },
-  { id: HAIKU, label: "Claude Haiku 4.5", description: "cheapest and quickest, for simple work" },
+  { id: HAIKU_55, label: "Claude Haiku 5.5", description: "the fastest and cheapest, for quick, simple work" },
+  { id: HAIKU, label: "Claude Haiku 4.5", description: "the previous Haiku, cheap and quick for simple work" },
 ];
 
 /**
@@ -126,6 +128,20 @@ const SURFACES: Record<string, ModelSurface> = {
   [SONNET_55]: { ...CURRENT, maxDisabledEffort: "high", progressUpdates: true, thinkingOff: "between_tools" },
   // Thinking may be turned off, but only at effort `high` or below.
   [OPUS]: { ...CURRENT, maxDisabledEffort: "high" },
+  // Adaptive thinking is on by default and `{type:"disabled"}` is accepted at effort `high` or
+  // below (a 400 at `xhigh`/`max`, exactly as on Opus 5); `between_tools` and a token budget
+  // are both 400s. It takes `effort` (default `medium`), has no progress updates between tool
+  // calls, and rejects any non-default temperature/top_p/top_k and an assistant prefill, none of
+  // which this driver sends (platform.claude.com, "Claude Haiku 5.5 migration guide" and
+  // "Thinking", checked 2026-10-10).
+  //
+  // The window is the one judgment call here. The model stores 1M tokens, but a prompt over
+  // 100,000 tokens is billed at FIVE times every rate for the whole request, output and cache
+  // included. This is the cheap model, picked to be cheap, so compaction is anchored at the
+  // 100K line instead of letting a long session fall off a price cliff. The search tool is the
+  // basic version: the filtering one runs through code execution, and whether this model
+  // supports that is not something the docs state.
+  [HAIKU_55]: { ...CURRENT, maxDisabledEffort: "high", window: 100_000, searchTool: "web_search_20250305" },
   [OPUS_48]: { ...CURRENT },
   [SONNET]: { ...CURRENT },
   // The legacy surface. No `effort` rungs, thinking is a token budget, and the
@@ -222,6 +238,12 @@ const PRICES: Record<string, ModelPrice> = {
   // checked 2026-10-01).
   [SONNET_55]: { cacheHit: 0.2, cacheMiss: 2, output: 10, cacheWrite: 2 * CACHE_WRITE_MULTIPLIER },
   [HAIKU]: { cacheHit: 0.1, cacheMiss: 1, output: 5, cacheWrite: 1 * CACHE_WRITE_MULTIPLIER },
+  // The rate for a prompt up to 100,000 tokens. Over that, every line is five times higher
+  // ($0.50 input, $2.50 output, $0.05 cache read, $0.625 cache write), applied to the whole
+  // request. The window above keeps this driver under the line, so one row is enough
+  // (platform.claude.com, "Claude Haiku 5.5" overview, checked 2026-10-10). Cache read is 10%
+  // of input, and a 5-minute write is the usual 1.25x.
+  [HAIKU_55]: { cacheHit: 0.01, cacheMiss: 0.1, output: 0.5, cacheWrite: 0.1 * CACHE_WRITE_MULTIPLIER },
 };
 
 /** Cache-aware list price for a model, falling back to the default model's. */

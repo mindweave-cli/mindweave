@@ -50,7 +50,7 @@ npm link
 
 ## What it does
 
-- **16 providers, 62 models** — DeepSeek, Anthropic, OpenAI, Gemini, xAI, Mistral, Groq, Cerebras,
+- **16 providers, 63 models** — DeepSeek, Anthropic, OpenAI, Gemini, xAI, Mistral, Groq, Cerebras,
   Qwen, Kimi, GLM, Meta, MiniMax, Tencent, OpenRouter, and local models through Ollama
   with no key at all. [PROVIDERS.md](src/drivers/PROVIDERS.md)
 - **Real tools** — file reads and edits, search, a shell with background jobs,

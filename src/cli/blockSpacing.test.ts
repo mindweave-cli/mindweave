@@ -91,3 +91,13 @@ test("a one-line note is not a body", () => {
   assert.equal(hasBody(withNote), false);
   assert.equal(isTight([tool(), withNote], 1), true);
 });
+
+test("a dim note keeps a blank line above it, and notes that follow each other hug", () => {
+  const note = (): Block => ({ kind: "note", id: nextId++, done: true, text: "model changed" });
+  const user = (): Block => ({ kind: "user", id: nextId++, done: true, text: "hello" });
+  const blocks = [user(), note(), note(), note(), prose(), note()];
+  assert.equal(isTight(blocks, 1), false, "a note under your words is not glued to them");
+  assert.equal(isTight(blocks, 2), true, "a second note is the same list");
+  assert.equal(isTight(blocks, 3), true);
+  assert.equal(isTight(blocks, 5), false, "a note after the agent's words keeps its blank line");
+});

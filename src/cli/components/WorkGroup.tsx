@@ -175,19 +175,25 @@ function WorkList({ id, items, columns, live, hoveredItem }: { id: number; items
           : running
             ? ""
             : verdict ?? (it.status === "error" ? "✗" : it.summary ? it.summary : "✓");
+        // Words that do not fit beside a long command go on a line of their own under it. Squeezed
+        // into what is left of the line they broke across rows ("Running as shell" / "#1") and ran
+        // into the end of the command.
+        const room2 = columns - 4 - labelWidth - 3;
+        const below = !running && shown.length > 0 && !(!reading && OUTCOME.test(shown)) && shown.length > Math.max(VERDICT_WIDTH, room2) ? shown : "";
         const verdictColor = running ? undefined : it.status === "error" || (verdict && !verdict.startsWith("✓")) ? BAD : GOOD;
         const outcomeOnly = !reading && (OUTCOME.test(shown) || shown === "");
+        const beside = below ? "" : shown;
         const failedRead = reading && it.status === "error";
         const body = !reading && it.open ? openedLines(it) : [];
         const bodyWidth = Math.max(8, columns - 8);
-        const verdictBox = outcomeOnly ? VERDICT_WIDTH : Math.max(VERDICT_WIDTH, columns - 4 - labelWidth - 3);
+        const verdictBox = outcomeOnly || below ? VERDICT_WIDTH : Math.max(VERDICT_WIDTH, room2);
         // Only a command opens; a read has nothing behind its line to show.
         const registered = reading ? undefined : (node: DOMElement | null) => registerExpandable(itemHit(id, row.index), node);
         return (
           <Box key={row.key} flexDirection="column" ref={registered}>
             <Box flexDirection="row" width={columns}>
               <Text dimColor={!hot}>{last ? "  └ " : "  ├ "}</Text>
-              <Box width={labelWidth} flexShrink={0}>
+              <Box width={labelWidth} paddingRight={2} flexShrink={0}>
                 <Text bold={hot} dimColor={!hot} wrap="truncate-end">{row.label}</Text>
               </Box>
               <Box width={verdictBox} flexShrink={0}>
@@ -202,12 +208,20 @@ function WorkList({ id, items, columns, live, hoveredItem }: { id: number; items
                     dimColor={!outcomeOnly && !failedRead}
                     wrap={outcomeOnly ? "truncate-end" : "wrap"}
                   >
-                    {shown}
+                    {beside}
                   </Text>
                 )}
               </Box>
               {reading ? null : <Text dimColor={!hot} bold={hot}>{it.open ? " ▾" : " ▸"}</Text>}
             </Box>
+            {below ? (
+              <Box flexDirection="row" width={columns}>
+                <Text dimColor={!hot}>{last && !body.length ? "      " : "  │   "}</Text>
+                <Box width={bodyWidth}>
+                  <Text dimColor wrap="wrap">{below}</Text>
+                </Box>
+              </Box>
+            ) : null}
             {body.map((line, j) => (
               <Box key={j} flexDirection="row" width={columns}>
                 <Text dimColor={!hot}>{last ? "      " : "  │   "}</Text>

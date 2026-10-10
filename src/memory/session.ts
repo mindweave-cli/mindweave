@@ -501,6 +501,13 @@ export async function resumeSession(
     // The maintained session notes survive a resume, so a continued session keeps its
     // crisp running state. The watermark starts fresh; it'll refresh as it grows again.
     ...(sessionMemory ? { sessionMemory, sessionMemoryInit: true } : {}),
+    // How far the notes reach, trusted only if the transcript is the length it was when
+    // that was written. Without it a reopened session measured the notes' staleness from
+    // zero: a short one never reached the refresh bar, so the notes stayed as they were
+    // while the work moved on, and the first compaction could not use them at all.
+    ...(sessionMemory && meta.notesCover && meta.notesCover.of === transcript.length && meta.notesCover.entries <= transcript.length
+      ? { sessionMemoryEntries: meta.notesCover.entries, sessionMemoryTokens: meta.notesCover.tokens }
+      : {}),
     // What the session has already cost, and the per-call detail behind it.
     //
     // Restored, not restarted. Leaving these out did not merely forget the earlier

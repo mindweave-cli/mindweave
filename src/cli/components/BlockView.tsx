@@ -165,7 +165,7 @@ function BlockViewInner({ block, columns, tightTop, hovered, hoveredItem }: { bl
     case "note": {
       const noteLines = wrapAnsi(block.text, Math.max(4, columns - 2));
       return (
-        <Box width={columns} flexDirection="column">
+        <Box width={columns} flexDirection="column" marginTop={tightTop ? 0 : 1}>
           {noteLines.map((line, i) => (
             <Text key={i} dimColor>{i === 0 ? "· " : "  "}{line}</Text>
           ))}

@@ -160,13 +160,38 @@ async function readOne(
         quiet: true,
       };
     }
+    // The notes are as current as their last refresh, which can be a few turns before the
+    // session ended. Say so, and add what came after, so a question about "where did we stop"
+    // is answered from the end of that session and not from where its notes stopped.
+    const after = await afterTheNotes(root, meta);
     return {
-      output: `${header}\n\nWhat that session recorded about its own work:\n\n${notes}`,
+      output: `${header}\n\nWhat that session recorded about its own work:\n\n${notes}${after}`,
       summary: `session ${short(meta.id)} (notes)`,
       // Reading its own history is bookkeeping, not news — same as the listing above.
       // The answer is what shows up, not the lookup itself.
       quiet: true,
     };
+}
+
+/** How much of what happened after the notes were last written is repeated beside them. */
+const AFTER_NOTES_CHARS = 5_000;
+
+/**
+ * What that session did after its notes were last refreshed, ready to append (or "" when the
+ * notes reach the end, or when it is not known how far they reach).
+ */
+async function afterTheNotes(root: string, meta: SessionMeta): Promise<string> {
+  const cover = meta.notesCover;
+  if (!cover || cover.entries >= meta.entryCount) return "";
+  const transcript = await loadTranscript(root, meta.id);
+  const rest = (transcript ?? []).slice(cover.entries);
+  const body = renderTranscript(rest);
+  if (!rest.length || body.startsWith("(that session's transcript is empty)")) return "";
+  const clipped = body.length > AFTER_NOTES_CHARS ? body.slice(-AFTER_NOTES_CHARS) : body;
+  return (
+    `\n\nThe notes above were last written ${meta.entryCount - cover.entries} messages before that session ended. ` +
+    `What happened after them (newest at the bottom${body.length > AFTER_NOTES_CHARS ? ", earlier part left out" : ""}):\n\n${clipped}`
+  );
 }
 
 /** One session as a compact block: id, when, size, and the prompts that bracket it. */

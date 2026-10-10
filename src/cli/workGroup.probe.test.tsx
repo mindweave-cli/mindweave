@@ -289,3 +289,45 @@ test("each part of a mixed row follows its own work", () => {
   const s2 = run([start("a", "ls"), end("a"), { type: "toolStart", toolId: "r", name: "Read", arg: "x.ts", action: "read", group: true }]);
   assert.equal(commandHeader(groups(s2)[0]!.items, true).text, "Ran 1 command, reading 1 file");
 });
+
+test("a long command keeps a gap before its verdict, and a note that does not fit goes under it whole", async () => {
+  const long = '$env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=9222 --disable-features=Calculator"; npm run dev';
+  const items: Commands["items"] = [
+    { toolId: "a", name: "Run", arg: "Get-Process gamo-app -ErrorAction SilentlyContinue", kind: "run", status: "ok", detail: "$ x\n✓ 0 · 2.5s", detailKind: "shell" },
+    { toolId: "b", name: "Run", arg: long, kind: "run", status: "ok", summary: "Running as shell #1" },
+  ];
+  const text = await paint(items, { open: true });
+  const rows = text.split("\n");
+  // The note is on one row, whole, and not glued to the end of the command.
+  const note = rows.findIndex((r) => r.includes("Running as shell #1"));
+  assert.ok(note >= 0, text);
+  assert.ok(!rows[note]!.includes("$env"), `the note must not share the command's row:\n${text}`);
+  const cmd = rows.find((r) => r.includes("$env:WEBVIEW2"))!;
+  assert.match(cmd, /…\s{2,}/, `no gap after the cut command:\n${text}`);
+  // The verdict of the first command still sits on its own row, with its time.
+  assert.ok(rows.some((r) => r.includes("Get-Process") && r.includes("✓ 0 · 2.5s")), text);
+});
+
+test("a short note stays beside its command", async () => {
+  const items: Commands["items"] = [{ toolId: "a", name: "Run", arg: "npm run dev", kind: "run", status: "ok", summary: "Running as shell #1" }];
+  const text = await paint(items, { open: true });
+  assert.ok(text.split("\n").some((r) => r.includes("npm run dev") && r.includes("Running as shell #1")), text);
+});
+
+test("stopping a background command leaves no line behind, so the work around it stays one row", async () => {
+  const { shellNote } = await import("./shellNotes.js");
+  const killed = { id: 2, command: "npm run dev", status: "killed", stoppedBy: "agent" } as never;
+  // What the screen would have received between the two halves of the work.
+  const between: Action[] = [];
+  const line = shellNote(killed, "ended", (c) => c);
+  if (line) between.push({ type: "note", text: line.text });
+  const s = run([start("a", "ls"), end("a"), ...read("r1", "a.ts"), ...between, start("b", "kill"), end("b"), ...read("r2", "b.ts"), { type: "endTurn" }]);
+  assert.equal(between.length, 0, "no note for a stopped command");
+  assert.equal(groups(s).length, 1);
+  assert.equal(commandHeader(groups(s)[0]!.items, false).text, "Ran 2 commands, read 2 files");
+});
+
+test("a note the person needs still ends the row, so it is not buried inside it", () => {
+  const s = run([start("a", "ls"), end("a"), { type: "note", text: "shell #2 (npm run dev) finished with exit 1" }, start("b", "pwd"), end("b"), { type: "endTurn" }]);
+  assert.equal(groups(s).length, 2);
+});

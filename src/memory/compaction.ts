@@ -156,36 +156,6 @@ const PINNED_TOOLS = new Set([
 ]);
 const LATEST_TOOLS = new Set(["todo_write", "shells", "ui", "sessions", "find_tools"]);
 
-/**
- * Whether the session notes say anything the conversation does not (pure).
- *
- * The notes ride in the per-call tail, after the conversation, so they are never served
- * from the provider's cache: they were the largest recurring uncached cost, a median of
- * 2.7K tokens on every call. While the conversation still holds everything they
- * summarise they are a second copy, so they are sent only once something is gone: a
- * compaction, a cleared tool result or image, a condensed reply, an edit's cleared body.
- * And not when the notes are already in the conversation as the summary a compaction made
- * from them, which sent the same text twice on every call.
- */
-export function notesAddSomething(transcript: readonly Entry[], notes: string): boolean {
-  const text = notes.trim();
-  if (!text) return false;
-  let lost = false;
-  for (const e of transcript) {
-    if (e.role === "summary") {
-      if (e.content.includes(text)) return false;
-      lost = true;
-    } else if (e.role === "tool") {
-      if (e.content.includes(CLEARED_STUB)) lost = true;
-    } else if (e.role === "assistant") {
-      if (e.content === RECAP_STUB || e.toolCalls?.some((c) => c.arguments.includes(CLEARED_INPUT_NOTE))) lost = true;
-    } else if (e.role === "user") {
-      if (e.content.includes(IMAGE_CLEARED_STUB) || e.content.includes(ATTACHMENT_CLEARED)) lost = true;
-    }
-  }
-  return lost;
-}
-
 export function estimateTokens(text: string): number {
   return estimateTokensForChars(text.length);
 }

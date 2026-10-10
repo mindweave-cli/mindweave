@@ -25,5 +25,17 @@ export function replaceTranscript(session: Session, next: Entry[]): void {
     session.earlier = [...(session.earlier ?? []), ...gone];
     session.earlierUnsaved = [...(session.earlierUnsaved ?? []), ...gone];
   }
+  // The session notes cover "the first N entries", an index into the transcript that is
+  // about to change. Dropping the oldest rounds on an overflow slid every entry forward and
+  // left N pointing at entries the notes never saw, so a later compaction from the notes
+  // would have kept the wrong half. Re-measure it against what is left: the covered entries
+  // that survived, counted from the front. Callers that build a transcript whose front is
+  // something new (a summary, the notes themselves) set the boundary themselves afterwards.
+  if (session.sessionMemoryEntries !== undefined) {
+    const covered = new Set(session.transcript.slice(0, session.sessionMemoryEntries));
+    let n = 0;
+    while (n < next.length && covered.has(next[n]!)) n++;
+    session.sessionMemoryEntries = n;
+  }
   session.transcript = next;
 }

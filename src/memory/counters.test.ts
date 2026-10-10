@@ -12,6 +12,7 @@ import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { countRound, countStubbed, countSteers, emptyCounters } from "./counters.js";
+import { SESSION_MEMORY_TEMPLATE } from "./sessionMemory.js";
 import { recordAuxCall, respond } from "../dynamo/engine.js";
 import { createSession, resumeSession } from "./session.js";
 import { saveSession } from "./store.js";
@@ -68,7 +69,7 @@ before(async () => {
       // The background calls (notes, summary) are not streamed: they want one JSON reply.
       if (!/"stream"\s*:\s*true/.test(body)) {
         res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify({ choices: [{ message: { content: "## Notes\nthe parser is started" }, finish_reason: "stop" }], usage }));
+        res.end(JSON.stringify({ choices: [{ message: { content: SESSION_MEMORY_TEMPLATE + "\nthe parser is started" }, finish_reason: "stop" }], usage }));
         return;
       }
       res.writeHead(200, { "content-type": "text/event-stream" });

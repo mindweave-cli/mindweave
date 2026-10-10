@@ -3,6 +3,84 @@
 Notable changes to Mindweave. Dates are release dates.
 
 
+## v3.2.1 (2026-10-10): the session notes can no longer confuse the agent, Claude Haiku 5.5, and fixes to the new folded lines
+
+A real session went wrong in a way that was our doing, not the model's. Mindweave keeps notes
+about each session so a long conversation can be cut down without losing the thread, and it
+showed those notes to the model on every turn, labelled "trust these". After a stretch of work
+the notes were out of date: they said an app was running and a test row existed, and both were
+gone. A small free model had two sources that disagreed and spent twenty-five calls announcing
+that its own memory was corrupt. This release changes how the notes work, adds Claude Haiku 5.5,
+and fixes several things in the folded `Ran 3 commands` lines that came out of using them for a
+day. It was tested on Windows. It has not been run on a real Mac yet.
+
+### The session notes
+
+- **The notes are no longer sent with every turn.** They stand in for the part of a
+  conversation that a compaction cuts away, and that is the only place they are used. While the
+  conversation holds everything, it is the one source of truth. This also stops sending a copy of
+  them on every call, which was a few thousand tokens that no provider could cache.
+- **They are kept current during the work, not only between turns.** A long run of tool calls is
+  one turn, and the notes used to wait for it to end, which is exactly when a compaction needs
+  them. They now refresh once the work has grown by about 6,000 tokens and at least three tool
+  calls have happened (or at a natural pause), in the background so nothing waits. A compaction
+  waits for a refresh that is already running, so it uses the newest notes.
+- **A refresh says exactly what it covered.** It used to record the length of the conversation
+  after the model answered, so it could claim entries it had never read. It now records what it
+  read, drops its result if the conversation was compacted, rewound or cleared in the meantime,
+  and reads everything the notes have not seen (up to 120 entries) instead of only the newest 40.
+- **They remember how far they reach.** Reopening a session used to forget it, so a short session
+  never reached the bar for a refresh and its notes stayed as they were while the work moved on.
+  The reach is saved with the session, and trusted only if the conversation is the same length.
+- **Cutting the conversation down keeps them honest.** When a request was too long and the oldest
+  rounds were dropped, the notes' boundary was left pointing at the wrong entries, and a later
+  compaction could have kept the wrong half. It now moves with the entries. After a compaction
+  made by the summarizer the notes no longer claim to cover the summary, which could have let the
+  next compaction swap the summary for older notes and lose a stretch of work.
+- **A bad rewrite does not replace good notes.** A fragment, a refusal or an empty skeleton from a
+  weak model is ignored and the last good notes are kept. A model that fails the call is not
+  asked again until the work has grown by another step.
+- **The notes writer is told what not to write down.** Process ids, whether an app or a server is
+  running, ports and temporary rows are wrong within minutes, so they are left out. It is also
+  given the time, and told that where new activity disagrees with the notes, the activity is right.
+- **Looking up an older session says how current its notes are**, and adds what happened after
+  they were last written, instead of presenting them as the end of that session.
+
+### Claude Haiku 5.5
+
+- **`claude-haiku-5-5` is in `/model`**, next to Haiku 4.5, which stays. It uses adaptive thinking
+  with `effort` (default `medium`). Thinking can be turned off, but only at effort `high` or below,
+  so `Standard` still answers directly, and a request for no thinking at `xhigh` or `max` is stepped down to `high` first.
+- **Priced at $0.10 in, $0.50 out and $0.01 for a cache read per million tokens.** A prompt over
+  100,000 tokens is billed at five times every rate for the whole request, so on this model
+  compaction is anchored at 100,000 tokens instead of the 1,000,000 it can store. It is the cheap
+  model, and a long session should not fall off a price cliff. The same text counts for about 30%
+  more tokens than on Haiku 4.5, so budgets measured there will read higher.
+- **In the CLI.** The mwcode app gets it when it is next released.
+
+### The folded lines
+
+- **A long command no longer runs into its note.** The note beside it ("Running as shell #1") used
+  to be squeezed into the space left and wrapped, touching the end of the command. There is now
+  always a gap, and a note that does not fit goes on its own line under the command.
+- **Lines that repeated what a row already shows are gone.** `shell #2 (...) killed` appeared
+  under a row saying the agent had stopped it, and split one run of work into two rows. A command
+  stopped on purpose, or finished with success, now says nothing. One that died on its own with an
+  error, or went quiet, still does. A dim note also has a blank line above it, so it no longer sits
+  against your own words.
+- **Only the hint changes when you point at a long output.** The `click to show all` line goes from
+  dim to bright; the verb, the branch mark and the text stay as they are.
+- **More help.** `/help` now explains what a line like `Ran 3 commands, read 2 files ✓ ✗ ✓ ▸`
+  is and how to open it (click, or Ctrl+O), and how to scroll back. The tip line says it too.
+
+### Things you might notice
+
+- **Notes are refreshed more often** (about every 6,000 tokens of work, where it was 12,000, and
+  now during a long turn). Each refresh is one small call on your own key, and it is skipped for
+  sub-agents. Not sending them on every call saves a few thousand tokens a call; how the two balance out over a whole session has not been measured.
+- **Notes from a reopened session made before this release** have no saved reach. They are used
+  for older-session lookups, but a compaction from them waits until a refresh has made one.
+
 ## v3.2.0 (2026-10-10): the agent's commands and reads fold into one line, long output opens on a click, and scrolling is steadier
 
 This release is about the screen. A long session used to be a wall of rows: one for every

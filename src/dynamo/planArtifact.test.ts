@@ -79,15 +79,15 @@ test("the rendered block carries the plan and the divergence contract", () => {
 
 test("injection: execution turns carry the plan; planning turns never do", () => {
   const block = renderPlanBlock({ plan: PLAN, approvedAt: "2026-08-10T12:00:00Z", mode: "lightning" });
-  const executing = volatileContext("- Use pnpm", false, "", block);
+  const executing = volatileContext("- Use pnpm", false, block);
   assert.ok(executing.includes("<approved_plan>"), "present while executing");
   assert.ok(
     executing.indexOf("<rules>") < executing.indexOf("<approved_plan>"),
     "rules stay first in the tail; the plan follows them",
   );
-  const planning = volatileContext("- Use pnpm", true, "", block);
+  const planning = volatileContext("- Use pnpm", true, block);
   assert.ok(!planning.includes("<approved_plan>"), "absent while planning — no anchoring");
-  const none = volatileContext("", false, "", "");
+  const none = volatileContext("", false, "");
   assert.ok(!none.includes("<approved_plan>"), "absent when there is no plan");
 });
 

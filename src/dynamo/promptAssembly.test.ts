@@ -20,14 +20,14 @@ const gov = (over: Partial<{ rules: string; forbidden: string; forbiddenCommands
 });
 
 test("standing rules render at the volatile boundary, with binding framing", () => {
-  const ctx = volatileContext("- Use pnpm, never npm", false, "");
+  const ctx = volatileContext("- Use pnpm, never npm", false);
   assert.match(ctx, /<rules>/);
   assert.match(ctx, /Use pnpm, never npm/);
   assert.match(ctx, /BINDING/);
 });
 
 test("no rules → no rules block in the boundary", () => {
-  const ctx = volatileContext("", false, "");
+  const ctx = volatileContext("", false);
   assert.equal(ctx.includes("<rules>"), false);
 });
 
@@ -206,7 +206,7 @@ test("the final reply rules are complete, and live in the cached prompt", () => 
   assert.match(prompt, /Long is not thorough/);
   assert.match(prompt, /Examples of the right length/, "a number without examples is the version that lost");
   // And nothing re-sends them per request — that is the whole point of the move.
-  assert.doesNotMatch(volatileContext("", false, ""), /FOUR LINES OR FEWER/);
+  assert.doesNotMatch(volatileContext("", false), /FOUR LINES OR FEWER/);
 });
 
 test("the reply rule forbids appending what was not asked for", () => {
