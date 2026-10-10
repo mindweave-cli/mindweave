@@ -92,6 +92,15 @@ test("a wheel notch is not a pointer event", () => {
   assert.deepEqual(readWheel("\x1b[<0;5;5M"), []);
 });
 
+test("movement with no button held is a move, and is not mistaken for a drag or a click", () => {
+  assert.deepEqual(readMouse("\x1b[<35;12;5M"), [{ kind: "move", x: 11, y: 4 }]);
+  assert.deepEqual(readWheel("\x1b[<35;12;5M"), []);
+  assert.equal(stripMouse("a\x1b[<35;12;5Mb"), "ab", "it must not reach the input box as text");
+  // Held-right-button movement (34) and held-middle (33) are still not ours.
+  assert.deepEqual(readMouse("\x1b[<34;12;5M"), []);
+  assert.deepEqual(readMouse("\x1b[<33;12;5M"), []);
+});
+
 test("only the left button selects", () => {
   assert.deepEqual(readMouse("\x1b[<1;5;5M"), [], "middle");
   assert.deepEqual(readMouse("\x1b[<2;5;5M"), [], "right");

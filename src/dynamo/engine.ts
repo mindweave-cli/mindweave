@@ -98,6 +98,7 @@ import { isContextOverflowError } from "../drivers/contextOverflow.js";
 import { detailOf, providerMessage } from "../drivers/providerError.js";
 import { transcriptPath } from "../memory/store.js";
 import { replaceTranscript } from "../memory/earlier.js";
+import { sessionDetailFull } from "../tools/detail.js";
 
 /** Stop retrying autocompact after this many consecutive failures in a session, so a
  *  transcript that's irrecoverably over the limit can't hammer the summarizer each turn
@@ -2133,6 +2134,11 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
         // (summary line + diff/detail). Ignored when building the wire request.
         ...(result.summary ? { summary: result.summary } : {}),
         ...(result.detail ? { detail: result.detail } : {}),
+        // The uncut block, capped, so a resumed chat can still open a long row.
+        ...(() => {
+          const kept = sessionDetailFull(result.detail, "detailFull" in result ? result.detailFull : undefined);
+          return kept ? { detailFull: kept } : {};
+        })(),
         // HOW to read `detail`, without which it is only text. A resumed session was
         // storing the diff and losing the fact that it WAS a diff, so every edit came
         // back as dim plain lines — the +/- markers still there, the green and red gone,

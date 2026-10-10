@@ -3,6 +3,109 @@
 Notable changes to Mindweave. Dates are release dates.
 
 
+## v3.2.0 (2026-10-10): the agent's commands and reads fold into one line, long output opens on a click, and scrolling is steadier
+
+This release is about the screen. A long session used to be a wall of rows: one for every
+command, one for every poll of a background command, every long output printed in full or cut
+short with no way to see the rest, and a wheel that went too fast to follow. The agent's own
+working now takes one line, anything long opens where it is when you click it, and a chat
+reopened later looks the way it did live. It was tested on Windows, in a real terminal, and the
+click and scroll parts were also run on Linux. It has not been run on a real Mac yet.
+
+### The agent's working is one folded row
+
+- **Commands and reads share one line.** Everything the agent runs and reads between two things
+  you can see is one row, in whichever order it came: `Ran 3 commands, read 2 files  ✓ ✗ ✓  ▸`.
+  It is the same for a single command (`Ran 1 command`) or a single file (`Read 1 file`), and
+  `Read 3 files` when there were only reads. It replaces the row per command, the rows
+  that said `Checked 1 item` for every poll of a background command, and the old `Read 5 files`
+  list.
+- **Each command leaves a mark.** A green tick or a red cross for each command is on the line, so
+  a failure shows without anything being opened. A read earns a mark only if it failed.
+- **While it works the line says what is working.** The dot pulses, the verb is `Running` or
+  `Reading`, and a timer counts the longest command. When some are done and some are not it says
+  so (`Running 1 of 3 commands, read 2 files`) instead of counting the finished ones as running.
+- **Click to open, click again to fold.** Opened, each command is a line with how it ended and how
+  long it took, and each read is a line with the file and the part it took: `lines 410-551`,
+  `whole file`, or `read before, unchanged`. A click on a command shows what it printed. Rows
+  that can be opened are a little dimmer until the pointer is over them, then brighten. Nothing
+  is underlined. Ctrl+O opens the newest.
+- **What ends a row.** Anything the agent says that you can see, an edit or a write ends it, and
+  the next command or read starts a new row. Words that were dropped because they led only to a
+  search do not split a row. Searches are still not drawn at all, as before.
+- **A question for you is never folded.** It is asked on screen, as it always was.
+- **Reading says what it read.** A read that stopped at the size cap now says which part it took
+  (`lines 1-2000 of 5400`) instead of passing for the whole file.
+
+### Long output opens in place
+
+- **A cut output ends with a line you can click.** A command's output, a file written whole or
+  an edit that was cut short ends with `▸ click to show all 62 lines`. Click the row and all of
+  it is there; click again and it folds. Ctrl+O does the same for the newest one, for terminals
+  that do not send the mouse. The row you pressed stays where it was and the rest opens below it.
+- **The row lights up under the pointer.** The mark beside the text, the verb and that line
+  brighten, and the text keeps its own colours, so a diff is still a diff.
+- **Long lines wrap when a row is open.** A line wider than the terminal used to be cut at the
+  edge even after you opened the row. It now carries on underneath, and in a diff the rest of a
+  line hangs under it with a blank mark so it is not read as another change.
+- **A block cut by exactly one line can be opened.** The row used to say `(1 more line)` with
+  nothing to click, because the cut's own marker counted as content.
+- **Test runs open too.** The output of a test run is kept and can be opened like any command.
+
+### Scrolling
+
+- **The wheel moves the same distance every time.** It used to speed up the faster it turned:
+  a hard spin moved the view about 1,400 lines a second in jumps of up to 24 lines, a whole
+  screen replaced between two frames. A notch is now always four lines and the view moves at
+  once, with no speed-up and no animation. One burst of input moves at most sixteen lines, so a
+  touchpad cannot replace the screen in a single frame.
+- **The chip says how far through you are.** While you are scrolled back it reads
+  `Catch up · 58% (ctrl+End) ↓`.
+
+### A UI test is a short row
+
+- **`Steps(...)` and `Look(...)` used to print every control on the page**, thirty lines or
+  more. Now the steps stay, one row each (a typed line break shows as `↵` instead of splitting
+  the row), the page is one line (`page: 22 elements, 14 buttons, 3 tabs, 2 dropdowns (4 out of
+  view)`), and the whole result opens with a click: two titled parts, `Steps` and `Page`, with
+  the steps in plain text, the controls dim and the control numbers in the accent colour.
+- **While a test runs** the row is the header and the one step it is on, and the dot breathes.
+  A test that failed, or where the page reported an error, a warning or a dialog, is shown whole.
+
+### Chats reopen the way they were
+
+- **Writes and edits stay openable.** A chat now keeps the whole of a written file or an edit, up
+  to 5,000 lines, through clearing old context and through reopening it. It used to keep 400.
+- **Clearing old context no longer changes what a reopened chat shows.** Clearing swaps an old
+  tool result, or a long status reply, for a short note to the model. A reopened chat could show
+  that note as part of a row ("old tool result cleared to save context" under a command's
+  output), or a "condensed" line in place of what the agent had said. The words of a condensed
+  reply are now kept for the screen and the notes are never drawn.
+- **Chats saved before this release open too.** Written files, edits and commands are put back
+  together from what the chat already held, and old UI test rows come back as the short row. A
+  write whose text was cleared opens onto the file as it is now, but only if it still has the
+  line count the row said it wrote. What cannot be recovered says so (`not saved in this chat`)
+  instead of showing a count with nothing behind it.
+- **Reopened chats group the same as live ones**, including across words that were never shown.
+
+### Smaller fixes
+
+- **`/update` on the copy that comes with the mwcode app** now says so, and says whether it is
+  current, instead of calling it a dependency of another project.
+- **Providers that number their tool calls from zero every round** (Ollama does) could mix up two
+  results inside one row. A result now goes to the call that is still running.
+
+### Things you might notice
+
+- **The terminal is asked to report mouse movement**, so rows can light up under the pointer. It
+  is switched off again when Mindweave exits. Where a terminal or a multiplexer does not pass
+  movement through, rows simply do not light up, and clicking works as before.
+- **Chat files are larger.** Each write or edit keeps up to 5,000 lines of its text, so a chat
+  with many big files takes more disk space than before. Older versions ignore the extra fields
+  when they open a newer chat.
+- **Commands are behind a click.** What a command printed is one click away instead of on the
+  screen. A command that fails shows red on the line, and nothing is thrown away.
+
 ## v3.1.0 (2026-10-08): a safer agent, fewer pointless questions, hooks, and sessions that remember their work
 
 This release is mostly about trust. A repository you open, a web page the agent reads or a

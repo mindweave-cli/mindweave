@@ -93,13 +93,28 @@ type EntryOf =
        */
       arrival?: "steered" | "interrupting";
     }
-  | { role: "assistant"; content: string; toolCalls?: ToolCallRecord[] }
+  | {
+      role: "assistant";
+      content: string;
+      toolCalls?: ToolCallRecord[];
+      /**
+       * What the person was shown, when `content` is no longer it. Clearing old context swaps a
+       * long status reply for a short note to the MODEL; the screen is not the model's context,
+       * and a chat reopened later has to show what was said, not that note. Display only: never
+       * sent to the model and never counted as context.
+       */
+      shown?: string;
+    }
   | {
       role: "tool";
       toolCallId: string;
       content: string;
       summary?: string;
       detail?: string;
+      /** The uncut block behind `detail`, capped (see sessionDetailFull), so a resumed chat
+       *  can open a long row as a live one does. Display only: never sent to the model and
+       *  never counted as context. */
+      detailFull?: string;
       /** How to read `detail`: a real +/- diff, shell output on a rail, or plain text.
        *  Without it a resumed edit replays as dim plain lines — the markers still there,
        *  the colour gone — because `detail` alone does not say what it is. */

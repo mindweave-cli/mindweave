@@ -22,7 +22,7 @@ import { fileURLToPath } from "node:url";
 import type { Entry } from "./types.js";
 
 /** Everything about a tool row that decides how it is DRAWN. */
-const DISPLAY_FIELDS = ["summary", "detail", "detailKind", "quiet", "isError"] as const;
+const DISPLAY_FIELDS = ["summary", "detail", "detailFull", "detailKind", "quiet", "isError"] as const;
 
 test("a stored tool entry can carry every field a row is drawn from", () => {
   // Typed, so a field removed from the entry breaks this at compile time rather than
@@ -33,6 +33,7 @@ test("a stored tool entry can carry every field a row is drawn from", () => {
     content: "the model's copy",
     summary: "2 edits · L20-146 · -4 +6",
     detail: "- old line\n+ new line",
+    detailFull: "- old line\n+ new line\n+ and the rest",
     detailKind: "diff",
     quiet: false,
     isError: false,

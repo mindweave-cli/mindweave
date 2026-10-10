@@ -53,6 +53,30 @@ export const KEEP_LAST_N_BOUNDARY = 2;
 export const CLEARED_STUB =
   "[old tool result cleared to save context — re-read the file/search if you need it again]";
 
+/**
+ * What the screen shows for an assistant message (pure): what was said, never the note that
+ * context clearing left for the model. Undefined when all that is left is the note, which is
+ * what an older chat holds for a reply cleared before this was kept: showing "condensed" text
+ * as if it were the reply would be worse than showing nothing.
+ */
+export function shownText(e: { content: string; shown?: string }): string | undefined {
+  const text = e.shown ?? e.content;
+  return text === RECAP_STUB ? undefined : text;
+}
+
+/**
+ * A tool result's words with context clearing's note taken out (pure). The note tells the
+ * model to read the file again; said to a person looking at a row it reads as the row's own
+ * output. Whatever was kept before the note (the first line) stays.
+ */
+export function withoutClearedNote(content: string): string {
+  return content
+    .split("\n")
+    .filter((l) => !l.includes(CLEARED_STUB) && !l.startsWith("[saved at "))
+    .join("\n")
+    .trim();
+}
+
 /** Old assistant prose (a "here's what I built" recap) is what a weaker model latches
  *  onto and regresses to. Beyond the recent window we condense these to a stub so a
  *  finished task can't resurface. Only pure-text replies (no tool calls) and only
@@ -363,7 +387,8 @@ export function microcompact(
       !answered
     ) {
       recapsCleared++;
-      return { ...e, content: RECAP_STUB };
+      // The note is for the model. What was said stays for the screen.
+      return { ...e, content: RECAP_STUB, shown: e.shown ?? e.content };
     }
     // 3) Old edit/write tool-call INPUTS → shrunk to just which file, dropping the
     //    content payload. Its paired result is already being cleared above.

@@ -44,6 +44,8 @@ export type Install =
   | { kind: "global"; packageRoot: string; prefix: string }
   /** A working tree, or a link into one. Updating would overwrite a source build. */
   | { kind: "source"; packageRoot: string }
+  /** The copy that ships inside the mwcode desktop app. It updates when the app does. */
+  | { kind: "app"; packageRoot: string }
   /** A dependency of some project. `-g` would not touch it, and it is not ours anyway. */
   | { kind: "local"; packageRoot: string }
   /** Somewhere this cannot place. Refused rather than guessed at. */
@@ -91,6 +93,12 @@ export function classifyInstall(packageRoot: string, probe: InstallProbe): Insta
   // checked before anything else: the segments of a linked install look exactly like a
   // real one, and following them would land the update on the target of the link.
   if (probe.isLink(packageRoot)) return { kind: "source", packageRoot };
+
+  // The copy bundled in the desktop app sits under its `resources/app` folder. npm cannot
+  // update it, and a second global copy would not change which one runs.
+  if (/(^|[\\/])resources[\\/]app(\.asar)?[\\/]node_modules[\\/]mindweave$/i.test(packageRoot)) {
+    return { kind: "app", packageRoot };
+  }
 
   // Running straight out of a checkout — the dev shim's shape. No `node_modules` above
   // us, and a repository beside us.
@@ -146,6 +154,8 @@ export function refusalReason(install: Install): string | null {
         "This is running from a working tree, not an installed copy. Updating would " +
         "replace your build with the published one. Run `npm run build` there instead."
       );
+    case "app":
+      return "This copy comes with the mwcode app, so it updates when the app does.";
     case "local":
       return "This copy is a dependency of another project, so it is that project's to update.";
     case "unknown":

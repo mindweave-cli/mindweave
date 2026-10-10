@@ -4,7 +4,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { OK_MARK, FAIL_MARK, capLines, editDetail, outputDetail, writeDetail, withOutcome, lineCount, rangeLabel, magnitude, withScope, stripAnsi, collapseBlanks } from "./detail.js";
+import { OK_MARK, FAIL_MARK, capLines, editDetail, outputDetail, writeDetail, withOutcome, lineCount, rangeLabel, magnitude, withScope, stripAnsi, collapseBlanks, sessionDetailFull, SESSION_DETAIL_LINES, SESSION_DETAIL_CHARS } from "./detail.js";
 
 test("editDetail shows removed then added lines, prefixed", () => {
   const d = editDetail("a\nb", "a\nc");
@@ -177,4 +177,25 @@ test("the failure mark is one column wide, like the success mark", () => {
   for (const line of emitted) {
     assert.ok(!line.includes("\u2716"), `the heavy mark reached the screen: ${line}`);
   }
+});
+
+test("sessionDetailFull keeps the uncut block only when it says more than the short one", () => {
+  const short = "$ ls\na\n✓ 0 · 5ms";
+  const long = ["$ ls", ...Array.from({ length: 50 }, (_, i) => `f${i}`), "✓ 0 · 5ms"].join("\n");
+  assert.equal(sessionDetailFull(short, long), long);
+  assert.equal(sessionDetailFull(short, short), undefined, "nothing more to open means nothing to store");
+  assert.equal(sessionDetailFull(short, undefined), undefined);
+  assert.equal(sessionDetailFull(long, short), undefined, "a shorter 'full' is not more");
+});
+
+test("sessionDetailFull is bounded in lines and in characters, and says where it cut", () => {
+  const many = Array.from({ length: SESSION_DETAIL_LINES * 2 }, (_, i) => `line ${i}`).join("\n");
+  const kept = sessionDetailFull("x", many)!;
+  assert.ok(kept.split("\n").length <= SESSION_DETAIL_LINES + 1);
+  assert.ok(kept.includes("line 0") && kept.includes(`line ${SESSION_DETAIL_LINES * 2 - 1}`), "both ends survive");
+  assert.match(kept, /lines are not kept in the saved session/);
+  const wide = `a\n${"z".repeat(SESSION_DETAIL_CHARS * 3)}`;
+  const cut = sessionDetailFull("a", wide)!;
+  assert.ok(cut.length < SESSION_DETAIL_CHARS + 100);
+  assert.match(cut, /the rest is not kept in the saved session/);
 });

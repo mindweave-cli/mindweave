@@ -48,6 +48,25 @@ export interface PillInput {
   overlayOpen: boolean;
   /** Terminal columns. */
   width: number;
+  /**
+   * How far the transcript can scroll in all (`chatLayout`'s `maxScroll`). With it the chip
+   * says how far through the conversation the view is, which is the one thing a reader who
+   * has been scrolling for a while cannot see from the rows on screen.
+   */
+  maxScroll?: number;
+}
+
+/**
+ * How far through the conversation the bottom of the view is, as a whole percent (pure).
+ *
+ * 0 is the very start and 99 is a line above the newest; the newest itself is not scrolled
+ * back at all, so the chip is not showing and 100 never needs saying. Null when the range
+ * is unknown or empty.
+ */
+export function progressPercent(scrolled: number, maxScroll: number | undefined): number | null {
+  if (!maxScroll || maxScroll <= 0 || scrolled <= 0) return null;
+  const through = (maxScroll - Math.min(scrolled, maxScroll)) / maxScroll;
+  return Math.max(0, Math.min(99, Math.round(through * 100)));
 }
 
 /**
@@ -66,7 +85,13 @@ export function scrollPill(input: PillInput): string | null {
       ? `Catch up — ${input.newReplies} new`
       : "Catch up";
 
-  // The chord first, since it is the more useful half on a wide terminal.
+  // Where in the conversation, then the chord, since both are worth more than the arrow on a
+  // wide terminal. The place is the first thing dropped when space runs short; the way out is not.
+  const pct = progressPercent(input.scrolled, input.maxScroll);
+  if (pct !== null) {
+    const placed = ` ${label} · ${pct}% (ctrl+End) ↓ `;
+    if (placed.length + 2 <= input.width) return placed;
+  }
   const full = ` ${label} (ctrl+End) ↓ `;
   if (full.length + 2 <= input.width) return full;
   // Narrow: the state is still worth saying even when the chord no longer fits. The

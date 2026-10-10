@@ -13,12 +13,16 @@
  * says done, and a failure says so in words.
  */
 import { useEffect, useState } from "react";
-import { Box, Text } from "ink";
+import { Box, Text, type DOMElement } from "ink";
 import { ERROR_COLOR, type ToolKind } from "../toolDisplay.js";
 import { PulseDot } from "./PulseDot.js";
 import { activeForm } from "../toolItems.js";
 import { commandLabel } from "../commandLabel.js";
-import { BAD, CODE, GOOD } from "../theme.js";
+import { ACCENT, BAD, CODE, GOOD } from "../theme.js";
+import { uiSegments, type Seg } from "../uiLines.js";
+import { registerExpandable } from "../expandHits.js";
+import { wrapDiffLine } from "../diffWrap.js";
+import { oneLineSteps } from "../../tools/detail.js";
 
 const DOT = "●";
 const BRANCH = "⎿";
@@ -38,11 +42,14 @@ const BRANCH_INDENT = 4;
  * as one. A resumed session replays the text it stored, so dropping the old one would
  * leave every past failure's verdict buried at the bottom of its block.
  */
-const OUTCOME = /^[✓✗✖]/;
+export const OUTCOME = /^[✓✗✖]/;
+
+/** The `… (N more lines)` line `capLines` leaves where it cut a block short. */
+export const MORE_MARKER = /^\s*… \(\d+ more lines?\)$/;
 
 /** Where the verdict sits in a block's lines, or -1. Written as a loop because the
  *  project's TypeScript target predates `findLastIndex`. */
-function lastOutcome(lines: string[]): number {
+export function lastOutcome(lines: string[]): number {
   for (let i = lines.length - 1; i >= 0; i--) {
     if (OUTCOME.test(lines[i]!)) return i;
   }
@@ -50,6 +57,15 @@ function lastOutcome(lines: string[]): number {
 }
 
 export interface ToolLineProps {
+  /** The block's id, so a click on the row can be traced back to it. */
+  id?: number;
+  /** The whole block, when `detail` is only the start of it. Its presence is what makes
+   *  the row clickable. */
+  full?: string;
+  /** Is `full` showing? */
+  expanded?: boolean;
+  /** Is the pointer over this row? Only says so; nothing here depends on it. */
+  hovered?: boolean;
   name: string;
   arg?: string;
   status: "running" | "ok" | "error";
@@ -76,7 +92,7 @@ export interface ToolLineProps {
   startedAt?: number;
 }
 
-export function ToolLine({ name, arg, status, action, summary, detail, detailKind, meta, columns, live, tightTop, since, waited, startedAt }: ToolLineProps) {
+export function ToolLine({ id, full, expanded, hovered, name, arg, status, action, summary, detail, detailKind, meta, columns, live, tightTop, since, waited, startedAt }: ToolLineProps) {
   const errored = status === "error";
   // "Updating(home.html)" while the tool works, "Update(home.html)" the moment it is done.
   // `live` is false for a row from a turn that has ended (or a resumed session), which is
@@ -88,7 +104,8 @@ export function ToolLine({ name, arg, status, action, summary, detail, detailKin
   const metaRoom = meta ? meta.length + 1 : 0;
 
   // The branch content: rich detail lines if present, else the one-line summary.
-  const rawLines = detail ? detail.split("\n") : summary ? [summary] : [];
+  const open = !!full && !!expanded;
+  const rawLines = open ? full!.split("\n") : detail ? detail.split("\n") : summary ? [summary] : [];
   // The wait joins the END of the facts line, beside the size and the format, rather than
   // taking a line of its own: it is another fact about the same thing, and a row that grew
   // a line once it settled would change shape after the fact.
@@ -111,7 +128,23 @@ export function ToolLine({ name, arg, status, action, summary, detail, detailKin
   // test into the header and left the actual verdict at the bottom.
   const outcomeAt = detailKind === "shell" ? lastOutcome(allLines) : -1;
   const outcome = outcomeAt >= 0 ? allLines[outcomeAt] : undefined;
-  const branchLines = outcomeAt >= 0 ? allLines.filter((_, i) => i !== outcomeAt) : allLines;
+  const withoutVerdict = outcomeAt >= 0 ? allLines.filter((_, i) => i !== outcomeAt) : allLines;
+  // The "… (30 more lines)" marker says what the row below it says better, in words that
+  // can be clicked. Said once, not twice.
+  // Where there is nothing to open (a chat saved before the uncut text was kept) the marker
+  // stays, and says so: a count of hidden lines with nothing to click reads as a broken row.
+  const shortened = full
+    ? open
+      ? withoutVerdict
+      : withoutVerdict.filter((l) => !MORE_MARKER.test(l))
+    : withoutVerdict.map((l) => (MORE_MARKER.test(l) ? `${l.trimEnd().replace(/\)$/, "")}, not saved in this chat)` : l));
+  // A UI test that is still running is a header and ONE changing row: the step it is on. The
+  // log of every step so far is for when it has finished; showing it growing line by line
+  // while the page is being driven only makes the row jump.
+  const latestOnly = working && action === "screenshot" && detailKind === "shell";
+  const latestStep = latestOnly ? oneLineSteps(shortened.join("\n")).slice(-1) : [];
+  // A progress note that is not a numbered step ("Waiting for the app to come up…") is the row too.
+  const branchLines = latestOnly ? (latestStep.length > 0 ? latestStep : shortened.filter((l) => l.trim() !== "").slice(-1)) : shortened;
 
   // Trim a long arg from the FRONT so the meaningful tail (a filename) stays
   // visible and the header never wraps to column 0.
@@ -137,7 +170,13 @@ export function ToolLine({ name, arg, status, action, summary, detail, detailKin
         : arg;
 
   return (
-    <Box marginTop={tightTop ? 0 : 1} flexDirection="column">
+    <Box
+      marginTop={tightTop ? 0 : 1}
+      flexDirection="column"
+      // Only a row that has more to show is clickable. The registry measures this box at
+      // the moment of a click, so nothing here has to know where on screen it is.
+      ref={full && id !== undefined ? (node: DOMElement | null) => registerExpandable(id, node) : undefined}
+    >
       {/* Bounded, with nothing here allowed to shrink. Ink's Box defaults to
           `flexShrink: 1`, so a row that does not fit is resolved by squeezing its
           children — the dot gutter narrows, the verb's own box gives up columns, and the
@@ -154,7 +193,7 @@ export function ToolLine({ name, arg, status, action, summary, detail, detailKin
           {working ? <PulseDot glyph={DOT} /> : <Text>{DOT}</Text>}
         </Box>
         <Box flexShrink={0}>
-          <Text bold>{verb}</Text>
+          <Text bold dimColor={!!full && status !== "running" && !hovered}>{verb}</Text>
         </Box>
         {shownArg ? (
           <Box flexShrink={0}>
@@ -193,10 +232,20 @@ export function ToolLine({ name, arg, status, action, summary, detail, detailKin
       </Box>
       {(status !== "running" || (working && detailKind === "shell")) && branchLines.length > 0 ? (
         detailKind === "shell" ? (
-          <ShellLines lines={branchLines} columns={columns} errored={errored} headerHasCommand={!!arg} />
+          <ShellLines lines={branchLines} columns={columns} errored={errored} headerHasCommand={!!arg} hot={hovered} wrap={open} />
+        ) : action === "screenshot" && detailKind !== "diff" ? (
+          <UiLines lines={branchLines} columns={columns} errored={errored} hot={hovered} wrap={open} />
         ) : (
-          <BranchLines lines={branchLines} columns={columns} errored={errored} diff={detailKind === "diff"} />
+          <BranchLines lines={branchLines} columns={columns} errored={errored} diff={detailKind === "diff"} hot={hovered} wrap={open} />
         )
+      ) : null}
+      {/* The one place the row says it can be pressed. While the pointer is over the row the
+          frame around the text (the branch mark, the rail, this line, the verb) lights up;
+          the text itself keeps its own colours, so a diff stays a diff. */}
+      {full && status !== "running" ? (
+        <Text dimColor={!hovered} bold={hovered}>
+          {open ? "    ▾ click to fold" : `    ▸ click to show all ${full.split("\n").length} lines`}
+        </Text>
       ) : null}
     </Box>
   );
@@ -214,11 +263,17 @@ function BranchLines({
   columns,
   errored,
   diff,
+  hot,
+  wrap,
 }: {
   lines: string[];
   columns: number;
   errored: boolean;
   diff: boolean;
+  /** The pointer is over this row: the mark beside the text is drawn bright. */
+  hot?: boolean;
+  /** The row is opened: a long line carries on underneath instead of being cut at the edge. */
+  wrap?: boolean;
 }) {
   const content = Math.max(8, columns - BRANCH_INDENT - 1);
   return (
@@ -228,16 +283,61 @@ function BranchLines({
         const dim = !errored && style === undefined;
         // Padded to the full content width so the tint is a continuous band rather than
         // stopping wherever the code happens to end, which reads as a ragged smear.
-        const painted = style?.backgroundColor ? line.padEnd(content) : line;
-        return (
-          <Box key={i} flexDirection="row" width={columns}>
-            <Text dimColor>{i === 0 ? `  ${BRANCH} ` : "    "}</Text>
-            <Box width={content}>
-              <Text {...style} dimColor={dim} wrap="truncate-end">{painted}</Text>
+        // An opened diff carries a long line onto more rows by hand, so each one can keep the
+        // band and a hanging indent; the terminal's own wrapping would drop both.
+        const rows = wrap && diff ? wrapDiffLine(line, content) : [line];
+        return rows.map((row, r) => {
+          const painted = style?.backgroundColor ? row.padEnd(content) : row;
+          return (
+            <Box key={`${i}.${r}`} flexDirection="row" width={columns}>
+              <Text dimColor={!hot}>{i === 0 && r === 0 ? `  ${BRANCH} ` : "    "}</Text>
+              <Box width={content}>
+                <Text {...style} dimColor={dim} wrap={wrap && !diff ? "wrap" : "truncate-end"}>{painted}</Text>
+              </Box>
             </Box>
-          </Box>
-        );
+          );
+        });
       })}
+    </Box>
+  );
+}
+
+/** How one piece of a UI row's line is painted (see uiLines.ts for what each kind is). */
+function segStyle(seg: Seg, errored: boolean): { color?: string; bold?: boolean; dimColor?: boolean } {
+  if (seg.kind === "title") return { bold: true, ...(errored ? { color: BAD } : {}) };
+  if (errored) return { color: BAD };
+  if (seg.kind === "ref") return { color: ACCENT };
+  if (seg.kind === "dim") return { dimColor: true };
+  return {};
+}
+
+/**
+ * A UI test's result under its row: the steps in plain text, the controls dim, the numbers
+ * that tie them together in the accent colour, and a bold title over each part.
+ *
+ * Its own renderer because the same grey for everything made the steps, which are the part
+ * worth reading, indistinguishable from the thirty controls of the page.
+ */
+function UiLines({ lines, columns, errored, hot, wrap }: { lines: string[]; columns: number; errored: boolean; hot?: boolean; wrap?: boolean }) {
+  const content = Math.max(8, columns - BRANCH_INDENT - 1);
+  return (
+    <Box flexDirection="column">
+      {lines.map((line, i) => (
+        <Box key={i} flexDirection="row" width={columns}>
+          <Text dimColor={!hot}>{i === 0 ? `  ${BRANCH} ` : "    "}</Text>
+          <Box width={content}>
+            {line === "" ? (
+              <Text> </Text>
+            ) : (
+              <Text wrap={wrap ? "wrap" : "truncate-end"}>
+                {uiSegments(line).map((seg, j) => (
+                  <Text key={j} {...segStyle(seg, errored)}>{seg.text}</Text>
+                ))}
+              </Text>
+            )}
+          </Box>
+        </Box>
+      ))}
     </Box>
   );
 }
@@ -270,14 +370,21 @@ function ShellLines({
   columns,
   errored,
   headerHasCommand,
+  hot,
+  wrap,
 }: {
   lines: string[];
   columns: number;
   errored: boolean;
   /** The header already shows the command in full, so the `$` row would repeat it. */
   headerHasCommand: boolean;
+  /** The pointer is over this row: the rail beside the output is drawn bright. */
+  hot?: boolean;
+  /** The row is opened: a long line carries on underneath instead of being cut at the edge. */
+  wrap?: boolean;
 }) {
   const content = Math.max(8, columns - BRANCH_INDENT - 2);
+  const fit = wrap ? "wrap" : "truncate-end";
   // Only when the header had to trim it away. A command that fits is said once.
   const shown = headerHasCommand ? lines.filter((l) => !l.startsWith("$ ")) : lines;
   return (
@@ -289,14 +396,14 @@ function ShellLines({
         const railed = !command && !outcome;
         return (
           <Box key={i} flexDirection="row" width={columns}>
-            <Text dimColor>{railed ? `    ${RAIL} ` : "    "}</Text>
+            <Text dimColor={!hot}>{railed ? `    ${RAIL} ` : "    "}</Text>
             <Box width={content}>
               {command ? (
                 // The `$` gets its own colour so the command is findable at a glance in
                 // a block of output. It is the one line here the user WROTE, in effect,
                 // and it was previously distinguished only by being bold, which loses
                 // against a screenful of equally plain machine text.
-                <Text wrap="truncate-end">
+                <Text wrap={fit}>
                   <Text dimColor>{"$ "}</Text>
                   <Text bold color={CODE}>{line.slice(2)}</Text>
                 </Text>
@@ -305,7 +412,7 @@ function ShellLines({
                   color={outcome ? (line.startsWith("✓") ? GOOD : BAD) : errored ? BAD : undefined}
                   dimColor={railed && !errored}
                   bold={outcome}
-                  wrap="truncate-end"
+                  wrap={fit}
                 >
                   {line}
                 </Text>
@@ -355,7 +462,7 @@ function diffStyle(line: string): DiffStyle | undefined {
  * Whole seconds: a wait is read at a glance, and a tenths place would be motion for its
  * own sake right next to text someone is trying to read.
  */
-function Elapsed({ since }: { since: number }) {
+export function Elapsed({ since }: { since: number }) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 1000);

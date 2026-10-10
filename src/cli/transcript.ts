@@ -22,6 +22,7 @@
 import { sanitizeStreamText } from "../drivers/registry.js";
 import type { ToolKind } from "./toolDisplay.js";
 import type { CompactionReport } from "./compaction.js";
+import { contentLines } from "../tools/detail.js";
 
 export type ToolStatus = "running" | "ok" | "error";
 
@@ -39,6 +40,33 @@ export interface ToolGroupItem {
    *  list of paths and reads several files at once. The group header counts these rather
    *  than calls, or three files read together announce themselves as one. */
   covers?: number;
+}
+
+/**
+ * One command or read inside a work row: what was run or read, how it ended, and what it printed.
+ *
+ * It keeps everything a row of its own would, because the row is folded and the output is
+ * a click away. `open` is whether that output is showing under the command.
+ */
+export interface WorkItem {
+  toolId: string;
+  name: string;
+  arg?: string;
+  status: ToolStatus;
+  /** What the call is: a command ("run") or a read ("read"). Decides how its line reads. */
+  kind?: ToolKind;
+  /** How many files one read call took (`read_file` takes a list). */
+  covers?: number;
+  /** The call's one-line result, when there is no block of output ("Backgrounded as shell #1"). */
+  summary?: string;
+  /** The same line, as a read leaves it ("read menu.ts lines 410-551"). */
+  note?: string;
+  detail?: string;
+  detailKind?: "diff" | "text" | "shell";
+  /** The uncut output, only when it says more than `detail` does. */
+  full?: string;
+  open?: boolean;
+  startedAt?: number;
 }
 
 /** One delegated worker inside a subagent block. */
@@ -77,6 +105,11 @@ export type Block =
       /** Whether `detail` is a genuine +/- diff (colour it) or ordinary text (do not).
        *  Absent means text. See ToolResult.detailKind for why this is not inferred. */
       detailKind?: "diff" | "text" | "shell";
+      /** The whole block, when `detail` is only the start of it. Present ONLY when it has
+       *  more to show than `detail` does, so a row without it is simply not expandable. */
+      full?: string;
+      /** Is `full` showing in place of `detail`? Flipped by a click or ctrl+O. */
+      expanded?: boolean;
       /**
        * When the result landed, for a tool the model has to THINK about before it can
        * speak again — an image handed to vision, which answers far slower than text.
@@ -99,9 +132,18 @@ export type Block =
        *  ("Reading" vs "Read"), and is cleared for every row at once by `endTurn`. */
       live?: boolean;
     }
-  /** A consolidated group of consecutive discovery calls (reads/searches/maps),
-   *  shown as one row naming the burst with a compact list of what it found. */
-  | { kind: "tools"; id: number; done: boolean; items: ToolGroupItem[]; live?: boolean }
+  /**
+   * Everything the agent ran and read between two other things, as ONE folded row.
+   *
+   * Commands and reads are the agent's own working: most print nothing worth reading, and a
+   * long conversation of them was a wall of rows. The row says how many commands ran and how
+   * many files were read, and opens on a click into the list: each command opens into its
+   * output, each read says which lines of which file it took.
+   *
+   * `closed` means nothing more joins it (the agent said something, or did something else);
+   * `done` means it is closed AND everything in it has finished, which is when it may scroll away.
+   */
+  | { kind: "work"; id: number; done: boolean; closed?: boolean; items: WorkItem[]; live?: boolean; open?: boolean }
   /** Sub-agent work, as ONE block however many are delegated at once.
    *
    *  Read-only workers fan out in parallel (see subagent.ts), so two or three can be
@@ -163,6 +205,8 @@ export type Action =
       summary?: string;
       detail?: string;
       detailKind?: "diff" | "text" | "shell";
+      /** The uncut block, kept only if it is longer than `detail`. See Block `full`. */
+      detailFull?: string;
       quiet?: boolean;
       /** This result leaves the model with real work to do before it can answer — an
        *  image going to vision. The row shows the wait rather than sitting silent. */
@@ -194,6 +238,8 @@ export type Action =
   | { type: "notice"; title: string; body: string } // titled facts on a rail
   | { type: "compaction"; report: CompactionReport } // a compaction pass, with bars
   | { type: "say"; text: string } // an assistant markdown block, NOT recorded as the reply
+  | { type: "toggleExpand"; id: number } // a click on a row: show all of it, or fold it back
+  | { type: "toggleItem"; id: number; index: number } // a click on one command inside a commands row
   | { type: "clear" }; // /clear — drop the visible conversation, keep the id counter
 
 export function initialState(): TranscriptState {
@@ -206,6 +252,25 @@ function drain(s: TranscriptState): TranscriptState {
   while (i < s.tail.length && s.tail[i]!.done) i++;
   if (i === 0) return s;
   return { ...s, committed: s.committed.concat(s.tail.slice(0, i)), tail: s.tail.slice(i) };
+}
+
+/** Does the uncut block say more than the shortened one did? A row is only worth
+ *  expanding when it does. */
+export function hasMore(detail: string | undefined, full: string | undefined): boolean {
+  if (!full || full === detail) return false;
+  // The cut's own marker is not content: see contentLines.
+  return full.split("\n").length > contentLines(detail);
+}
+
+/** The newest row that can be expanded, for the keyboard way in. */
+export function lastExpandable(s: TranscriptState): number | null {
+  for (const list of [s.tail, s.committed]) {
+    for (let i = list.length - 1; i >= 0; i--) {
+      const b = list[i]!;
+      if ((b.kind === "tool" && b.full) || b.kind === "work") return b.id;
+    }
+  }
+  return null;
 }
 
 function patchTail(s: TranscriptState, id: number, fields: Partial<Block>): TranscriptState {
@@ -226,18 +291,24 @@ function patchTail(s: TranscriptState, id: number, fields: Partial<Block>): Tran
 function dropTool(s: TranscriptState, toolId: string, blockId: number): TranscriptState {
   const { [toolId]: _gone, ...toolMap } = s.toolMap;
   const block = s.tail.find((b) => b.id === blockId);
-  if (block && block.kind === "tools") {
+  if (block && block.kind === "work") {
     const items = block.items.filter((it) => it.toolId !== toolId);
-    const tail = items.length > 0 ? s.tail.map((b) => (b.id === blockId ? ({ ...b, items } as Block) : b)) : s.tail.filter((b) => b.id !== blockId);
-    return drain({ ...s, tail, toolMap });
+    if (items.length === 0) return drain({ ...s, tail: s.tail.filter((b) => b.id !== blockId), toolMap });
+    const done = !!block.closed && items.every((it) => it.status !== "running");
+    return drain({ ...s, tail: s.tail.map((b) => (b.id === blockId ? ({ ...b, items, done } as Block) : b)), toolMap });
   }
   return drain({ ...s, tail: s.tail.filter((b) => b.id !== blockId), toolMap });
 }
 
-/** Close an open discovery group so it can commit, before any non-grouped event. */
+/**
+ * Nothing more joins the open work row, before any event that is not a command or a read.
+ * It is done once everything in it is.
+ */
 function closeToolGroup(s: TranscriptState): TranscriptState {
-  const open = s.tail.find((b) => b.kind === "tools" && !b.done);
-  return open ? drain(patchTail(s, open.id, { done: true } as Partial<Block>)) : s;
+  const open = s.tail.find((b) => b.kind === "work" && !b.closed);
+  if (!open || open.kind !== "work") return s;
+  const done = open.items.every((it) => it.status !== "running");
+  return drain(patchTail(s, open.id, { closed: true, done } as Partial<Block>));
 }
 
 /**
@@ -289,7 +360,8 @@ function sealAssistant(s: TranscriptState, asReply: boolean): TranscriptState {
   const text = asReply ? clean : trimNarration(clean);
 
   let next: TranscriptState = { ...s, openAsstId: null, raw: "" };
-  if (text) next = patchTail(next, id, { text, done: true });
+  // Visible words end the run of work before them, so what comes after starts a new row.
+  if (text) next = closeToolGroup(patchTail(next, id, { text, done: true }));
   else next = { ...next, tail: next.tail.filter((b) => b.id !== id) };
   if (asReply) next = { ...next, lastReply: text };
   else if (text) next = { ...next, narrated: true };
@@ -351,8 +423,10 @@ export function reduce(s: TranscriptState, a: Action): TranscriptState {
       s = settleWaits(s);
       // Accumulate SILENTLY — the assistant block renders nothing until it seals,
       // then the whole text appears at once. We still open the block so a later
-      // seal can find it. Narration after a discovery burst closes the group.
-      let next = closeToolGroup(s);
+      // seal can find it. The open work row is NOT closed here: words that turn out to lead
+      // only to unseen tools are dropped before they are ever shown, and the row must carry on
+      // across them. It closes when the words seal as something the reader can see.
+      let next = s;
       let openId = next.openAsstId;
       if (openId == null) {
         openId = next.seq + 1;
@@ -373,17 +447,23 @@ export function reduce(s: TranscriptState, a: Action): TranscriptState {
       const sealed = sealAssistant(s, false);
 
       if (a.group) {
-        // A discovery call: fold it into the open group, or open a new one. The
-        // group is NOT drained — it stays live so more calls can join it.
-        const open = sealed.tail.find((b) => b.kind === "tools" && !b.done);
-        if (open && open.kind === "tools") {
-          const item: ToolGroupItem = { toolId: a.toolId, name: a.name, arg: a.arg, kind: a.action, status: "running", ...(a.covers ? { covers: a.covers } : {}) };
+        // A command or a read: it joins the open work row, or opens one. They share a row, in
+        // whatever order they come, until the agent does something else.
+        const item: WorkItem = {
+          toolId: a.toolId,
+          name: a.name,
+          arg: a.arg,
+          kind: a.action,
+          status: "running",
+          startedAt: a.at ?? Date.now(),
+          ...(a.covers ? { covers: a.covers } : {}),
+        };
+        const open = sealed.tail.find((b) => b.kind === "work" && !b.closed);
+        if (open && open.kind === "work") {
           return {
             ...sealed,
             toolMap: { ...sealed.toolMap, [a.toolId]: open.id },
-            tail: sealed.tail.map((b) =>
-              b.id === open.id && b.kind === "tools" ? { ...b, items: [...b.items, item] } : b,
-            ),
+            tail: sealed.tail.map((b) => (b.id === open.id && b.kind === "work" ? { ...b, items: [...b.items, item], done: false } : b)),
           };
         }
         const gid = sealed.seq + 1;
@@ -391,13 +471,7 @@ export function reduce(s: TranscriptState, a: Action): TranscriptState {
           ...sealed,
           seq: gid,
           toolMap: { ...sealed.toolMap, [a.toolId]: gid },
-          tail: sealed.tail.concat({
-            kind: "tools",
-            id: gid,
-            done: false,
-            live: true,
-            items: [{ toolId: a.toolId, name: a.name, arg: a.arg, kind: a.action, status: "running" }],
-          }),
+          tail: sealed.tail.concat({ kind: "work", id: gid, done: false, live: true, items: [item] }),
         };
       }
 
@@ -431,6 +505,14 @@ export function reduce(s: TranscriptState, a: Action): TranscriptState {
       // into a one-line summary that has nowhere to put output, and a row that has already
       // resolved must keep the result it settled on rather than being overwritten by a
       // late tail from before it finished.
+      if (block && block.kind === "work") {
+        // A read has no output to show, and a call that is not running keeps its result.
+        const target = block.items.find((it) => it.toolId === a.toolId);
+        if (!target || target.status !== "running" || target.kind === "read") return s;
+        return patchTail(s, blockId, {
+          items: block.items.map((it) => (it.toolId === a.toolId && it.status === "running" && it.kind !== "read" ? { ...it, detail: a.text, detailKind: "shell" as const } : it)),
+        } as Partial<Block>);
+      }
       if (!block || block.kind !== "tool" || block.done) return s;
       return patchTail(s, blockId, { detail: a.text, detailKind: "shell" } as Partial<Block>);
     }
@@ -445,14 +527,26 @@ export function reduce(s: TranscriptState, a: Action): TranscriptState {
       // error rows, which is worse than showing nothing. The model still gets the full
       // reason, and the transcript still records it — this is a display decision only.
       if (a.quiet) return dropTool(s, a.toolId, blockId);
-      if (block && block.kind === "tools") {
-        // Resolve this item's status in place AND capture its one-line result, so the
-        // group list shows what each call found (195 lines / 12 files), not just a name.
-        return patchTail(s, blockId, {
-          items: block.items.map((it) =>
-            it.toolId === a.toolId ? { ...it, status: a.ok ? "ok" : "error", note: a.summary } : it,
-          ),
-        } as Partial<Block>);
+      if (block && block.kind === "work") {
+        // Some providers number their calls from zero every round, so an id can come up again in
+        // a row that stayed open across rounds: the result belongs to the one still running.
+        const at = block.items.findIndex((it) => it.toolId === a.toolId && it.status === "running");
+        const items = block.items.map((it, i) =>
+          i === at
+            ? {
+                ...it,
+                status: a.ok ? ("ok" as const) : ("error" as const),
+                summary: a.summary,
+                // The one-line result a read leaves ("lines 410-551"), shown beside its file.
+                note: a.summary,
+                detail: a.detail,
+                detailKind: a.detailKind,
+                ...(hasMore(a.detail, a.detailFull) ? { full: a.detailFull } : {}),
+              }
+            : it,
+        );
+        const done = !!block.closed && items.every((it) => it.status !== "running");
+        return drain(patchTail(s, blockId, { items, done } as Partial<Block>));
       }
       return drain(
         patchTail(s, blockId, {
@@ -460,6 +554,7 @@ export function reduce(s: TranscriptState, a: Action): TranscriptState {
           summary: a.summary,
           detail: a.detail,
           detailKind: a.detailKind,
+          ...(hasMore(a.detail, a.detailFull) ? { full: a.detailFull } : {}),
           done: true,
           ...(a.action ? { action: a.action } : {}),
           ...(a.name ? { name: a.name } : {}),
@@ -472,6 +567,24 @@ export function reduce(s: TranscriptState, a: Action): TranscriptState {
       const id = sealed.seq + 1;
       return drain({ ...sealed, seq: id, tail: sealed.tail.concat({ kind: "error", id, done: true, text: a.text }) });
     }
+    case "toggleExpand": {
+      // Committed rows too: every block is re-rendered each frame, and the row being
+      // clicked is nearly always one that finished a while ago.
+      const flip = (b: Block): Block =>
+        b.kind === "tool" && b.id === a.id && b.full
+          ? ({ ...b, expanded: !b.expanded } as Block)
+          : b.kind === "work" && b.id === a.id
+            ? ({ ...b, open: !b.open } as Block)
+            : b;
+      return { ...s, committed: s.committed.map(flip), tail: s.tail.map(flip) };
+    }
+    case "toggleItem": {
+      const flip = (b: Block): Block =>
+        b.kind === "work" && b.id === a.id && b.items[a.index]
+          ? ({ ...b, items: b.items.map((it, i) => (i === a.index ? { ...it, open: !it.open } : it)) } as Block)
+          : b;
+      return { ...s, committed: s.committed.map(flip), tail: s.tail.map(flip) };
+    }
     case "endTurn": {
       // The one moment a tool row is allowed to change after it appears, and it
       // changes by exactly one word: "Reading 2 files" → "Read 2 files". Committed
@@ -480,7 +593,7 @@ export function reduce(s: TranscriptState, a: Action): TranscriptState {
       // settles into the past tense with the rest of the turn.
       s = settleWaits(s);
       const clear = (b: Block): Block =>
-        (b.kind === "tool" || b.kind === "tools") && b.live ? ({ ...b, live: false } as Block) : b;
+        (b.kind === "tool" || b.kind === "work") && b.live ? ({ ...b, live: false } as Block) : b;
       return { ...s, committed: s.committed.map(clear), tail: s.tail.map(clear) };
     }
     case "resetReply":

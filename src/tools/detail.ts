@@ -19,7 +19,114 @@ export function capLines(lines: string[], max: number): string {
 
 /** Line budget for `ToolResult.detailFull` — the uncut block a graphical front end
  *  shows when a row is expanded. Still bounded, so one giant write can't flood it. */
-export const FULL_DETAIL_MAX = 2000;
+export const FULL_DETAIL_MAX = 5000;
+
+/** The line a cut leaves in place of what it hid: `… (3 more lines)` from `capLines`, or
+ *  `… 57 earlier lines hidden` from `capEnds`. It says something is missing; it is not content. */
+const CUT_MARKER = /^\s*\u2026 (\(\d+ more lines?\)|[\d,]+ earlier lines? hidden)$/;
+
+/**
+ * The lines of a shortened block that are CONTENT (pure): the marker a cut leaves behind
+ * does not count.
+ *
+ * It matters at the edge. A block cut to thirty lines that had thirty-one is thirty lines and
+ * a marker, which is as many lines as the whole block; compared by count the two looked the
+ * same size, nothing was thought to be hidden, and the row said "(1 more line)" with no way
+ * to open it.
+ */
+export function contentLines(detail: string | undefined): number {
+  if (!detail) return 0;
+  return detail.split("\n").filter((l) => !CUT_MARKER.test(l)).length;
+}
+
+/** What a saved session keeps of an uncut block, so a resumed chat can still open it. */
+export const SESSION_DETAIL_LINES = 5000;
+export const SESSION_DETAIL_CHARS = 500_000;
+
+/**
+ * The uncut block as it is kept in the session file, or undefined when there is nothing
+ * worth keeping (pure).
+ *
+ * Only when the uncut text says more than the shortened one did: a row with nothing to
+ * open costs the file nothing. Bounded in lines AND characters, because the session file
+ * is read back whole and one minified bundle is a single enormous line. Past the bound
+ * the beginning and the end are kept and the cut is said where it is, so a resumed row
+ * never claims to show everything when it does not.
+ */
+export function sessionDetailFull(detail: string | undefined, full: string | undefined): string | undefined {
+  if (!full || full === detail) return undefined;
+  let lines = full.split("\n");
+  if (lines.length <= contentLines(detail)) return undefined;
+  if (lines.length > SESSION_DETAIL_LINES) {
+    const head = Math.floor(SESSION_DETAIL_LINES * 0.75);
+    const tail = SESSION_DETAIL_LINES - head;
+    const dropped = lines.length - head - tail;
+    lines = [...lines.slice(0, head), `… ${dropped} lines are not kept in the saved session …`, ...lines.slice(-tail)];
+  }
+  let text = lines.join("\n");
+  if (text.length > SESSION_DETAIL_CHARS) {
+    text = `${text.slice(0, SESSION_DETAIL_CHARS)}\n… the rest is not kept in the saved session …`;
+  }
+  return text;
+}
+
+/**
+ * A batch's numbered steps, each on ONE row (pure).
+ *
+ * A step that typed a paragraph carries its line breaks into the list, and the list then
+ * reads as five rows for three steps, with the typed text spilling between them. Each step
+ * is joined into one row with the break marked, and clipped to a width a row can hold.
+ * The "Ran 3 of 3 steps:" header is dropped: the row already says how many, and a batch
+ * that did not run to the end is shown whole, not through this.
+ */
+export function oneLineSteps(did: string): string[] {
+  const steps: string[] = [];
+  for (const raw of did.split("\n")) {
+    if (/^\d+\. /.test(raw)) steps.push(raw);
+    else if (steps.length > 0 && raw.trim() !== "") steps[steps.length - 1] += `\u21b5${raw.trim()}`;
+    else if (steps.length > 0) steps[steps.length - 1] += "\u21b5";
+  }
+  return steps.map((s) => {
+    const tidy = s.replace(/(\u21b5)+$/, "").replace(/\u21b5+/g, "\u21b5");
+    return tidy.length > 110 ? `${tidy.slice(0, 109)}\u2026` : tidy;
+  });
+}
+
+/**
+ * A UI test's whole result as the opened row shows it: the steps, then the page, each under
+ * its own title (pure).
+ *
+ * What the model is given is a run of numbered sentences followed, after a blank line, by the
+ * numbered controls: right for it, and for a person a flat block in which the part they care
+ * about (what was done) is the same grey as the part they do not (the controls). Here each
+ * has a title and an indent, a typed line break is marked instead of splitting a step, and a
+ * run that stopped early says so in the title. `list` is the controls exactly as the model
+ * reads them, grouping lines included.
+ */
+export function uiOpenedText(o: { did: string; list: string; total: number; off: number; reports: string }): string {
+  const sections: string[] = [];
+  if (o.did.trim() !== "") {
+    const lines = o.did.split("\n");
+    const ran = /Ran (\d+) of (\d+) steps?/.exec(lines[0] ?? "");
+    const stopped = /^Could not/.test(lines[0] ?? "");
+    const body = ran ? lines.slice(1) : lines;
+    const steps: string[] = [];
+    const notes: string[] = [];
+    for (const raw of body) {
+      if (/^\d+\. /.test(raw)) steps.push(raw);
+      else if (/^Stopped at step/.test(raw)) notes.push(raw);
+      else if (steps.length > 0 && notes.length === 0) steps[steps.length - 1] += raw.trim() === "" ? "\u21b5" : `\u21b5${raw.trim()}`;
+      else if (raw.trim() !== "") notes.push(raw.trim());
+    }
+    const title = ran ? `Steps \u00b7 ${stopped ? "stopped, " : ""}${ran[1]} of ${ran[2]} ran` : stopped ? "Result" : "Steps";
+    const tidy = steps.map((s) => s.replace(/(\u21b5)+$/, "").replace(/\u21b5{2,}/g, "\u21b5\u21b5"));
+    sections.push([title, ...[...tidy, ...notes].map((l) => `  ${l}`)].join("\n"));
+  }
+  const place = o.total === 0 ? "Page \u00b7 nothing readable" : `Page \u00b7 ${o.total} element${o.total === 1 ? "" : "s"}${o.off ? ` (${o.off} out of view)` : ""}`;
+  sections.push([place, ...o.list.split("\n").map((l) => `  ${l}`)].join("\n"));
+  if (o.reports.trim() !== "") sections.push(["Page reported", ...o.reports.split("\n").map((l) => `  ${l}`)].join("\n"));
+  return sections.join("\n\n");
+}
 
 // ── Scope helpers (pure) — the "what/where/how much" a change touched, so the row
 // isn't just a diff with no sense of range or magnitude. Kept pure + tested.

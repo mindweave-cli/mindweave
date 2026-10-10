@@ -7,7 +7,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { scrollPill, countNewReplies } from "./scrollPill.js";
+import { scrollPill, countNewReplies, progressPercent } from "./scrollPill.js";
 
 const WIDE = 80;
 const base = { scrolled: 5, newReplies: 0, overlayOpen: false, width: WIDE };
@@ -115,4 +115,27 @@ test("the scan stops at the mark instead of walking the whole session", () => {
   );
   assert.equal(counted, 2);
   assert.ok(seen <= 4, `expected to touch only the tail, touched ${seen} blocks`);
+});
+
+test("the chip says how far through the conversation the view is", () => {
+  // 500 lines of scroll range, 125 scrolled back from the newest: a quarter of the way up,
+  // so three quarters of the way through.
+  assert.match(scrollPill({ ...base, scrolled: 125, maxScroll: 500 })!, /Catch up · 75% \(ctrl\+End\)/);
+  assert.match(scrollPill({ ...base, scrolled: 500, maxScroll: 500 })!, /· 0%/, "the very start");
+  assert.match(scrollPill({ ...base, scrolled: 1, maxScroll: 500, newReplies: 2 })!, /Catch up — 2 new · 99%/);
+});
+
+test("the percentage is never invented or out of range", () => {
+  assert.equal(progressPercent(0, 500), null, "pinned to the newest: nothing to say");
+  assert.equal(progressPercent(5, undefined), null, "range unknown");
+  assert.equal(progressPercent(5, 0), null);
+  assert.equal(progressPercent(900, 500), 0, "more scrolled than there is clamps to the start");
+  assert.equal(progressPercent(1, 100000), 99, "a line from the end is not called 100");
+});
+
+test("on a narrow terminal the place is the first thing to give way, then the chord", () => {
+  const withPct = scrollPill({ ...base, scrolled: 125, maxScroll: 500, width: WIDE })!;
+  const tighter = scrollPill({ ...base, scrolled: 125, maxScroll: 500, width: withPct.length + 1 })!;
+  assert.ok(!tighter.includes("%"), "no room for the percent, so the chord stays and the percent goes");
+  assert.match(tighter, /ctrl\+End/);
 });

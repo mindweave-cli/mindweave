@@ -102,9 +102,8 @@ function screensDuring(queue: Action[], arrive: "all" | "stepwise" = "all"): str
   return frames;
 }
 
-test("a discovery group is never on screen without its list — one frame, then only the verb moves", () => {
-  // One read, exactly the case in the bug report: it used to show "Reading 1 file…"
-  // with nothing under it, then a second later became "Read 1 file" plus the list.
+test("a read that is done by its beat appears done, in one frame, and the turn ending changes nothing", () => {
+  // One read: it used to show "Reading 1 file…" and then, a second later, become "Read 1 file".
   const turn: Action[] = [
     { type: "user", text: "look at runCommand" },
     { type: "toolStart", toolId: "t1", name: "Read", arg: "runCommand.ts", action: "read", group: true },
@@ -116,11 +115,10 @@ test("a discovery group is never on screen without its list — one frame, then 
   const withTool = frames.filter((f) => /Read/.test(f));
   assert.ok(withTool.length > 0, "the group must reach the screen");
 
-  // THE regression guard: no frame may ever show the header alone. Every frame that
-  // names the group also carries what it found.
+  // Folded, the row is its header: no frame says it is still reading.
   for (const f of withTool) {
     assert.match(f, /Read 1 file/);
-    assert.match(f, /runCommand\.ts/, `header rendered without its body:\n${f}`);
+    assert.doesNotMatch(f, /Reading/);
   }
 
   // Already done by its beat, so it appears done: no present tense to pretend with.
@@ -133,19 +131,21 @@ test("a discovery group is never on screen without its list — one frame, then 
   assert.equal(ended, first, "a finished row changed when the turn ended");
 });
 
-test("a group row names each file once, three to a line", () => {
+test("a row counts each file once, and a read that failed shows a red mark", () => {
   const s = run([
     { type: "toolStart", toolId: "t1", name: "Read", arg: "a.ts", action: "read", group: true },
     { type: "toolEnd", toolId: "t1", ok: true, summary: "read src/a.ts (195 lines)" },
     { type: "toolStart", toolId: "t2", name: "Read", arg: "b.ts, c.ts, d.ts", action: "read", group: true, covers: 3 },
     { type: "toolEnd", toolId: "t2", ok: true, summary: "read 3 files" },
-    { type: "toolStart", toolId: "t3", name: "Read", arg: "e.ts", action: "read", group: true },
-    { type: "toolEnd", toolId: "t3", ok: false, summary: "no such file" },
+    { type: "toolStart", toolId: "t3", name: "Read", arg: "a.ts", action: "read", group: true },
+    { type: "toolEnd", toolId: "t3", ok: true, summary: "read src/a.ts lines 10-40" },
+    { type: "toolStart", toolId: "t4", name: "Read", arg: "e.ts", action: "read", group: true },
+    { type: "toolEnd", toolId: "t4", ok: false, summary: "no such file" },
   ]);
   const frame = frameOf(blocks(s));
-  assert.match(frame, /Read 5 files/);
-  assert.match(frame, /⎿ a\.ts, b\.ts, c\.ts\n\s+d\.ts, e\.ts \(failed\)/, `not three to a line:\n${frame}`);
-  assert.equal(frame.match(/a\.ts/g)?.length, 1, `a name was listed twice:\n${frame}`);
+  assert.match(frame, /Read 5 files/, frame);
+  assert.match(frame, /✗/, frame);
+  assert.doesNotMatch(frame, /b\.ts/, "folded: the names are behind the click");
 });
 
 test("a tool finished before its beat arrives finished, with its diff already under it", () => {
@@ -307,13 +307,12 @@ test("reads made in separate calls join one row, which works until the last one 
   for (const a of takeImmediate(p, flags)) s = reduce(s, a);
   assert.equal(nextMove(p), "wait", "b is still being read");
   let frame = frameOf(blocks(s));
-  assert.match(frame, /Reading 2 files/);
+  assert.match(frame, /Reading 1 of 2 files/);
   p.queue.push({ type: "toolEnd", toolId: "b", ok: true });
   for (const a of takeImmediate(p, flags)) s = reduce(s, a);
   frame = frameOf(blocks(s));
   assert.match(frame, /Read 2 files/);
-  assert.match(frame, /⎿ a\.ts, b\.ts/);
-  assert.equal(s.tail.filter((b) => b.kind === "tools").length + s.committed.filter((b) => b.kind === "tools").length, 1);
+  assert.equal(s.tail.filter((b) => b.kind === "work").length + s.committed.filter((b) => b.kind === "work").length, 1);
 });
 
 test("a row interrupted before its result stops working when the turn ends", () => {

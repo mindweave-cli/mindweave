@@ -148,6 +148,19 @@ test("a reopened session's rows carry their call's arguments, so a front end kno
   assert.deepEqual(rows[1]!.args?.paths, ["src/a.ts", "pkg/tsconfig.json"]);
 });
 
+test("a reopened session hands back the uncut block, so a long row can still be opened", () => {
+  const session = {
+    cwd: "C:/p",
+    modelConfig: { model: "deepseek-v4-pro" },
+    transcript: [
+      { role: "assistant", content: "", toolCalls: [{ id: "c1", name: "run_command", arguments: JSON.stringify({ command: "seq 1 60" }) }] },
+      { role: "tool", toolCallId: "c1", content: "1\n2", summary: "ran", detail: "$ seq 1 60\n1", detailFull: "$ seq 1 60\n1\n2\n3", detailKind: "shell" },
+    ],
+  } as unknown as Session;
+  const row = replayHistory(session).find((e) => e.type === "toolReplay");
+  assert.equal(row?.type === "toolReplay" && row.detailFull, "$ seq 1 60\n1\n2\n3");
+});
+
 async function diskSession() {
   process.env.MINDWEAVE_STATE_DIR = mkdtempSync(join(tmpdir(), "dur-state-"));
   return createSession(mkdtempSync(join(tmpdir(), "dur-proj-")));

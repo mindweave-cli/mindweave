@@ -64,7 +64,7 @@ const DISPLAY_NAME: Record<string, string> = {
  *  name as its argument, rather than title-casing whatever the model invented. */
 export const UNKNOWN_TOOL = "Unknown tool";
 
-// Consecutive calls to these fold into ONE row (see ToolGroup) rather than
+// Consecutive calls to these fold into ONE row (see WorkGroup) rather than
 // stacking a line each — a burst of reads is "Read 9 files" with the files
 // listed under it.
 //
@@ -74,14 +74,20 @@ export const UNKNOWN_TOOL = "Unknown tool";
 // it to stay out of the stream. `todo_write` is silent for the same reason: its
 // reader is the model, not the user. Mutating tools (edit/write/run) were never
 // grouped and still keep their own row with the diff/output.
-const GROUPABLE = new Set([
-  "read_file",
-  "read_symbol",
-  // Background-shell status checks: silent, and a model tends to POLL them in a loop
-  // while waiting on a build — so they fold into the group and their repeats collapse
-  // (see collapseAdjacent) instead of stacking a row per poll. kill_shell mutates → stays.
-  "shells",
-]);
+const GROUPABLE = new Set(["read_file", "read_symbol"]);
+
+/**
+ * The agent working in the shell: running a command, checking on one it left running, stopping
+ * one. Consecutive calls fold into ONE commands row (see WorkGroup), however many there are
+ * and even when there is only one. Most print nothing worth reading, and a long conversation
+ * of them was a wall of rows; a click opens the list and a second click a command's output.
+ */
+const COMMANDS = new Set(["run_command", "shells", "kill_shell"]);
+
+/** Whether a call is the agent working in the shell. */
+export function isCommandTool(name: string): boolean {
+  return COMMANDS.has(name);
+}
 // `diagnostics` was here, and grouping it was the wrong answer to the right problem.
 // A burst of them after an edit did stack a wall of rows — but folding them into the
 // group threw away the caret block each one carries (a group row shows a label, never
@@ -145,7 +151,7 @@ export function neverShown(name: string): boolean {
 
 /** Whether a tool call should fold into the discovery group rather than its own row. */
 export function isGroupable(name: string): boolean {
-  return GROUPABLE.has(name);
+  return GROUPABLE.has(name) || COMMANDS.has(name);
 }
 
 /**

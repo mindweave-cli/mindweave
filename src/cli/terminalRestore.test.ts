@@ -16,10 +16,11 @@ test("the restore turns off reporting first, then the buffer, cursor and wrappin
   // Order is the point: the mode actively writing bytes into the terminal is silenced
   // before anything else, so nothing it emits lands in the middle of the rest.
   assert.equal(TERMINAL_RESTORE, MOUSE_OFF + ALT_SCREEN_OFF + SHOW_CURSOR + AUTOWRAP_ON);
-  // Every mode that was turned on has to be turned off, and 1002 (motion while a button
-  // is held) is one of them since dragging to select was added. A mode left on outlives
+  // Every mode that was turned on has to be turned off, and 1003 (all pointer motion,
+  // which the row highlight needs) is one of them, as 1002 was before it. A mode left on outlives
   // the process: the shell that gets the terminal back is the one that suffers for it.
-  assert.equal(MOUSE_OFF, "\x1b[?1006l\x1b[?1002l\x1b[?1000l");
+  // 1003 (all pointer movement, which the row highlight needs) joined 1002 and 1000.
+  assert.equal(MOUSE_OFF, "\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l");
   assert.equal(ALT_SCREEN_OFF, "\x1b[?1049l");
   assert.equal(SHOW_CURSOR, "\x1b[?25h");
   assert.equal(AUTOWRAP_ON, "\x1b[?7h");

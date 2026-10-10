@@ -48,7 +48,7 @@ import { stat, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { NOTES_FILE } from "../memory/projectNotes.js";
 import { writeFileAtomic } from "../tools/atomicWrite.js";
-import { RECAP_STUB } from "../memory/compaction.js";
+import { shownText, withoutClearedNote } from "../memory/compaction.js";
 import { stopChassis } from "../alternator/lane.js";
 import type { TodoItem, ToolContext, UiDisplay, UiLiveEvent, WebDisplay } from "../tools/types.js";
 import { stopUi } from "../tools/ui.js";
@@ -404,7 +404,7 @@ export async function listSessions(cwd: string): Promise<SessionMeta[]> {
 export type ReplayEvent =
   | { type: "userMessage"; text: string; expiredImages?: string[]; images?: string[]; files?: string[]; noRewind?: true }
   | { type: "assistantMessage"; text: string }
-  | { type: "toolReplay"; name: string; arg?: string; kind: string; ok: boolean; summary: string; detail?: string; detailKind?: "diff" | "text" | "shell"; images?: string[]; web?: WebDisplay; ui?: UiDisplay; tool?: string; /** The call's arguments, clipped as on a live toolStart: which file a row is about. */ args?: Record<string, unknown>; /** A quiet result (only searches are replayed quiet): not a row of its own. */ quiet?: true }
+  | { type: "toolReplay"; name: string; arg?: string; kind: string; ok: boolean; summary: string; detail?: string; detailFull?: string; detailKind?: "diff" | "text" | "shell"; images?: string[]; web?: WebDisplay; ui?: UiDisplay; tool?: string; /** The call's arguments, clipped as on a live toolStart: which file a row is about. */ args?: Record<string, unknown>; /** A quiet result (only searches are replayed quiet): not a row of its own. */ quiet?: true }
   | { type: "compactionSummary"; text: string };
 
 /** Compaction appends "[<paths> was attached here but is no longer in context …]" to a
@@ -458,9 +458,10 @@ export function replayHistory(session: Session): ReplayEvent[] {
       const stepCalls = (entry.toolCalls ?? []).map((c) => ({ name: c.name, args: safeParseArgs(c.arguments) }));
       const shown = stepCalls.length === 0 || narrationShown(stepCalls, readThisTurn);
       noteReads(stepCalls, readThisTurn);
-      // RECAP_STUB is compaction's note to the MODEL that an old status reply was
-      // condensed; it is not something the agent said, so it is never shown.
-      if (shown && entry.content.trim() && entry.content !== RECAP_STUB) out.push({ type: "assistantMessage", text: entry.content });
+      // What was SAID is shown. Clearing old context leaves a note for the model in its place
+      // and keeps the words for the screen (`shown`); the note itself is never shown.
+      const said = shownText(entry);
+      if (shown && said && said.trim()) out.push({ type: "assistantMessage", text: said });
       for (const call of entry.toolCalls ?? []) calls.set(call.id, call);
     } else if (entry.role === "tool") {
       const call = calls.get(entry.toolCallId);
@@ -487,8 +488,9 @@ export function replayHistory(session: Session): ReplayEvent[] {
         arg,
         kind,
         ok: !entry.isError,
-        summary: entry.summary ?? entry.content,
+        summary: entry.summary ?? withoutClearedNote(entry.content),
         detail: entry.detail,
+        ...(entry.detailFull ? { detailFull: entry.detailFull } : {}),
         detailKind: entry.detailKind,
         ...(entry.imagePaths?.length ? { images: entry.imagePaths } : {}),
         ...(entry.web ? { web: entry.web } : {}),

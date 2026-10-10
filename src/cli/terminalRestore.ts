@@ -16,7 +16,7 @@
  */
 
 /** Wheel reporting off: the SGR encoding (1006) first, then reporting itself (1000). */
-export const MOUSE_OFF = "\x1b[?1006l\x1b[?1002l\x1b[?1000l";
+export const MOUSE_OFF = "\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l";
 
 /** Leave the alternate screen buffer, revealing the shell scrollback underneath. */
 export const ALT_SCREEN_OFF = "\x1b[?1049l";

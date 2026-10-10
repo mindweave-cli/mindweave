@@ -1087,9 +1087,9 @@ function format(
     detail: testRun
       ? testDetail(testRun, formatDuration)
       : withOutcome(shellBody(command, body, failed), timedOut, exitCode, signal, timeoutMs, elapsedMs, pid),
-    detailFull: testRun
-      ? undefined
-      : withOutcome(shellBody(command, body, failed, FULL_DETAIL_MAX), timedOut, exitCode, signal, timeoutMs, elapsedMs, pid),
+    // A recognised test run shows its result, and the whole log is what opens: the summary is
+    // the right thing to read first and the wrong thing to be unable to go behind.
+    detailFull: withOutcome(shellBody(command, body, failed, FULL_DETAIL_MAX), timedOut, exitCode, signal, timeoutMs, elapsedMs, pid),
     detailKind: "shell" as const,
   };
 }

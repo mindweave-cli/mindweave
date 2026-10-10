@@ -108,3 +108,32 @@ test("edit rejects an empty edits array", async () => {
   assert.equal(r.isError, true);
   assert.match(r.output, /non-empty array/);
 });
+
+test("a long edit keeps the whole diff to open, past the rows the row shows", async () => {
+  const ctx = freshCtx();
+  const before = Array.from({ length: 60 }, (_, i) => `old ${i}`).join("\n");
+  const after = Array.from({ length: 60 }, (_, i) => `new ${i}`).join("\n");
+  await fs.writeFile(join(ctx.cwd, "big.txt"), `${before}\ntail\n`);
+  await readFile.execute({ path: "big.txt" }, ctx);
+  const r = await edit.execute({ path: "big.txt", edits: [{ old_string: before, new_string: after }] }, ctx);
+  assert.equal(r.isError, undefined);
+  assert.ok((r.detail ?? "").includes("more line"), "the row itself is cut short");
+  assert.ok(r.detailFull, "and the whole diff is kept");
+  assert.ok(r.detailFull!.includes("- old 59") && r.detailFull!.includes("+ new 59"), "both ends of the change are in it");
+  assert.ok(r.detailFull!.split("\n").length > (r.detail ?? "").split("\n").length);
+});
+
+test("an edit one line past what the row shows can still be opened", async () => {
+  // The row shows thirty lines and a marker. Thirty-one lines of change used to be thirty and
+  // a marker, the same size as the whole, so nothing was thought to be hidden and the row said
+  // "(1 more line)" with no way to open it.
+  const { hasMore } = await import("../cli/transcript.js");
+  const ctx = freshCtx();
+  const before = Array.from({ length: 11 }, (_, i) => `old ${i}`).join("\n");
+  const after = Array.from({ length: 20 }, (_, i) => `new ${i}`).join("\n");
+  await fs.writeFile(join(ctx.cwd, "m.txt"), `${before}\ntail\n`);
+  await readFile.execute({ path: "m.txt" }, ctx);
+  const r = await edit.execute({ path: "m.txt", edits: [{ old_string: before, new_string: after }] }, ctx);
+  assert.match(r.detail ?? "", /\(1 more line\)/, "the setup is the one-line-over case");
+  assert.equal(hasMore(r.detail, r.detailFull), true, "and it is openable");
+});

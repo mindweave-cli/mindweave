@@ -116,3 +116,14 @@ test("a global install's manual command is the one it would have run itself", ()
   const install = classifyInstall(WIN_ROOT, probe([`${WIN_PREFIX}\\mindweave.cmd`]));
   assert.equal(manualCommand(install), `npm install -g --prefix ${WIN_PREFIX} mindweave@latest`);
 });
+
+test("the copy bundled in the desktop app is told apart and not updated through npm", () => {
+  for (const root of [
+    "C:\\Users\\u\\AppData\\Local\\Programs\\mwcode\\resources\\app\\node_modules\\mindweave",
+    "/opt/mwcode/resources/app/node_modules/mindweave",
+  ]) {
+    const install = classifyInstall(root, probe([]));
+    assert.equal(install.kind, "app", root);
+    assert.match(refusalReason(install) ?? "", /comes with the mwcode app/);
+  }
+});

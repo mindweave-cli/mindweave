@@ -25,16 +25,18 @@
 import { MOUSE_OFF } from "./terminalRestore.js";
 
 /**
- * Report button presses AND movement while a button is held (1002), using SGR encoding
- * (1006), the only encoding that stays correct past column 223.
+ * Report button presses AND all pointer movement (1003), using SGR encoding (1006), the
+ * only encoding that stays correct past column 223.
  *
- * 1002 rather than 1000 because 1000 reports only the press and the release. A drag is
- * the movement BETWEEN them, so under 1000 a selection could only ever be told where it
- * started and where it stopped, and nothing could be highlighted while the button was
- * still down. 1002 is the narrower of the two motion modes: it stays quiet until a
- * button is held, where 1003 reports every idle mouse movement across the window.
+ * Motion is needed for two things. A drag is the movement BETWEEN a press and a release, so
+ * under plain 1000 a selection could only ever be told where it started and where it
+ * stopped. And a row that can be pressed has to light up when the pointer is over it, which
+ * is movement with NO button held. 1002 reports only the first; 1003 reports both, at the
+ * price of an event for every cell the pointer crosses. That price is paid in one place:
+ * App turns a burst of them into one lookup and redraws only when the row under the
+ * pointer actually changes.
  */
-const MOUSE_ON = "\x1b[?1002h\x1b[?1006h";
+const MOUSE_ON = "\x1b[?1003h\x1b[?1006h";
 
 /**
  * An SGR mouse report: `ESC [ < button ; col ; row (M|m)`.
@@ -66,7 +68,7 @@ export function readWheel(data: string): WheelDirection[] {
 }
 
 /** What the pointer did. `drag` is movement with a button still held. */
-export type MouseKind = "press" | "drag" | "release";
+export type MouseKind = "press" | "drag" | "release" | "move";
 
 /** One pointer event, in ZERO-based cell coordinates — the terminal reports 1-based, and
  *  converting here means nothing downstream has to remember to. */
@@ -88,6 +90,12 @@ export function readMouse(data: string): MouseEvent[] {
   for (const match of data.matchAll(SGR)) {
     const button = Number(match[1]);
     if ((button & 64) !== 0) continue; // a wheel notch, not a button
+    // Movement with NO button held: bit 5 (motion) and the "no button" code 3 in bits 0-1.
+    // Only there because the pointer being over something is worth knowing (see 1003 above).
+    if ((button & 35) === 35) {
+      out.push({ kind: "move", x: Number(match[2]) - 1, y: Number(match[3]) - 1 });
+      continue;
+    }
     // Bits 0-1 name the button. A RELEASE under SGR reports the button that was let go,
     // so this stays correct for both ends of a drag.
     if ((button & 3) !== 0) continue; // middle or right button

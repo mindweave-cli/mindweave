@@ -296,3 +296,25 @@ test(
     }
   },
 );
+
+test("a recognised test run shows its result row and still keeps the whole log to open", async () => {
+  // The script is a file so no quoting of one platform's shell is involved.
+  const dir = await mkdtemp(join(tmpdir(), "mw-testlog-"));
+  try {
+    const script = join(dir, "log.mjs");
+    const lines = [
+      "for (let i = 0; i < 40; i++) console.log('✔ case ' + i + ' (1ms)');",
+      "console.log('ℹ tests 40'); console.log('ℹ suites 0'); console.log('ℹ pass 40'); console.log('ℹ fail 0');",
+      "console.log('ℹ cancelled 0'); console.log('ℹ skipped 0'); console.log('ℹ todo 0'); console.log('ℹ duration_ms 12.5');",
+    ];
+    await (await import("node:fs/promises")).writeFile(script, lines.join("\n"));
+    const result = await runCommand.execute({ command: `node "${script}"` }, ctx());
+    assert.match(result.detail ?? "", /40 passed/, "the row is the result, not the log");
+    assert.ok((result.detail ?? "").split("\n").length <= 3);
+    assert.ok(result.detailFull, "the whole log is kept for opening");
+    assert.ok(result.detailFull!.includes("case 17"), "the passing lines are in it");
+    assert.ok(result.detailFull!.split("\n").length > 40);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

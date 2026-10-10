@@ -18,7 +18,7 @@ import { wrapAnsi, visibleWidth } from "../wrap.js";
 import { BAD, USER_BG, USER_FG } from "../theme.js";
 import { compactionLines } from "../compaction.js";
 import { ToolLine } from "./ToolLine.js";
-import { ToolGroup } from "./ToolGroup.js";
+import { WorkGroup } from "./WorkGroup.js";
 import { SubagentView } from "./SubagentView.js";
 import type { Block } from "../transcript.js";
 
@@ -72,7 +72,7 @@ function UserBand({ text, columns }: { text: string; columns: number }) {
   );
 }
 
-function BlockViewInner({ block, columns, tightTop }: { block: Block; columns: number; tightTop?: boolean }) {
+function BlockViewInner({ block, columns, tightTop, hovered, hoveredItem }: { block: Block; columns: number; tightTop?: boolean; hovered?: boolean; hoveredItem?: number }) {
   const textWidth = Math.max(8, columns - 4);
 
   switch (block.kind) {
@@ -101,6 +101,10 @@ function BlockViewInner({ block, columns, tightTop }: { block: Block; columns: n
     case "tool":
       return (
         <ToolLine
+          id={block.id}
+          full={block.full}
+          expanded={block.expanded}
+          hovered={hovered}
           name={block.name}
           arg={block.arg}
           status={block.status}
@@ -118,8 +122,19 @@ function BlockViewInner({ block, columns, tightTop }: { block: Block; columns: n
         />
       );
 
-    case "tools":
-      return <ToolGroup items={block.items} live={block.live} columns={columns} tightTop={tightTop} />;
+    case "work":
+      return (
+        <WorkGroup
+          id={block.id}
+          items={block.items}
+          open={block.open}
+          live={block.live}
+          columns={columns}
+          tightTop={tightTop}
+          hovered={hovered}
+          hoveredItem={hoveredItem}
+        />
+      );
 
     case "subagent":
       return (

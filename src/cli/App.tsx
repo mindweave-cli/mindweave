@@ -74,12 +74,16 @@ import { PromptInput } from "./components/PromptInput.js";
 import { Picker } from "./components/Picker.js";
 import { ApprovalBox } from "./components/ApprovalBox.js";
 import { BlockView } from "./components/BlockView.js";
-import { initialState, reduce, trimNarration, type Action, type Block, type TranscriptState } from "./transcript.js";
+import { initialState, lastExpandable, reduce, trimNarration, type Action, type Block, type TranscriptState } from "./transcript.js";
 import { isTight } from "./blockSpacing.js";
 import { parseScreenArg, screenChoices, screenNotice, startupMode, type ScreenMode } from "./screenMode.js";
 import { applyScreenMode } from "./screenShell.js";
 import { saveScreenMode } from "./screenStore.js";
 import { needsMeasure, pruneHeights } from "./blockHeights.js";
+import { expandableAt, hitBlock, hitItem } from "./expandHits.js";
+import { readFileSync, statSync } from "node:fs";
+import { compactUiDetail, rebuildFull, writtenFromDisk } from "../tools/rebuildDetail.js";
+import { shownText } from "../memory/compaction.js";
 import { BASE_COMMANDS } from "./commands.js";
 import { attachmentBudget, dismissMarathon } from "../core/turnRunner.js";
 import { describeMarathonEvent, resumeMarathon, startMarathon, type MarathonEvent } from "../dynamo/marathon.js";
@@ -88,7 +92,7 @@ import { isFinished, isLive, marathonBoxHeight, marathonUiReduce, type MarathonU
 import { manualCommand, refusalReason } from "./selfUpdate.js";
 import { currentInstall, requestRestart, runUpdate } from "./updateRunner.js";
 import { enableMouse, readMouse, readWheel, stripMouse } from "./mouse.js";
-import { wheelLines, wheelStart, type WheelState } from "./wheelAccel.js";
+import { wheelLines } from "./wheelStep.js";
 import { applySelection, ctrlCShouldCopy, isEmpty, selectionText, type Selection } from "./selection.js";
 import { latestScreen, repaintOverlay, setFrameOverlay } from "./framebuffer/overlay.js";
 import { requestFullRepaint } from "./framebuffer/writer.js";
@@ -395,6 +399,14 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
   /** The chip's cells in SCREEN coordinates, for the pointer handler. Null when there is
    *  nothing to click. Published by the render, read between frames. */
   const pillHit = useRef<PillBounds | null>(null);
+  // Where the layout's first row sits on the screen, published each render for the pointer.
+  const frameTopRef = useRef(0);
+  // The row the pointer is over, if it can be pressed. State rather than a ref: it is what
+  // the row draws from. Only set when it CHANGES, so a pointer crossing the screen is not
+  // a redraw per cell.
+  const [hoverId, setHoverId] = useState<number | null>(null);
+  // Set when a row is opened or folded, read once by the height effect.
+  const rowToggled = useRef(false);
   const [footerHeight, setFooterHeight] = useState(0);
   // The chat viewport's REAL height. Yoga decides it now (flexGrow beside a
   // flexShrink:0 footer); this is read back purely so the scroll maths knows how
@@ -705,6 +717,9 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
   const withEarlier = (session: Session): Entry[] => [...(session.earlier ?? []), ...session.transcript];
   function showResumed(transcript: Entry[]) {
     const readThisTurn = new Set<string>(); // for narrationShown, as live
+    // Each call's name and arguments by id, so a result from a session saved before the uncut
+    // text was kept can have it put back together (see rebuildDetail.ts).
+    const callsById = new Map<string, { name: string; args: Record<string, unknown> }>();
     for (const e of transcript) {
       if (e.role === "user") {
         if (!e.synthetic) readThisTurn.clear();
@@ -723,11 +738,13 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
         const calls = (e.toolCalls ?? []).map((c) => ({ name: c.name, args: parseToolArgs(c.arguments) }));
         const shown = calls.length === 0 || narrationShown(calls, readThisTurn);
         noteReads(calls, readThisTurn);
-        if (shown && e.content.trim()) {
+        const said = shownText(e);
+        if (shown && said && said.trim()) {
           const intermediate = calls.length > 0;
-          dispatch({ type: "say", text: intermediate ? trimNarration(e.content) : e.content });
+          dispatch({ type: "say", text: intermediate ? trimNarration(said) : said });
         }
         for (const call of e.toolCalls ?? []) {
+          callsById.set(call.id, { name: call.name, args: parseToolArgs(call.arguments) });
           // The spawn itself is drawn by its sub-agent block live, never as a raw row.
           // Replaying it as one puts a `● SpawnSubagent(...)` in a resumed transcript
           // that was not in the live one.
@@ -752,6 +769,25 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
           ok: e.isError === undefined ? !e.content.startsWith("Error:") : !e.isError,
           summary: e.summary,
           detail: e.detail,
+          ...(() => {
+            const call = callsById.get(e.toolCallId);
+            // A UI test saved before it became a short row comes back as the short row.
+            if (call?.name === "ui" && !e.detailFull) {
+              const compact = compactUiDetail(e.detail, e.isError);
+              if (compact) return { detail: compact.detail, ...(compact.detailFull ? { detailFull: compact.detailFull } : {}) };
+            }
+            let full = e.detailFull ?? rebuildFull(call?.name, call?.args, e);
+            // A write whose text was cleared to save context has only the file left to open.
+            if (!full && call?.name === "write_file" && typeof call.args?.path === "string") {
+              try {
+                const abs = resolve(session.current?.cwd ?? process.cwd(), call.args.path);
+                if (statSync(abs).size < 2_000_000) full = writtenFromDisk(e.detail, readFileSync(abs, "utf8"));
+              } catch {
+                // gone or unreadable: the row stays as it was saved
+              }
+            }
+            return full ? { detailFull: full } : {};
+          })(),
           ...(e.detailKind ? { detailKind: e.detailKind } : {}),
           ...(e.quiet ? { quiet: true } : {}),
           ...(e.displayName ? { name: e.displayName } : {}),
@@ -1190,9 +1226,6 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
   // counter kept climbing — and every one of those phantom lines then had to be
   // scrolled back down before the view moved at all. A flick or two past the top bought
   // a second of a wheel that did nothing, which reads as the app having frozen.
-  /** The wheel gesture in progress, for scroll acceleration (wheelAccel.ts). */
-  const wheelRef = useRef<WheelState>(wheelStart());
-
   const scrollBy = useCallback((lines: number) => {
     // Repaint the whole next frame. A scroll can move a row out from under the
     // framebuffer's model (see requestFullRepaint), which is what left a transcript row
@@ -1252,6 +1285,16 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
       // chip true. CTRL is what keeps them off the input: plain End and Home belong to
       // the caret, whether or not the input claims them yet.
       else if (key.end && key.ctrl) { requestFullRepaint(); setScrollUp(0); }
+      // The keyboard way to the same thing a click does, for terminals that do not send
+      // the mouse. It acts on the newest row that has more to show.
+      else if (key.ctrl && _input === "o") {
+        if (shell === "inline" && !reading) {
+          note("Scroll up first (PageUp or the wheel), then press ctrl+O to open the newest long output.");
+          return;
+        }
+        const target = lastExpandable(stateRef.current);
+        if (target !== null) toggleRow(target);
+      }
       else if (key.home && key.ctrl) { requestFullRepaint(); setScrollUp(maxScrollRef.current); }
     },
     { isActive: ready && overlay === null },
@@ -1358,7 +1401,16 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
       // Ordinary growth, not a resize — see growScroll for why this has to hold the
       // reader's absolute position rather than leave `scrollUp` where it was.
       const prev = prevContentHeight.current;
-      const next = growScroll(scrollUp, prev, height);
+      let next = growScroll(scrollUp, prev, height);
+      // A row was just opened or folded. The row the reader pressed stays where it is and
+      // the change happens below it: opening from the bottom would otherwise follow the
+      // new end of the output and carry the row's own first line off the top, and folding
+      // would slide the view up by what was taken away.
+      if (rowToggled.current && height !== prev) {
+        if (height > prev && scrollUp === 0) next = height - prev;
+        else if (height < prev) next = Math.max(0, scrollUp - (prev - height));
+      }
+      rowToggled.current = false;
       if (next !== scrollUp) setScrollUp(next);
     }
     prevContentHeight.current = height;
@@ -1515,12 +1567,11 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
         // Content moves out from under a selection when the view scrolls, so the
         // highlight would be sitting on text that is no longer the text it copied.
         clearSelection();
-        // Signed notch count, then the distance for it: the faster the wheel is turning,
-        // the further each notch goes (wheelAccel.ts). A slow notch is still three lines.
+        // Signed notch count, then the distance for it. The same distance for every notch,
+        // applied at once (wheelStep.ts): how far the view goes follows how far the wheel
+        // was turned, and nothing else.
         const net = notches.reduce((n, dir) => n + (dir === "up" ? 1 : -1), 0);
-        const step = wheelLines(wheelRef.current, net, performance.now());
-        wheelRef.current = step.state;
-        const lines = step.lines;
+        const lines = wheelLines(net);
         // The wheel is how anyone actually scrolls, so in the inline shell it is what
         // opens the reading view. Turning it UP is the gesture: the reader is going back
         // through the conversation and wants the prompt to stay where they can type into
@@ -1539,7 +1590,13 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
       // in a chunk is on screen at the end of it, so the ones before it are painted for
       // nobody. Cleared by press and release, which do their own painting.
       let pendingDrag = false;
+      let lastMove: { x: number; y: number } | null = null;
       for (const event of events) {
+        if (event.kind === "move") {
+          // Only the last position in a chunk matters; a burst is one lookup.
+          lastMove = event;
+          continue;
+        }
         if (event.kind === "press") {
           pendingDrag = false;
           // The chip is a button. It is the only thing on screen that says what it does,
@@ -1576,6 +1633,14 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
             selection.current = null;
             repaintOverlay();
             setFrameOverlay(null);
+            // A click on a row that has more to show opens it, and a second click folds
+            // it. Tested BEFORE the caret, because a click on the transcript is never on
+            // the input anyway, and a click that does nothing is the worse outcome.
+            const hitId = expandableAt(event.y, frameTopRef.current, chatRef.current);
+            if (hitId !== null) {
+              toggleRow(hitId);
+              continue;
+            }
             placeCaretAt(event.x, event.y);
             continue;
           }
@@ -1591,6 +1656,15 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
         }
       }
       if (pendingDrag) repaintOverlay();
+      // The pointer, resting or moving: light the row under it if it can be pressed, and put
+      // the light out when it leaves. A press or a wheel turn clears it too, below, because
+      // the content moves out from under a pointer that did not.
+      if (lastMove) {
+        const over = expandableAt(lastMove.y, frameTopRef.current, chatRef.current);
+        setHoverId((h) => (h === over ? h : over));
+      } else if (notches.length > 0 || events.some((e) => e.kind === "press")) {
+        setHoverId((h) => (h === null ? h : null));
+      }
 
       // A real keystroke, so put any highlight away — the same as a terminal's own
       // selection does the moment you type.
@@ -1598,6 +1672,14 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
     },
     { isActive: true },
   );
+
+  /** Open or fold a row, keeping it where the reader pressed it. See the height effect. */
+  function toggleRow(hit: number) {
+    rowToggled.current = true;
+    // A hit on one command inside a commands row opens that command; anything else is a row.
+    if (hitItem(hit) >= 0) dispatch({ type: "toggleItem", id: hitBlock(hit), index: hitItem(hit) });
+    else dispatch({ type: "toggleExpand", id: hit });
+  }
 
   function endTurn() {
     releaseLiveGates();
@@ -2046,6 +2128,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
                 summary: e.summary,
                 detail: e.detail,
                 detailKind: e.detailKind,
+                detailFull: e.detailFull,
                 quiet: e.quiet,
                 action: e.displayKind,
                 name: e.displayName,
@@ -2602,6 +2685,16 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
         return;
       }
       const install = currentInstall();
+      if (install.kind === "app") {
+        const latest = await checkForUpdate({ readCacheImpl: () => null });
+        const current = appVersion();
+        note(
+          latest
+            ? `${refusalReason(install)} v${latest} is out (this is v${current}); update the app from Settings, About.`
+            : `Already on the latest${current ? ` (v${current})` : ""}. ${refusalReason(install)}`,
+        );
+        return;
+      }
       if (install.kind !== "global") {
         // Never guessed at. Overwriting a working tree or another project's dependency
         // is the one thing this command must not do; see selfUpdate.ts.
@@ -3833,6 +3926,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
     newReplies: countNewReplies(allBlocks, scrollMark.current),
     overlayOpen: overlay !== null,
     width,
+    maxScroll,
   });
   /**
    * The chip's cells in SCREEN coordinates, so a click can be tested against them.
@@ -3849,6 +3943,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
    * measure nothing for itself.
    */
   const frameTop = readingInline ? Math.max(0, rows - frameHeight) : 0;
+  frameTopRef.current = frameTop;
   pillHit.current = pill !== null && pillRow.current !== null ? pillBounds(pill, width, frameTop + pillRow.current) : null;
   // The whole conversation stays reachable: the cap is only a safety valve (see
   // SCROLLBACK_BLOCKS). Blocks outside the window cost one number each here and nothing
@@ -4070,7 +4165,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
                 flexShrink={0}
                 flexDirection="column"
               >
-                <BlockView block={b} columns={width} tightTop={isTight(allBlocks, offset + idx)} />
+                <BlockView block={b} columns={width} tightTop={isTight(allBlocks, offset + idx)} hovered={hoverId !== null && hitBlock(hoverId) === b.id && hitItem(hoverId) < 0} hoveredItem={hoverId !== null && hitBlock(hoverId) === b.id ? hitItem(hoverId) : -1} />
               </Box>
             );
           })}
@@ -4090,7 +4185,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
                 flexShrink={0}
                 flexDirection="column"
               >
-                <BlockView block={b} columns={width} tightTop={isTight(allBlocks, offset + idx)} />
+                <BlockView block={b} columns={width} tightTop={isTight(allBlocks, offset + idx)} hovered={hoverId !== null && hitBlock(hoverId) === b.id && hitItem(hoverId) < 0} hoveredItem={hoverId !== null && hitBlock(hoverId) === b.id ? hitItem(hoverId) : -1} />
               </Box>
             );
           })}

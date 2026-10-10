@@ -53,6 +53,7 @@ import { describeImage, isRejection, type ImageRef } from "../memory/images.js";
 import { captureWindow, listWindows, type WindowInfo } from "./screenshotWin.js";
 import { ambiguousMessage, listTitles, pickWindow, safeName } from "./screenshot.js";
 import { actOn, readControls, type UiControl, type UiSnapshot } from "./uiWin.js";
+import { oneLineSteps, uiOpenedText } from "./detail.js";
 import { isLocalUrl, PageSession, shortUrl, type CastFrame, type PageAction, type PageSnapshot } from "./uiPage.js";
 import { listTargets, pageTargets } from "./cdp.js";
 import { launchBrowser } from "./browser.js";
@@ -1334,10 +1335,73 @@ function render(o: {
     summary:
       (o.step.steps ? batchSummary(o.step.steps, failed) : o.did ? stripNumbers(o.did) : `Looked at ${o.title} (${countControls(o.snap)}${o.shot.size ? `, ${o.shot.size}` : ""})`) +
       (errs ? ` · ${errs} page error${errs === 1 ? "" : "s"}` : ""),
-    detail: [o.step.steps ? o.did : "", fullList, reports].filter(Boolean).join("\n\n"),
+    ...uiRowDetail({ did: o.did, batch: !!o.step.steps, fullList, reports, snap: o.snap, failed, errs }),
     images: o.shot.image ? [o.shot.image] : undefined,
     ui: stepDisplay(o.step, o.snap, failed),
   };
+}
+
+/** The plural of a control's name, for counting them: "button" to "buttons", "text box" to "text boxes". */
+function plural(word: string): string {
+  return /(x|s|ch|sh)$/.test(word) ? `${word}es` : `${word}s`;
+}
+
+/**
+ * One line saying what is on the page, for the user's row (pure).
+ *
+ * The numbered list is for the model, and it is long: twenty or thirty lines of `[7] button
+ * "Chapter 1"`. What a person wants from it is how much there is and how it breaks down,
+ * with the list one click away.
+ */
+export function pageSummary(snap: UiSnapshot | PageSnapshot): string {
+  const { counts, off, total } = pageCounts(snap);
+  return pageLine(counts, off, total);
+}
+
+/** How many controls of each kind, how many are out of view, and how many there are in all (pure). */
+export function pageCounts(snap: UiSnapshot | PageSnapshot): { counts: Map<string, number>; off: number; total: number } {
+  const counts = new Map<string, number>();
+  for (const c of snap.controls) {
+    const word = KIND_WORDS[c.kind] ?? c.kind;
+    counts.set(word, (counts.get(word) ?? 0) + 1);
+  }
+  const off = snap.controls.filter((c) => c.state.includes("out of view")).length;
+  return { counts, off, total: snap.controls.length + (snap.more > 0 ? snap.more : 0) };
+}
+
+/** The page line from counts of each kind of control (pure). Shared with rows saved before it existed. */
+export function pageLine(counts: Map<string, number>, off: number, total: number): string {
+  if (total === 0) return "page: nothing readable";
+  const ranked = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+  const shown = ranked.slice(0, 3).map(([word, n]) => `${n} ${n === 1 ? word : plural(word)}`);
+  const rest = ranked.length - 3;
+  return `page: ${total} element${total === 1 ? "" : "s"} \u2014 ${shown.join(", ")}${rest > 0 ? `, ${rest} more kind${rest === 1 ? "" : "s"}` : ""}${off ? ` (${off} out of view)` : ""}`;
+}
+
+/**
+ * What the user's row shows, and what opens behind it (pure).
+ *
+ * A run that went well is its steps, one row each, and one line about the page; the whole
+ * result is behind a click. A run that did NOT go well, or where the page said something
+ * (an error, a warning, a dialog), is shown whole, because that is exactly when what the
+ * page looked like matters and a collapsed row would be hiding it.
+ */
+export function uiRowDetail(o: {
+  did: string;
+  batch: boolean;
+  fullList: string;
+  reports: string;
+  snap: UiSnapshot | PageSnapshot;
+  failed: boolean;
+  errs: number;
+}): { detail: string; detailFull?: string } {
+  // A single action that failed is said too: its reason is the one thing the row exists to show.
+  const { total, off } = pageCounts(o.snap);
+  const whole = uiOpenedText({ did: o.batch || o.failed ? o.did : "", list: o.fullList, total, off, reports: o.reports });
+  if (o.failed || o.errs > 0 || o.reports) return { detail: whole };
+  const done = o.batch ? oneLineSteps(o.did) : o.did ? [o.did.split("\n").map((l) => l.trim()).filter(Boolean).join("\u21b5")] : [];
+  const detail = [...done, pageSummary(o.snap)].join("\n");
+  return { detail, detailFull: whole };
 }
 
 /** One line for a batch on the user's row: "4 steps: click Open menu, type Name, …". Pure. */

@@ -364,7 +364,15 @@ async function readOne(
   return {
     label: shown,
     body,
-    summary: empty ? `read ${shown} (empty)` : ranged ? `read ${shown} lines ${start}-${end}` : `read ${shown} (${slice.length} lines)`,
+    // A read that stopped at the cap says which part it took, like one with a range, so a
+    // row never calls a thousand of five thousand lines "the whole file".
+    summary: empty
+      ? `read ${shown} (empty)`
+      : ranged
+        ? `read ${shown} lines ${start}-${end}`
+        : end < totalLines
+          ? `read ${shown} lines ${start}-${end} of ${totalLines}`
+          : `read ${shown} (${slice.length} lines)`,
     // Presence, recorded as a FACT at the moment it is true, keyed by the absolute path
     // this call actually resolved to. Re-deriving it later by re-resolving these
     // arguments would be a guess: `cd` moves the working directory mid-session, so the

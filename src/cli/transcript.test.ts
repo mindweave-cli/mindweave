@@ -8,10 +8,15 @@ import assert from "node:assert/strict";
 import { initialState, reduce, trimNarration, NARRATION_LINES, type Action, type TranscriptState } from "./transcript.js";
 import { isGroupable } from "./toolDisplay.js";
 
-test("only read-only discovery tools group — edits, writes, runs, tests never do", () => {
+test("only reads and shell work group — edits and writes never do", () => {
   // Reads + silent status checks fold into one row.
-  for (const n of ["read_file", "read_symbol", "shells"]) {
+  for (const n of ["read_file", "read_symbol"]) {
     assert.ok(isGroupable(n), `${n} should group (silent receipt — collapsing loses nothing)`);
+  }
+  // The agent working in the shell folds into its own commands row (see WorkGroup): its
+  // output is a click away, not a row each.
+  for (const n of ["run_command", "shells", "kill_shell"]) {
+    assert.ok(isGroupable(n), `${n} should fold into the commands row`);
   }
   // Search and the code-intel lookups do NOT group, because they no longer render at
   // all (search.ts sets quiet on every path; navigational() wraps the others): they are
@@ -23,7 +28,7 @@ test("only read-only discovery tools group — edits, writes, runs, tests never 
   }
   // Anything whose row carries output you need to see (a diff, command/test output,
   // fetched content, the meta result) must keep its own row.
-  for (const n of ["edit", "replace_symbol_body", "write_file", "run_command", "skill", "use_skill", "web", "spawn_subagent"]) {
+  for (const n of ["edit", "replace_symbol_body", "write_file", "skill", "use_skill", "web", "spawn_subagent"]) {
     assert.ok(!isGroupable(n), `${n} must NOT group`);
   }
 });
@@ -136,9 +141,9 @@ test("a quiet failure inside a group removes only that item", () => {
     { type: "toolEnd", toolId: "b", ok: true, summary: "40 lines" },
     { type: "finishReply" },
   ]);
-  const group = [...s.committed, ...s.tail].find((b) => b.kind === "tools");
-  assert.ok(group && group.kind === "tools");
-  if (group && group.kind === "tools") {
+  const group = [...s.committed, ...s.tail].find((b) => b.kind === "work");
+  assert.ok(group && group.kind === "work");
+  if (group && group.kind === "work") {
     assert.equal(group.items.length, 1, "the quiet item is gone");
     assert.equal(group.items[0]!.toolId, "b");
   }
@@ -152,7 +157,7 @@ test("a group whose only item went quiet disappears entirely", () => {
     { type: "toolEnd", toolId: "a", ok: false, summary: "no match", quiet: true },
     { type: "finishReply" },
   ]);
-  assert.equal([...s.committed, ...s.tail].filter((b) => b.kind === "tools").length, 0);
+  assert.equal([...s.committed, ...s.tail].filter((b) => b.kind === "work").length, 0);
 });
 
 test("a quiet failure does not block the tools behind it from draining", () => {
@@ -205,7 +210,7 @@ test("consecutive discovery calls fold into one live group, not separate rows", 
   ]);
   assert.equal(s.tail.length, 1, "one group block, not three rows");
   const g = s.tail[0]!;
-  assert.ok(g.kind === "tools" && g.items.length === 3 && !g.done);
+  assert.ok(g.kind === "work" && g.items.length === 3 && !g.done);
   assert.equal(s.committed.length, 0, "stays live until closed");
 });
 
@@ -216,7 +221,7 @@ test("toolEnd resolves a group item in place, group stays open", () => {
     { type: "toolEnd", toolId: "a", ok: true },
   ]);
   const g = s.tail[0]!;
-  assert.ok(g.kind === "tools");
+  assert.ok(g.kind === "work");
   assert.equal(g.items[0]!.status, "ok");
   assert.equal(g.items[1]!.status, "running");
   assert.equal(s.committed.length, 0);
@@ -230,7 +235,7 @@ test("the discovery group commits when the turn ends", () => {
   ]);
   assert.equal(s.tail.length, 0);
   assert.equal(s.committed.length, 1);
-  assert.ok(s.committed[0]!.kind === "tools" && s.committed[0]!.done);
+  assert.ok(s.committed[0]!.kind === "work" && s.committed[0]!.done);
 });
 
 test("narration closes the group; later reads start a fresh one", () => {
@@ -241,9 +246,9 @@ test("narration closes the group; later reads start a fresh one", () => {
     { type: "toolStart", toolId: "b", name: "Read", arg: "b.ts", group: true },
   ]);
   assert.equal(s.committed.length, 2);
-  assert.equal(s.committed[0]!.kind, "tools");
+  assert.equal(s.committed[0]!.kind, "work");
   assert.equal(s.committed[1]!.kind, "assistant");
-  assert.ok(s.tail[0]!.kind === "tools" && (s.tail[0]!).items.length === 1);
+  assert.ok(s.tail[0]!.kind === "work" && (s.tail[0]!).items.length === 1);
 });
 
 test("a mutating tool closes the group and keeps its own row with detail", () => {
@@ -253,7 +258,7 @@ test("a mutating tool closes the group and keeps its own row with detail", () =>
     { type: "toolStart", toolId: "w", name: "Update", arg: "a.ts" }, // no group flag → individual
   ]);
   assert.equal(s.committed.length, 1);
-  assert.equal(s.committed[0]!.kind, "tools");
+  assert.equal(s.committed[0]!.kind, "work");
   assert.equal(s.tail.length, 1);
   assert.ok(s.tail[0]!.kind === "tool" && s.tail[0]!.name === "Update");
 });
