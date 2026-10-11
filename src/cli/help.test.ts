@@ -49,6 +49,7 @@ test("the folded lines are explained, since nothing on one says how to open it",
   assert.match(text, /About the lines that fold/);
   assert.match(text, /Ran 3 commands, read 2 files/);
   assert.match(text, /Click\s+a line that ends in ▸ opens it/);
+  assert.match(text, /Tested 4 steps/);
   assert.match(text, /Ctrl\+O/);
   assert.match(text, /PageUp \/ wheel/);
 });

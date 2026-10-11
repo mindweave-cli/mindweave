@@ -3,6 +3,51 @@
 Notable changes to Mindweave. Dates are release dates.
 
 
+## v3.2.2 (2026-10-11): a UI test is one folded line, opened text sits on a shaded band, and a single call opens in one click
+
+The folded `Ran 3 commands` line from 3.2.0 now covers the last thing that still stacked up. When
+the agent tests an app, every look, click and typed word used to be a row of its own, each with its
+own list of the page's controls, so a test of seven steps was seven rows and a hundred lines. This
+release folds the steps into the same line, and gives everything that opens a cleaner look. It was
+tested on Windows. It has not been run on a real Mac yet.
+
+### Test steps fold into one line
+
+- **The steps of a test are one line.** `Tested 5 steps  ✓ ✓ ✓ ✓ ✗  ▸`, with one mark per step, so a
+  step that failed is red without opening anything. A step joins the line the same way a command
+  does, and it shares the line with commands and reads, in the order they began (`Ran 1 command,
+  tested 7 steps`). The agent saying something ends the line, and the next step starts a new one.
+- **A batch counts as the steps it holds.** A call that runs four steps in one go adds four.
+- **While a test runs the dot pulses**, the header says `Testing 2 of 5 steps`, and the step it is
+  on is named beside the count, so a long test does not look stuck behind a fold.
+- **Opened, it is one line per step**, with its mark. A step that failed says why, in red, under its
+  own line. Click a step to see what it did and what the page looked like.
+- **The page's controls are folded by kind.** Sixteen numbered lines of `[7] button "Grid view"`
+  became a few lines (`button  "Minimize" · "Maximize" · "Close" ...`). The numbers were for the
+  model, so the screen does not show them.
+- **A failed step no longer prints every control on the page.** The reason and anything the page
+  reported stay on the line, and the list of controls is a click away. Chats saved before this
+  release open the same way.
+
+### What opens looks different
+
+- **Opened text sits on a shaded band**, the same shade as a message you wrote, with no vertical
+  line. The line you opened is bright and the folded ones stay dim, so it is plain which is open.
+  Long lines wrap inside the band, and every row of it is the full width.
+- **One command or one step opens in one click.** A line that holds a single call used to need a
+  second click on the call inside it. It now opens straight onto what the call did. With two or more,
+  each still opens on its own.
+- **Output is made safe to draw.** A command that printed a carriage return (PowerShell does) broke
+  the band, because a terminal sends the cursor back to the left edge. Carriage returns, tabs and
+  other control characters are cleaned before the text is drawn.
+
+### Also
+
+- `/help` explains that tests fold too.
+- The core rebuilds the full text of an older write or edit when a chat is reopened, from the call
+  itself or from the file, so a row saved before its uncut text was kept can still be opened. The
+  desktop app uses this.
+
 ## v3.2.1 (2026-10-10): the session notes can no longer confuse the agent, Claude Haiku 5.5, and fixes to the new folded lines
 
 A real session went wrong in a way that was our doing, not the model's. Mindweave keeps notes

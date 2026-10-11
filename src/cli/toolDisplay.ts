@@ -84,6 +84,13 @@ const GROUPABLE = new Set(["read_file", "read_symbol"]);
  */
 const COMMANDS = new Set(["run_command", "shells", "kill_shell"]);
 
+/**
+ * Driving the app under test. Each step (a look, a click, text typed) used to be a row of its own,
+ * so a test of ten steps was ten rows each with its own list of controls. They fold into the work
+ * row with the commands and reads, as steps of one test.
+ */
+const TEST_STEPS = new Set(["ui"]);
+
 /** Whether a call is the agent working in the shell. */
 export function isCommandTool(name: string): boolean {
   return COMMANDS.has(name);
@@ -151,7 +158,7 @@ export function neverShown(name: string): boolean {
 
 /** Whether a tool call should fold into the discovery group rather than its own row. */
 export function isGroupable(name: string): boolean {
-  return GROUPABLE.has(name) || COMMANDS.has(name);
+  return GROUPABLE.has(name) || COMMANDS.has(name) || TEST_STEPS.has(name);
 }
 
 /**
@@ -315,7 +322,7 @@ export function toolDisplay(name: string, args: Record<string, unknown>): ToolDi
     const target = typeof args.target === "number" || str(args.target) ? `#${String(args.target)}` : str(args.name) ? `"${clip(str(args.name), 32)}"` : "";
     if (Array.isArray(args.steps) && args.steps.length) {
       const n = args.steps.length;
-      return { name: "Steps", arg: `${n} step${n === 1 ? "" : "s"}`, kind };
+      return { name: "Steps", arg: `${n} step${n === 1 ? "" : "s"}`, kind, covers: n };
     }
     if (action === "click") return { name: "Click", arg: target || undefined, kind };
     if (action === "hover") return { name: "Hover", arg: target || undefined, kind };

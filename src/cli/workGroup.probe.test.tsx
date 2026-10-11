@@ -331,3 +331,108 @@ test("a note the person needs still ends the row, so it is not buried inside it"
   const s = run([start("a", "ls"), end("a"), { type: "note", text: "shell #2 (npm run dev) finished with exit 1" }, start("b", "pwd"), end("b"), { type: "endTurn" }]);
   assert.equal(groups(s).length, 2);
 });
+
+// ── test steps: the agent driving the app under test ───────────────────────────────────────────
+
+const step = (id: string, name: string, arg?: string, covers?: number): Action => ({ type: "toolStart", toolId: id, name, ...(arg ? { arg } : {}), action: "screenshot", group: true, ...(covers ? { covers } : {}) });
+const stepEnd = (id: string, ok = true, summary = "Clicked [10] button.", detail = `${summary}\npage: 16 elements — 12 buttons`): Action => ({
+  type: "toolEnd",
+  toolId: id,
+  ok,
+  summary,
+  detail,
+  detailFull: `${detail}\n${Array.from({ length: 12 }, (_, i) => `[${i + 1}] button "b${i}"`).join("\n")}`,
+  detailKind: "shell",
+});
+
+test("the steps of a test are one row, and the header counts steps", () => {
+  const s = run([step("a", "Look", "port 9222"), stepEnd("a"), step("b", "Click", '"Add Game"'), stepEnd("b"), step("c", "Type", '"Test"'), stepEnd("c"), { type: "endTurn" }]);
+  assert.equal(groups(s).length, 1);
+  const g = groups(s)[0]!;
+  assert.equal(commandHeader(g.items, g.live).text, "Tested 3 steps");
+  assert.deepEqual(commandHeader(g.items, g.live).marks, ["ok", "ok", "ok"]);
+});
+
+test("a batch of steps counts as that many, and a failed step is red in the marks", () => {
+  const s = run([step("a", "Steps", "4 steps", 4), stepEnd("a"), step("b", "Click", '"Save"'), stepEnd("b", false, "Could not click [16]: it is gone."), { type: "endTurn" }]);
+  const g = groups(s)[0]!;
+  assert.equal(commandHeader(g.items, g.live).text, "Tested 5 steps");
+  assert.deepEqual(commandHeader(g.items, g.live).marks, ["ok", "error"]);
+});
+
+test("steps share the row with commands, in the order they began, and say what is working", () => {
+  const s = run([start("a", "npm run dev"), end("a"), step("b", "Look", "port 9222"), stepEnd("b"), step("c", "Click", '"Go"')]);
+  assert.equal(groups(s).length, 1);
+  assert.equal(commandHeader(groups(s)[0]!.items, true).text, "Ran 1 command, testing 1 of 2 steps");
+});
+
+test("the agent speaking ends the test row; testing again starts a new one", () => {
+  const s = run([step("a", "Look"), stepEnd("a"), { type: "token", delta: "Game added." }, { type: "sealNarration" }, step("b", "Click", '"Go"'), stepEnd("b")]);
+  assert.equal(groups(s).length, 2);
+});
+
+test("folded, a test is one line; opened, one line per step with a mark, and the reason a step failed in red", async () => {
+  const s = run([step("a", "Look", "port 9222"), stepEnd("a"), step("b", "Click", '"Save Game"'), stepEnd("b", false, "Could not click [22]: it is gone: the page changed since the last look."), { type: "endTurn" }]);
+  const items = groups(s)[0]!.items;
+  const folded = (await paint(items)).split("\n").filter((l) => l.trim());
+  assert.equal(folded.length, 1);
+  assert.ok(folded[0]!.includes("Tested 2 steps") && folded[0]!.includes("✓") && folded[0]!.includes("✗"), folded[0]);
+  const opened = await paint(items, { open: true });
+  assert.ok(opened.includes('Look port 9222') && opened.includes('Click "Save Game"'), opened);
+  assert.ok(opened.includes("Could not click [22]"), "why it failed is on the row");
+  assert.ok(!opened.includes('[1] button "b0"'), "the page's controls are a click away");
+});
+
+test("a step opened shows what it did and the whole page; steps are never counted as reads", () => {
+  const s = run([step("a", "Click", '"Go"'), stepEnd("a"), { type: "endTurn" }]);
+  const it = groups(s)[0]!.items[0]!;
+  assert.ok(openedLines(it).some((l) => l.startsWith("button") && l.includes('"b0"')), "the page is folded by kind");
+  assert.ok(openedLines(it)[0]!.startsWith("Clicked"));
+  assert.ok(!commandHeader([it], false).text.includes("Read"));
+});
+
+test("while a test works the dot pulses and the step it is on is named beside the count", async () => {
+  const running: Commands["items"] = [
+    { toolId: "a", name: "Look", kind: "screenshot", status: "ok", summary: "ok" },
+    { toolId: "b", name: "Click", arg: '"Add Game"', kind: "screenshot", status: "running", startedAt: Date.now() - 2000 },
+  ];
+  const text = await paint(running, { live: true });
+  assert.ok(text.includes('Testing 1 of 2 steps'), text);
+  assert.ok(text.includes('Click "Add Game"'), text);
+});
+
+// ── what opens is drawn on a shaded band of exact width ───────────────────────────────────────
+
+import { plainLine } from "./workLines.js";
+import { shadeRows } from "./components/WorkGroup.js";
+
+test("output with carriage returns and tabs is made safe, so a blank line cannot break the band", () => {
+  const CR = String.fromCharCode(13);
+  const TAB = String.fromCharCode(9);
+  assert.equal(plainLine(`a${CR}`), "a");
+  assert.equal(plainLine(CR), "");
+  assert.equal(plainLine(`a${TAB}b`), "a    b");
+  const it: Commands["items"][number] = { toolId: "a", name: "Run", arg: "x", kind: "run", status: "ok", open: true, detailKind: "shell", detail: `$ x${CR}\n${CR}\nCONNECT FAILED${CR}\n✓ 0 · 1ms` };
+  const rows = openedLines(it);
+  assert.ok(rows.every((l) => !l.includes(CR)), "no carriage return reaches the screen");
+  const shade = shadeRows(rows, 40);
+  assert.equal(new Set(shade.map((r) => (r.kind ?? "").length + r.text.length + r.pad)).size, 1, "every row of the band is the same width, the blank one too");
+});
+
+test("an opened test step reaches the screen with no control character in it", async () => {
+  const names = ["Minimize", "Maximize", "Close"];
+  const list = ['link "Library"', ...names.map((n) => `button "${n}"`)].map((l, i) => `  [${i + 1}] ${l}`).join("\n");
+  const item: Commands["items"][number] = { toolId: "a", name: "Click", arg: "#1", kind: "screenshot", status: "ok", open: true, summary: "ok", detail: "x", full: `Page · 4 elements\n${list}` };
+  const text = await paint([item], { open: true });
+  // eslint-disable-next-line no-control-regex
+  assert.ok(!/[\u0000-\u0008\u000b-\u001f]/.test(text), "a stray tab or separator would jump the cursor and leave the band half made");
+});
+
+test("a row of one command or one step opens straight onto what it did; two or more still open one at a time", async () => {
+  const one: Commands["items"] = [{ toolId: "a", name: "Run", arg: "ls", kind: "run", status: "ok", detailKind: "shell", detail: "$ ls\nfile.txt\n✓ 0 · 1ms" }];
+  const opened = await paint(one, { open: true });
+  assert.ok(opened.includes("file.txt"), "its output shows without a second click");
+  const two: Commands["items"] = [...one, { toolId: "b", name: "Run", arg: "pwd", kind: "run", status: "ok", detailKind: "shell", detail: "$ pwd\n/tmp\n✓ 0 · 1ms" }];
+  const both = await paint(two, { open: true });
+  assert.ok(!both.includes("file.txt") && !both.includes("/tmp"), "with two, each is still its own click");
+});

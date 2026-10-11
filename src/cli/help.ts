@@ -61,12 +61,13 @@ export function formatHelp(sections: readonly HelpSection[]): string {
     // The one thing on screen that is NOT what it looks like: a single line standing for many
     // calls. It is folded on purpose, and nothing on the line itself says how to open it.
     "About the lines that fold\n" +
-      "  What the agent runs and reads is folded into one line, such as\n" +
+      "  What the agent runs, reads and tests is folded into one line, such as\n" +
       "      Ran 3 commands, read 2 files  ✓ ✗ ✓  ▸\n" +
       "  The marks show how each command ended, so a failure is red without opening anything.\n" +
       "  Click the line to list them: each command with how it ended, each file with the part\n" +
       "  that was read (lines 410–551, or the whole file). Click a command to see what it\n" +
-      "  printed. A long output, a file written whole or an edit works the same way.",
+      "  printed. When it tests your app, each step is a line too (Tested 4 steps), and a\n" +
+      "  step that failed says why. A long output, a file written whole or an edit works the same way.",
     // Sub-agents are the one part of the machinery that visibly does something on
     // screen without explaining itself: a rail of tool calls appears under a worker
     // that is not the agent you were talking to. What it costs you and what it hands

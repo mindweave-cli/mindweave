@@ -1381,10 +1381,9 @@ export function pageLine(counts: Map<string, number>, off: number, total: number
 /**
  * What the user's row shows, and what opens behind it (pure).
  *
- * A run that went well is its steps, one row each, and one line about the page; the whole
- * result is behind a click. A run that did NOT go well, or where the page said something
- * (an error, a warning, a dialog), is shown whole, because that is exactly when what the
- * page looked like matters and a collapsed row would be hiding it.
+ * A run is its steps, one row each, and one line about the page; the whole result is behind
+ * a click. A run that did NOT go well keeps its reason on the row, and anything the page said
+ * (an error, a warning, a dialog) is on the row too. Only the list of every control folds away.
  */
 export function uiRowDetail(o: {
   did: string;
@@ -1398,9 +1397,11 @@ export function uiRowDetail(o: {
   // A single action that failed is said too: its reason is the one thing the row exists to show.
   const { total, off } = pageCounts(o.snap);
   const whole = uiOpenedText({ did: o.batch || o.failed ? o.did : "", list: o.fullList, total, off, reports: o.reports });
-  if (o.failed || o.errs > 0 || o.reports) return { detail: whole };
   const done = o.batch ? oneLineSteps(o.did) : o.did ? [o.did.split("\n").map((l) => l.trim()).filter(Boolean).join("\u21b5")] : [];
-  const detail = [...done, pageSummary(o.snap)].join("\n");
+  // What went wrong, and what the page said, stay on the row. The list of every control does not:
+  // it is the same sixteen lines for each failed step, and it is a click away.
+  const said = o.failed || o.errs > 0 || o.reports ? o.reports.split("\n").map((l) => l.trim()).filter(Boolean) : [];
+  const detail = [...done, ...said, pageSummary(o.snap)].join("\n");
   return { detail, detailFull: whole };
 }
 

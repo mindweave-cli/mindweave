@@ -133,7 +133,7 @@ export type Block =
       live?: boolean;
     }
   /**
-   * Everything the agent ran and read between two other things, as ONE folded row.
+   * Everything the agent ran, read and tested between two other things, as ONE folded row.
    *
    * Commands and reads are the agent's own working: most print nothing worth reading, and a
    * long conversation of them was a wall of rows. The row says how many commands ran and how
@@ -508,9 +508,9 @@ export function reduce(s: TranscriptState, a: Action): TranscriptState {
       if (block && block.kind === "work") {
         // A read has no output to show, and a call that is not running keeps its result.
         const target = block.items.find((it) => it.toolId === a.toolId);
-        if (!target || target.status !== "running" || target.kind === "read") return s;
+        if (!target || target.status !== "running" || target.kind === "read" || target.kind === "screenshot") return s;
         return patchTail(s, blockId, {
-          items: block.items.map((it) => (it.toolId === a.toolId && it.status === "running" && it.kind !== "read" ? { ...it, detail: a.text, detailKind: "shell" as const } : it)),
+          items: block.items.map((it) => (it.toolId === a.toolId && it.status === "running" && it.kind !== "read" && it.kind !== "screenshot" ? { ...it, detail: a.text, detailKind: "shell" as const } : it)),
         } as Partial<Block>);
       }
       if (!block || block.kind !== "tool" || block.done) return s;

@@ -45,7 +45,10 @@ export { rewindPoints, rewindTo, pasteSlot, type RewindPoint, type RewindResult,
 import { wrapPastedText, collapsePastes } from "../memory/pastedText.js";
 import { manifestForModel } from "../drivers/registry.js";
 import { stat, readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { readFileSync, statSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { rebuildFull, writtenFromDisk } from "../tools/rebuildDetail.js";
+export { shellNote } from "../cli/shellNotes.js";
 import { NOTES_FILE } from "../memory/projectNotes.js";
 import { writeFileAtomic } from "../tools/atomicWrite.js";
 import { shownText, withoutClearedNote } from "../memory/compaction.js";
@@ -490,7 +493,20 @@ export function replayHistory(session: Session): ReplayEvent[] {
         ok: !entry.isError,
         summary: entry.summary ?? withoutClearedNote(entry.content),
         detail: entry.detail,
-        ...(entry.detailFull ? { detailFull: entry.detailFull } : {}),
+        ...(() => {
+          // A row saved before its uncut text was kept is put back together from the call itself, or from
+          // the file for a write whose text was cleared: otherwise it can only say "N more lines".
+          let full = entry.detailFull ?? rebuildFull(call?.name, callArgs, entry);
+          if (!full && call?.name === "write_file" && typeof callArgs?.path === "string") {
+            try {
+              const abs = resolve(session.cwd, callArgs.path);
+              if (statSync(abs).size < 2_000_000) full = writtenFromDisk(entry.detail, readFileSync(abs, "utf8"));
+            } catch {
+              // gone or unreadable: the row stays as it was saved
+            }
+          }
+          return full ? { detailFull: full } : {};
+        })(),
         detailKind: entry.detailKind,
         ...(entry.imagePaths?.length ? { images: entry.imagePaths } : {}),
         ...(entry.web ? { web: entry.web } : {}),

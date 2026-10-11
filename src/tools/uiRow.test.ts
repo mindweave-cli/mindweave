@@ -77,14 +77,18 @@ test("a look at a page, with nothing done, is the page line alone", () => {
   assert.ok(r.detailFull);
 });
 
-test("a failure, or anything the page itself reported, is shown whole and not folded away", () => {
+test("a failure keeps its reason on the row, and what the page said, but the control list folds away", () => {
   const snap = page();
   const failed = uiRowDetail({ did: "Could not click it", batch: false, fullList: controlList(snap), reports: "", snap, failed: true, errs: 0 });
-  assert.equal(failed.detailFull, undefined, "nothing is hidden behind a click");
-  assert.ok(failed.detail.split("\n").length >= 19, "the page list is right there");
+  assert.ok(failed.detailFull, "the whole result is behind a click");
+  const rows = failed.detail.split("\n");
+  assert.equal(rows.length, 2, "the reason and one line about the page");
+  assert.equal(rows[0], "Could not click it");
+  assert.match(rows[1]!, /^page: 19 elements/);
   const reported = uiRowDetail({ did: DID, batch: true, fullList: controlList(snap), reports: "The page reported 1 error", snap, failed: false, errs: 1 });
-  assert.equal(reported.detailFull, undefined);
-  assert.ok(reported.detail.includes("The page reported 1 error"));
+  assert.ok(reported.detailFull);
+  assert.ok(reported.detail.includes("The page reported 1 error"), "what the page said is on the row");
+  assert.ok(reported.detail.split("\n").length < 8, "and the list of controls is not");
 });
 
 // ── rows saved before the short form existed ─────────────────────────────────
@@ -125,14 +129,15 @@ test("a UI test saved before the short form comes back as the short form, with t
   assert.equal(open.filter((l) => /^\s+\[\d+\] /.test(l)).length, 7);
 });
 
-test("an old row that failed, or that had the page's own reports, is shown whole but in the same two parts", () => {
+test("an old row that failed, or that had the page's own reports, keeps those on the row and folds the list", () => {
   const failed = compactUiDetail(OLD_SAVED, true)!;
-  assert.equal(failed.detailFull, undefined, "nothing is folded away");
-  assert.ok(failed.detail.startsWith("Steps \u00b7 3 of 3 ran\n"), "the flat block is now titled");
+  assert.ok(failed.detailFull, "the whole text is behind a click");
+  assert.ok(failed.detail.split("\n").length <= 5, "steps and the page line, not every control");
   const reported = compactUiDetail(`${OLD_SAVED}\n\nThe page reported 1 error since the last step:\n  - boom`, false)!;
-  assert.equal(reported.detailFull, undefined);
-  assert.ok(reported.detail.includes("\n\nPage reported\n"), "the page's own words get their own title");
-  assert.ok(reported.detail.includes("  The page reported 1 error"));
+  assert.ok(reported.detailFull);
+  assert.ok(reported.detail.includes("The page reported 1 error"));
+  assert.ok(reported.detail.includes("- boom"));
+  assert.ok(!reported.detail.includes('[1] tab "Writing"'), "the control list is not on the row");
   // Not a control list at all: left exactly as it was.
   assert.equal(compactUiDetail("No controls could be read here. Some apps expose nothing.", false), undefined);
   assert.equal(compactUiDetail("", false), undefined);

@@ -24,8 +24,9 @@ import { PulseDot } from "./PulseDot.js";
 import { Elapsed, MORE_MARKER, OUTCOME, lastOutcome } from "./ToolLine.js";
 import { commandLabel } from "../commandLabel.js";
 import { registerExpandable, itemHit } from "../expandHits.js";
-import { BAD, GOOD } from "../theme.js";
-import { isRead, readRows, workHeader } from "../workLines.js";
+import { BAD, GOOD, USER_BG, USER_FG } from "../theme.js";
+import { visibleWidth, wrapAnsi } from "../wrap.js";
+import { FOLD_SEP, foldControls, plainLine, isRead, isStep, readRows, stepLabel, stepReason, workHeader } from "../workLines.js";
 import type { WorkItem } from "../transcript.js";
 
 const DOT = "●";
@@ -56,7 +57,12 @@ export function verdictLine(it: WorkItem): string | undefined {
 /** What a command left to read once opened (pure): its command line, its output, no verdict. */
 export function openedLines(it: WorkItem): string[] {
   const source = it.full ?? it.detail;
-  const lines = source ? source.split("\n") : [];
+  // A test step opens on everything it said: what it did, and the whole list of the page.
+  if (isStep(it)) {
+    const lines = source ? source.split(String.fromCharCode(10)).map(plainLine).filter((l) => !MORE_MARKER.test(l)) : [];
+    return lines.length > 0 ? foldControls(lines).map((l) => (l.includes("\t") ? l : l.trim())) : [it.summary?.trim() || "(nothing more to show)"];
+  }
+  const lines = source ? source.split("\n").map(plainLine) : [];
   const verdict = it.detailKind === "shell" ? lastOutcome(lines) : -1;
   const body = lines
     .filter((_, i) => i !== verdict)
@@ -91,7 +97,7 @@ function listRows(items: WorkItem[], room: number): Row[] {
   return items.flatMap((it, index): Row[] =>
     isRead(it)
       ? readRows(it).map((r, j) => ({ key: `${it.toolId}.${j}`, index, item: it, label: r.label, range: r.range }))
-      : [{ key: it.toolId, index, item: it, label: commandName(it, room) }],
+      : [{ key: it.toolId, index, item: it, label: isStep(it) ? stepLabel(it) : commandName(it, room) }],
   );
 }
 
@@ -119,6 +125,8 @@ export function WorkGroup({
   const head = commandHeader(items, live);
   const running = items.filter((it) => it.status === "running" && it.startedAt !== undefined);
   const since = running.length > 0 ? Math.min(...running.map((it) => it.startedAt!)) : undefined;
+  // A test that is working says which step it is on, so a long one does not look stuck behind a fold.
+  const onStep = head.working && !open ? items.filter((it) => isStep(it) && it.status === "running").pop() : undefined;
 
   return (
     <Box marginTop={tightTop ? 0 : 1} flexDirection="column">
@@ -141,6 +149,11 @@ export function WorkGroup({
             ))}
           </Box>
         ) : null}
+        {onStep ? (
+          <Box flexShrink={0}>
+            <Text dimColor>{"  " + stepLabel(onStep).slice(0, Math.max(12, columns - head.text.length - 24))}</Text>
+          </Box>
+        ) : null}
         {head.working && since !== undefined ? (
           <Box flexShrink={0}>
             <Elapsed since={since} />
@@ -155,10 +168,41 @@ export function WorkGroup({
   );
 }
 
+/** One row of the shaded band: an optional dim kind, the words, and the spaces that fill it. */
+interface ShadeRow {
+  kind?: string;
+  text: string;
+  pad: number;
+}
+
+/**
+ * The opened text as rows of exact width (pure). A line is wrapped to fit; a `kind<SEP>names` line
+ * keeps its kind in a column of its own, and what wraps lines up under the names.
+ */
+export function shadeRows(body: string[], width: number): ShadeRow[] {
+  const inner = Math.max(6, width - 2);
+  const kindWidth = Math.min(14, Math.max(0, ...body.filter((l) => l.includes(FOLD_SEP)).map((l) => l.split(FOLD_SEP)[0]!.length)) + 2);
+  const rows: ShadeRow[] = [];
+  for (const line of body) {
+    if (line.includes(FOLD_SEP)) {
+      const [kind, names] = line.split(FOLD_SEP) as [string, string];
+      wrapAnsi(names, Math.max(4, inner - kindWidth)).forEach((part, i) => {
+        const text = (i === 0 ? "" : " ".repeat(kindWidth)) + part;
+        rows.push({ ...(i === 0 ? { kind: kind.padEnd(kindWidth) } : {}), text: i === 0 ? part : text, pad: Math.max(0, inner - (i === 0 ? kindWidth : kindWidth) - visibleWidth(part)) });
+      });
+    } else {
+      for (const part of wrapAnsi(line === "" ? " " : line, inner)) rows.push({ text: part, pad: Math.max(0, inner - visibleWidth(part)) });
+    }
+  }
+  return rows;
+}
+
 function WorkList({ id, items, columns, live, hoveredItem }: { id: number; items: WorkItem[]; columns: number; live?: boolean; hoveredItem: number }) {
   // The verdict column sits at the right of what the longest name needs, so on a wide
   // terminal the verdicts stay beside their commands instead of drifting to the far edge.
   const room = Math.max(8, columns - 4 - VERDICT_WIDTH - 4);
+  // A row of ONE call opens straight onto what that call did: nothing is behind a second click.
+  const single = items.length === 1;
   const rows = listRows(items, room);
   const labelWidth = Math.min(room, Math.max(...rows.map((r) => r.label.length)) + 2);
   return (
@@ -167,14 +211,19 @@ function WorkList({ id, items, columns, live, hoveredItem }: { id: number; items
         const it = row.item;
         const last = i === rows.length - 1;
         const reading = isRead(it);
+        const step = isStep(it);
         const hot = !reading && hoveredItem === row.index;
         const running = it.status === "running";
-        const verdict = reading ? undefined : verdictLine(it);
+        const verdict = reading || step ? undefined : verdictLine(it);
         const shown = reading
           ? row.range ?? ""
           : running
             ? ""
-            : verdict ?? (it.status === "error" ? "✗" : it.summary ? it.summary : "✓");
+            : step
+              ? it.status === "error" ? "✗" : "✓"
+              : verdict ?? (it.status === "error" ? "✗" : it.summary ? it.summary : "✓");
+        // Why a step failed, under it, in red: the one thing a folded failure must still say.
+        const reason = step && it.status === "error" ? stepReason(it) : "";
         // Words that do not fit beside a long command go on a line of their own under it. Squeezed
         // into what is left of the line they broke across rows ("Running as shell" / "#1") and ran
         // into the end of the command.
@@ -184,17 +233,21 @@ function WorkList({ id, items, columns, live, hoveredItem }: { id: number; items
         const outcomeOnly = !reading && (OUTCOME.test(shown) || shown === "");
         const beside = below ? "" : shown;
         const failedRead = reading && it.status === "error";
-        const body = !reading && it.open ? openedLines(it) : [];
-        const bodyWidth = Math.max(8, columns - 8);
+        const body = !reading && (it.open || single) ? openedLines(it) : [];
+        // The one being read stands out: bright, with its text on a shaded band under it. The ones
+        // that are folded stay dim, so it is plain which is open.
+        const isOpen = body.length > 0;
+        const bodyWidth = Math.max(8, columns - 4);
+        const shade = isOpen ? shadeRows(body, columns - 4) : [];
         const verdictBox = outcomeOnly || below ? VERDICT_WIDTH : Math.max(VERDICT_WIDTH, room2);
         // Only a command opens; a read has nothing behind its line to show.
-        const registered = reading ? undefined : (node: DOMElement | null) => registerExpandable(itemHit(id, row.index), node);
+        const registered = reading || single ? undefined : (node: DOMElement | null) => registerExpandable(itemHit(id, row.index), node);
         return (
           <Box key={row.key} flexDirection="column" ref={registered}>
             <Box flexDirection="row" width={columns}>
-              <Text dimColor={!hot}>{last ? "  └ " : "  ├ "}</Text>
+              <Text>{"  "}</Text>
               <Box width={labelWidth} paddingRight={2} flexShrink={0}>
-                <Text bold={hot} dimColor={!hot} wrap="truncate-end">{row.label}</Text>
+                <Text bold={hot || isOpen} dimColor={!hot && !isOpen} wrap="truncate-end">{row.label}</Text>
               </Box>
               <Box width={verdictBox} flexShrink={0}>
                 {running ? (
@@ -212,25 +265,40 @@ function WorkList({ id, items, columns, live, hoveredItem }: { id: number; items
                   </Text>
                 )}
               </Box>
-              {reading ? null : <Text dimColor={!hot} bold={hot}>{it.open ? " ▾" : " ▸"}</Text>}
+              {reading || single ? null : <Text dimColor={!hot && !isOpen} bold={hot || isOpen}>{it.open ? " ▾" : " ▸"}</Text>}
             </Box>
             {below ? (
               <Box flexDirection="row" width={columns}>
-                <Text dimColor={!hot}>{last && !body.length ? "      " : "  │   "}</Text>
+                <Text>{"    "}</Text>
                 <Box width={bodyWidth}>
                   <Text dimColor wrap="wrap">{below}</Text>
                 </Box>
               </Box>
             ) : null}
-            {body.map((line, j) => (
-              <Box key={j} flexDirection="row" width={columns}>
-                <Text dimColor={!hot}>{last ? "      " : "  │   "}</Text>
-                <Text dimColor={!hot}>{"│ "}</Text>
+            {reason ? (
+              <Box flexDirection="row" width={columns}>
+                <Text>{"    "}</Text>
                 <Box width={bodyWidth}>
-                  <Text dimColor wrap="wrap">{line === "" ? " " : line}</Text>
+                  <Text color={BAD} wrap="wrap">{reason}</Text>
                 </Box>
               </Box>
-            ))}
+            ) : null}
+            {isOpen ? (
+              // What it printed sits on a shaded band, the way a message the user wrote does.
+              <Box flexDirection="column" width={columns}>
+                {shade.map((r, j) => (
+                  <Box key={j} flexDirection="row" width={columns}>
+                    <Text>{"  "}</Text>
+                    <Text backgroundColor={USER_BG} color={USER_FG}>
+                      {" "}
+                      {r.kind !== undefined ? <Text dimColor>{r.kind}</Text> : null}
+                      {r.text}
+                      {" ".repeat(r.pad)}{" "}
+                    </Text>
+                  </Box>
+                ))}
+              </Box>
+            ) : null}
           </Box>
         );
       })}

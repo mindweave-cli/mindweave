@@ -78,7 +78,7 @@ test("a batch reads as one row: the summary lists its steps, and the row says ho
     'click "Add", type "Title"'.replace(/^/, "2 steps: "),
   );
   assert.match(batchSummary([{ action: "click", ok: true }, { action: "click", ok: false }], true), /^1 of 2 steps:/);
-  assert.deepEqual(toolDisplay("ui", { steps: [{ action: "click" }, { action: "click" }] }), { name: "Steps", arg: "2 steps", kind: "screenshot" });
+  assert.deepEqual(toolDisplay("ui", { steps: [{ action: "click" }, { action: "click" }] }), { name: "Steps", arg: "2 steps", kind: "screenshot", covers: 2 });
   assert.deepEqual(toolDisplay("ui", { action: "click", name: "Save" }), { name: "Click", arg: '"Save"', kind: "screenshot" });
   assert.deepEqual(toolDisplay("ui", { action: "wait", text: "Saved" }), { name: "Wait", arg: '"Saved"', kind: "screenshot" });
   assert.deepEqual(toolDisplay("ui", { action: "resize", width: 390, height: 844 }), { name: "Resize", arg: "390×844", kind: "screenshot" });

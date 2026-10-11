@@ -142,9 +142,9 @@ export function compactUiDetail(detail: string | undefined, isError: boolean | u
   const before = lines.slice(0, first).join("\n").trim();
   const reports = after.join("\n").trim();
   const whole = uiOpenedText({ did: before, list: listed.join("\n"), total, off, reports });
-  if (isError || reports) return { detail: whole };
   const steps = before.startsWith("Ran ") ? oneLineSteps(before) : before ? [before.split("\n").map((l) => l.trim()).filter(Boolean).join("\u21b5")] : [];
+  const said = isError || reports ? reports.split("\n").map((l) => l.trim()).filter(Boolean) : [];
   const kept = sessionDetailFull("", whole);
   if (!kept) return undefined;
-  return { detail: [...steps, pageLine(counts, off, total)].join("\n"), detailFull: kept };
+  return { detail: [...steps, ...said, pageLine(counts, off, total)].join("\n"), detailFull: kept };
 }

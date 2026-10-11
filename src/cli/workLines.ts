@@ -14,6 +14,21 @@ export function isRead(it: WorkItem): boolean {
   return it.kind === "read";
 }
 
+/** Whether this call was a step of a UI test: a look at the app, a click, something typed. */
+export function isStep(it: WorkItem): boolean {
+  return it.kind === "screenshot";
+}
+
+/** How many steps the calls in this row took: a batch is one call that carries several. */
+export function stepCount(items: WorkItem[]): number {
+  return items.filter(isStep).reduce((n, it) => n + Math.max(1, it.covers ?? 1), 0);
+}
+
+/** Which of the three kinds of work a call is. */
+function workKind(it: WorkItem): "run" | "read" | "step" {
+  return isRead(it) ? "read" : isStep(it) ? "step" : "run";
+}
+
 /** The files one read call took, by name: a list call names each, any other names one. */
 export function filesOf(it: WorkItem): string[] {
   if (!it.arg) return [];
@@ -33,26 +48,27 @@ export function fileCount(items: WorkItem[]): number {
 }
 
 /**
- * What the header says (pure): commands and files each with their own tense and count, in the
- * order they began.
+ * What the header says (pure): commands, files and test steps each with their own tense and count,
+ * in the order they began.
  *
  * While some of a kind are still working and some are done, the count says so: "Running 1 of 3
  * commands", not "Running 3 commands" above a mark that shows two of them finished.
  */
 export function workHeader(items: WorkItem[], live: boolean | undefined): { text: string; working: boolean } {
-  const order: ("run" | "read")[] = [];
+  const order: ("run" | "read" | "step")[] = [];
   for (const it of items) {
-    const k = isRead(it) ? "read" : "run";
+    const k = workKind(it);
     if (!order.includes(k)) order.push(k);
   }
   const parts = order.map((k, i) => {
-    const mine = items.filter((it) => (k === "read") === isRead(it));
+    const mine = items.filter((it) => workKind(it) === k);
     const going = !live ? [] : mine.filter((it) => it.status === "running");
-    const n = k === "read" ? fileCount(mine) : mine.length;
-    const nGoing = k === "read" ? fileCount(going) : going.length;
-    const noun = k === "read" ? (n === 1 ? "file" : "files") : n === 1 ? "command" : "commands";
+    const size = (list: WorkItem[]) => (k === "read" ? fileCount(list) : k === "step" ? stepCount(list) : list.length);
+    const n = size(mine);
+    const nGoing = size(going);
+    const noun = k === "read" ? (n === 1 ? "file" : "files") : k === "step" ? (n === 1 ? "step" : "steps") : n === 1 ? "command" : "commands";
     const count = going.length > 0 && nGoing < n ? `${nGoing} of ${n}` : `${n}`;
-    const verb = going.length > 0 ? (k === "read" ? "Reading" : "Running") : k === "read" ? "Read" : "Ran";
+    const verb = going.length > 0 ? (k === "read" ? "Reading" : k === "step" ? "Testing" : "Running") : k === "read" ? "Read" : k === "step" ? "Tested" : "Ran";
     const text = `${verb} ${count} ${noun}`;
     return i === 0 ? text : text.charAt(0).toLowerCase() + text.slice(1);
   });
@@ -82,4 +98,52 @@ export function readRows(it: WorkItem): { label: string; range: string }[] {
   const range = rangeText(it);
   if (files.length === 0) return [{ label: it.name.toLowerCase(), range }];
   return files.map((f) => ({ label: f, range }));
+}
+
+/** What a step is called on its line: "Click \"Add Game\"", "Look port 9222" (pure). */
+export function stepLabel(it: WorkItem): string {
+  return it.arg ? `${it.name} ${it.arg}` : it.name;
+}
+
+/** Why a step failed, in one line (pure): what the result said first. */
+export function stepReason(it: WorkItem): string {
+  const first = (it.summary ?? it.detail ?? "").split(String.fromCharCode(10)).map((l) => l.trim()).find(Boolean) ?? "";
+  return first.replace(/^Error:\s*/, "");
+}
+
+/** Splits a control kind from its names on a folded line. A control character real output never holds. */
+export const FOLD_SEP = String.fromCharCode(31);
+
+/** What a command printed, made safe to draw (pure): no carriage returns (they send the cursor back to the
+ *  left edge and break the band), tabs as spaces, no other control characters. */
+export function plainLine(line: string): string {
+  const kept = line.split(String.fromCharCode(13)).join("").split(String.fromCharCode(9)).join("    ");
+  return Array.from(kept).filter((c) => (c.charCodeAt(0) >= 32 || c.charCodeAt(0) === 27) && c.charCodeAt(0) !== 127).join("");
+}
+
+/** A control as the page list prints it: `[7] button "Grid view"`. */
+const CONTROL = /^\s*\[\d+\]\s+(.+?)\s+("[^"]*".*)$/;
+
+/**
+ * A page's list of controls, folded by kind (pure): sixteen numbered lines become a line per kind,
+ * `kind<TAB>name · name · name`. The numbers are for the model; a person reads what is there.
+ * Lines that are not controls (the headings, what a step did) are left as they are.
+ */
+export function foldControls(lines: string[]): string[] {
+  const groups = new Map<string, string[]>();
+  const out: (string | { kind: string })[] = [];
+  for (const line of lines) {
+    const m = CONTROL.exec(line);
+    if (!m) {
+      out.push(line);
+      continue;
+    }
+    const kind = m[1]!;
+    if (!groups.has(kind)) {
+      groups.set(kind, []);
+      out.push({ kind });
+    }
+    groups.get(kind)!.push(m[2]!);
+  }
+  return out.map((o) => (typeof o === "string" ? o : `${o.kind}${FOLD_SEP}${groups.get(o.kind)!.join(" · ")}`));
 }
