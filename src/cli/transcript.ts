@@ -23,6 +23,7 @@ import { sanitizeStreamText } from "../drivers/registry.js";
 import type { ToolKind } from "./toolDisplay.js";
 import type { CompactionReport } from "./compaction.js";
 import { contentLines } from "../tools/detail.js";
+import type { SubagentOutcome } from "../tools/subagentOutcome.js";
 
 export type ToolStatus = "running" | "ok" | "error";
 
@@ -79,6 +80,18 @@ export interface AgentEntry {
   summary?: string;
   /** Its own tool calls, streamed live as compact rail items. */
   items: ToolGroupItem[];
+  /** The task in full, for when the entry is opened. `task` is the short label. */
+  full?: string;
+  /** When it was dispatched, and when it reported back: the time it took. */
+  startedAt?: number;
+  endedAt?: number;
+  /** How it ended in words, and as a word to colour ("pass", "partial", "fail", "unknown"). */
+  headline?: string;
+  verdict?: SubagentOutcome;
+  /** How many steps it took, as it counted them. */
+  steps?: number;
+  /** Is it opened to show the task, the result and what it did? A click flips it. */
+  open?: boolean;
 }
 
 export type Block =
@@ -219,10 +232,10 @@ export type Action =
     }
   // A sub-agent's nested lifecycle: a start opens its rail block, its tool calls fold
   // in as rail items (subTool*), and end collapses it to a summary. Keyed by agentId.
-  | { type: "subagentStart"; agentId: string; task: string; readOnly: boolean }
+  | { type: "subagentStart"; agentId: string; task: string; readOnly: boolean; full?: string }
   | { type: "subToolStart"; agentId: string; toolId: string; name: string; arg?: string; action?: ToolKind }
   | { type: "subToolEnd"; agentId: string; toolId: string; ok: boolean; summary?: string }
-  | { type: "subagentEnd"; agentId: string; ok: boolean; summary?: string }
+  | { type: "subagentEnd"; agentId: string; ok: boolean; summary?: string; headline?: string; verdict?: SubagentOutcome; steps?: number }
   // The turn is over: every tool row still marked `live` drops to its past-tense
   // verb. Nothing else about the rows changes — see endTurn's case below.
   | { type: "endTurn" }
@@ -267,7 +280,7 @@ export function lastExpandable(s: TranscriptState): number | null {
   for (const list of [s.tail, s.committed]) {
     for (let i = list.length - 1; i >= 0; i--) {
       const b = list[i]!;
-      if ((b.kind === "tool" && b.full) || b.kind === "work") return b.id;
+      if ((b.kind === "tool" && b.full) || b.kind === "work" || b.kind === "subagent") return b.id;
     }
   }
   return null;
@@ -575,14 +588,18 @@ export function reduce(s: TranscriptState, a: Action): TranscriptState {
           ? ({ ...b, expanded: !b.expanded } as Block)
           : b.kind === "work" && b.id === a.id
             ? ({ ...b, open: !b.open } as Block)
-            : b;
+            : b.kind === "subagent" && b.id === a.id
+              ? ({ ...b, agents: b.agents.map((ag) => ({ ...ag, open: !b.agents.some((x) => x.open) })) } as Block)
+              : b;
       return { ...s, committed: s.committed.map(flip), tail: s.tail.map(flip) };
     }
     case "toggleItem": {
       const flip = (b: Block): Block =>
         b.kind === "work" && b.id === a.id && b.items[a.index]
           ? ({ ...b, items: b.items.map((it, i) => (i === a.index ? { ...it, open: !it.open } : it)) } as Block)
-          : b;
+          : b.kind === "subagent" && b.id === a.id && b.agents[a.index]
+            ? ({ ...b, agents: b.agents.map((ag, i) => (i === a.index ? { ...ag, open: !ag.open } : ag)) } as Block)
+            : b;
       return { ...s, committed: s.committed.map(flip), tail: s.tail.map(flip) };
     }
     case "endTurn": {
@@ -641,6 +658,8 @@ export function reduce(s: TranscriptState, a: Action): TranscriptState {
         readOnly: a.readOnly,
         status: "running",
         items: [],
+        startedAt: Date.now(),
+        ...(a.full ? { full: a.full } : {}),
       };
       // A worker starting while another is still going JOINS that block rather than
       // opening its own. Read-only workers fan out in parallel, and as separate blocks
@@ -679,6 +698,10 @@ export function reduce(s: TranscriptState, a: Action): TranscriptState {
         ...ag,
         status: a.ok ? "ok" : "error",
         summary: a.summary,
+        endedAt: Date.now(),
+        ...(a.headline ? { headline: a.headline } : {}),
+        ...(a.verdict ? { verdict: a.verdict } : {}),
+        ...(a.steps !== undefined ? { steps: a.steps } : {}),
       }));
       const blk = findAgentBlock(next, a.agentId);
       if (!blk) return next;

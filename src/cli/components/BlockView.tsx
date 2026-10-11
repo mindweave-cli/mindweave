@@ -139,10 +139,12 @@ function BlockViewInner({ block, columns, tightTop, hovered, hoveredItem }: { bl
     case "subagent":
       return (
         <SubagentView
+          id={block.id}
           agents={block.agents}
           done={block.done}
           columns={columns}
           tightTop={tightTop}
+          hoveredItem={hoveredItem}
         />
       );
 

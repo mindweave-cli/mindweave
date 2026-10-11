@@ -21,7 +21,7 @@ import { summarizeTask, taskLimitReason, type TaskLimits } from "./pricing.js";
 import { limitGateReason, noteUsage, refreshUsageLimits, takeLimitWarnings } from "./usageLimits.js";
 import { addTurn, emptySpend } from "./spend.js";
 import { mutationNeedsVerification, isVerification, reScopeCheck, isBackgroundPollStep, stepFailureSignature, repeatFailureStep, repeatFailureNudge, failedActionLabel, firstErrorLine, sameFileEditCounts, overusedSingleEdits, batchEditNudge, narrationFault, narrationNudge, unknownToolError, replyFault, replyRewrite, VERIFY_NUDGE } from "./verify.js";
-import { guardOptions, GUARD_REFUSAL, GUARD_REFUSAL_INPUT, guardRefusalWith, guardQuestion, guardDetail, interpretGuardChoice } from "./guard.js";
+import { guardOptions, GUARD_NO_ONE_TO_ASK, GUARD_REFUSAL, GUARD_REFUSAL_INPUT, guardRefusalWith, guardQuestion, guardDetail, interpretGuardChoice } from "./guard.js";
 import { readFreeText } from "../tools/approval.js";
 import { withoutInvisible } from "../tools/invisible.js";
 import { askPendingServers } from "../mcp/projectApproval.js";
@@ -40,6 +40,8 @@ import { uiLiveState } from "../tools/ui.js";
 import { isAgenticOnlyRefusal, withAuxModel } from "./auxModel.js";
 import { marathonBlock } from "./marathonPrompt.js";
 import { basePrompt } from "./prompt.js";
+import type { SubagentOutcome } from "../tools/subagentOutcome.js";
+import { VERIFIER_EXTRA_TOOLS } from "../tools/verifierTools.js";
 import { basename } from "node:path";
 import { randomUUID } from "node:crypto";
 import { promises as fsp, statSync } from "node:fs";
@@ -507,8 +509,8 @@ export type EngineEvent =
   // A spawned sub-agent's lifecycle: `start` when it's dispatched (with its task +
   // read-only flag), `end` when it reports back. Between them, its own tool events
   // arrive tagged with this `id`, so the UI can render a live nested rail per worker.
-  | { type: "subagent"; phase: "start"; id: string; task: string; readOnly: boolean }
-  | { type: "subagent"; phase: "end"; id: string; summary: string; error: boolean }
+  | { type: "subagent"; phase: "start"; id: string; task: string; readOnly: boolean; /** The task in full (up to 600 characters), for a front end that opens it. `task` stays the short label. */ taskFull?: string }
+  | { type: "subagent"; phase: "end"; id: string; summary: string; error: boolean; /** How it ended, in words ("Could not fully verify · 8 checks"). */ headline?: string; /** The same, as a word a front end can colour. */ verdict?: SubagentOutcome; /** How many steps it took. */ steps?: number }
   | { type: "usage"; promptTokens: number; completionTokens: number; totalTokens: number; cacheHitTokens: number; cacheMissTokens: number; cacheWriteTokens?: number }
   /** The lead agent's task list, whole, each time it is rewritten (todo_write). The list
    *  itself never renders as a chat row (see the tool); this is the structured copy a
@@ -1239,6 +1241,8 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
       ...toolSchemas({
         planMode: session.toolContext.planMode ?? false,
         readOnlyOnly: session.toolContext.readOnlyTools,
+        // A verifier has to run what it checks: the command tool and the app driver come back for it.
+        ...(session.toolContext.verifierTools ? { alsoAllow: VERIFIER_EXTRA_TOOLS } : {}),
         // Lets `relevantWhen` tools (use_skill) check the live session, so a tool with
         // nothing to act on is not advertised and a skill created mid-session brings
         // it back next turn.
@@ -1854,7 +1858,7 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
         };
       }
       // A read-only sub-agent: same schema-hiding + refusal, without the plan framing.
-      if (session.toolContext.readOnlyTools && !tool.readOnly) {
+      if (session.toolContext.readOnlyTools && !tool.readOnly && !(session.toolContext.verifierTools && VERIFIER_EXTRA_TOOLS.has(tool.name))) {
         return {
           call,
           output: `Refused: '${call.name}' changes files or state, but this sub-agent is read-only. Report your findings instead.`,
@@ -1930,7 +1934,7 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
           const said = choice ? readFreeText(choice) : null;
           return {
             call,
-            output: said ? guardRefusalWith(said) : GUARD_REFUSAL,
+            output: said ? guardRefusalWith(said) : ctx.requestApproval ? GUARD_REFUSAL : GUARD_NO_ONE_TO_ASK,
             summary: `declined ${call.name}`,
             isError: true,
             detail: undefined as string | undefined,

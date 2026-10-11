@@ -215,3 +215,25 @@ test("the launch recipe keeps a hidden app drawing, so it can still be watched",
   assert.match(ui.description, /disable-backgrounding-occluded-windows/);
   assert.match(ui.description, /show: true/);
 });
+
+// ── a port is a number, not an app ───────────────────────────────────────────────────────────────
+
+import { ownershipFrom } from "./uiHide.js";
+import { foreignNote } from "./ui.js";
+
+test("the program behind a port is judged this process's own only when its ancestry reaches this process", () => {
+  assert.equal(ownershipFrom("NOTOURS\r\n"), false, "another application's");
+  assert.equal(ownershipFrom("MOVED\t12345\t-8\t20\nHIDDEN\n"), true, "a program we started, and moved");
+  assert.equal(ownershipFrom("HIDDEN\n"), true);
+  assert.equal(ownershipFrom("NONE\n"), undefined, "nothing was listening");
+  assert.equal(ownershipFrom(""), undefined, "the script said nothing: not claimed either way");
+});
+
+test("an app that is not ours is named as such, with the page's title, and the model is told what to do", () => {
+  const note = foreignNote(9222, "Game Hub - Unified Launcher");
+  assert.match(note, /Port 9222 is held by a program this session did not start/);
+  assert.match(note, /"Game Hub - Unified Launcher"/);
+  assert.match(note, /different port/);
+  assert.match(note, /do not click or type/);
+  assert.doesNotMatch(foreignNote(9222, ""), /\(the page is/);
+});

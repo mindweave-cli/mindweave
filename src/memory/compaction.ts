@@ -90,12 +90,30 @@ const RECAP_MIN_CHARS = 220;
 export const IMAGE_CLEARED_STUB = "was attached here but is no longer in context — open it again with view_image if you need to look at it, or ask me to re-attach it if that path is gone";
 
 /** Edit/write tools whose call INPUT carries bulky content (a whole file, a diff, a
- *  symbol body). Once such an edit is old and its result already cleared, the content
- *  it wrote is dead weight — the live file is in the working set or a re-read away — so
- *  we clear the input too. Done here on the transcript, this is provider-AGNOSTIC —
- *  every model, not just DeepSeek, gets the saving, and it stays correct even once a
- *  provider offers an equivalent feature natively. */
+ *  symbol body). The input is what the model WROTE, and it is the only record in the
+ *  conversation of what it meant to put there: the result of an edit is a stub, and the
+ *  file on disk says what is there, not what was intended. So it is not cleared just
+ *  because its result is old. It is kept for the most recent edits, within a budget
+ *  (see KEEP_EDIT_INPUT_TOKENS), and cleared beyond it or at a task boundary. Done here
+ *  on the transcript, this is provider-AGNOSTIC. */
 export const CONTENT_CARRYING_TOOLS = new Set(["edit", "write_file", "replace_symbol_body"]);
+
+/**
+ * How much of its own recent edits the model keeps, newest first: at most this many calls and
+ * this many tokens of their inputs.
+ *
+ * Clearing them on the same window as tool RESULTS (the last 8 of any kind) left the model
+ * holding the last two or three edits and nothing before them. In a real session a model that
+ * had removed a parameter from one file in one edit later wrote a second edit, in another file,
+ * that still assumed the parameter, and two others that referred to an anchor it had removed and a
+ * variable that was never there: each is a mistake about code it wrote minutes earlier, and each
+ * from a conversation in which that code had been cleared to "content cleared to save context".
+ * The results of old calls are the part that can be fetched again; what the model itself wrote cannot.
+ *
+ * What it costs is bounded: past the budget the older inputs go exactly as they did before.
+ */
+export const KEEP_EDIT_INPUT_CALLS = 40;
+export const KEEP_EDIT_INPUT_TOKENS = 24_000;
 
 export const CLEARED_INPUT_NOTE =
   "content cleared to save context — the file's current state is in the working set, or re-read it";
@@ -116,8 +134,22 @@ function clearMutationArgs(raw: string): string | null {
   for (const key of ["path", "symbol", "name"] as const) {
     if (typeof obj[key] === "string") kept[key] = obj[key];
   }
+  const wrote = describeWritten(obj);
+  if (wrote) kept._wrote = wrote;
   kept._cleared = CLEARED_INPUT_NOTE;
   return JSON.stringify(kept);
+}
+
+/** How much a cleared edit wrote, so the stub still says something happened here (pure). */
+function describeWritten(obj: Record<string, unknown>): string | undefined {
+  const lines = (v: unknown) => (typeof v === "string" && v !== "" ? v.split("\n").length : 0);
+  if (Array.isArray(obj.edits)) {
+    const n = obj.edits.length;
+    const written = obj.edits.reduce((sum: number, e) => sum + (e && typeof e === "object" ? lines((e as { new_string?: unknown }).new_string) : 0), 0);
+    return `${n} edit${n === 1 ? "" : "s"}, ${written} line${written === 1 ? "" : "s"} written`;
+  }
+  const whole = lines(obj.content) || lines(obj.new_definition) || lines(obj.new_string);
+  return whole > 0 ? `${whole} line${whole === 1 ? "" : "s"} written` : undefined;
 }
 
 /** Cheap token estimate for a string. */
@@ -298,12 +330,32 @@ export function microcompact(
   for (const e of entries) {
     if (e.role === "assistant" && e.toolCalls) for (const tc of e.toolCalls) callNameById.set(tc.id, tc.name);
   }
+  // The model's own recent edits stay whole, newest first, up to the budget (see
+  // KEEP_EDIT_INPUT_TOKENS). At a task boundary nothing is kept: a finished task's edits are history.
+  const keepInputIds = new Set<string>();
+  if (!releasePinned) {
+    let keptTokens = 0;
+    let keptCalls = 0;
+    scan: for (let i = entries.length - 1; i >= 0; i--) {
+      const e = entries[i];
+      if (e?.role !== "assistant" || !e.toolCalls) continue;
+      for (let j = e.toolCalls.length - 1; j >= 0; j--) {
+        const tc = e.toolCalls[j]!;
+        if (!CONTENT_CARRYING_TOOLS.has(tc.name)) continue;
+        const cost = estimateTokens(tc.arguments);
+        if (keptCalls >= KEEP_EDIT_INPUT_CALLS || keptTokens + cost > KEEP_EDIT_INPUT_TOKENS) break scan;
+        keptCalls++;
+        keptTokens += cost;
+        keepInputIds.add(tc.id);
+      }
+    }
+  }
   const clearInputIds = new Set<string>();
   for (const i of clearable) {
     const e = entries[i];
     if (e && e.role === "tool") {
       const name = callNameById.get(e.toolCallId);
-      if (name && CONTENT_CARRYING_TOOLS.has(name)) clearInputIds.add(e.toolCallId);
+      if (name && CONTENT_CARRYING_TOOLS.has(name) && !keepInputIds.has(e.toolCallId)) clearInputIds.add(e.toolCallId);
     }
   }
   // A result smaller than the stub that would replace it is left as it is: clearing it

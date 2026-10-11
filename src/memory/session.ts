@@ -181,7 +181,7 @@ const SUBAGENT_PREAMBLE =
  * approval channel, session permission grants, and the parent's approved plan all stop
  * here. Only the child's final reply crosses back to the parent, through the spawn tool.
  */
-export function forkSession(parent: Session, task: string, opts: { readOnly?: boolean; agentPrompt?: string } = {}): Session {
+export function forkSession(parent: Session, task: string, opts: { readOnly?: boolean; agentPrompt?: string; verifier?: boolean } = {}): Session {
   const p = parent.toolContext;
   const id = randomUUID();
   const childContext: ToolContext = {
@@ -198,6 +198,8 @@ export function forkSession(parent: Session, task: string, opts: { readOnly?: bo
     sessionId: id,
     subagentDepth: (p.subagentDepth ?? 0) + 1,
     readOnlyTools: opts.readOnly === true ? true : p.readOnlyTools,
+    // A verifier runs what it checks. Not inherited: a child of a verifier is a plain worker.
+    verifierTools: opts.verifier === true,
     // A ROLE for this child, appended to its system prompt. Not inherited: a nested child
     // of a verifier is not itself a verifier, and silently carrying the persona down would
     // make every descendant refuse to write.

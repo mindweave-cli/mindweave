@@ -451,6 +451,11 @@ export interface ToolContext {
    */
   readOnlyTools?: boolean;
   /**
+   * This context is a VERIFIER's: read-only like any research worker, plus the tools it needs to
+   * run what it is checking (see verifierTools.ts). Never inherited by a child of a verifier.
+   */
+  verifierTools?: boolean;
+  /**
    * Extra instructions appended to this session's system prompt, giving a child a ROLE
    * rather than a task.
    *
@@ -468,7 +473,7 @@ export interface ToolContext {
    * the parent Session the tool never sees). Returns a ready child to run through the
    * engine; absent in bare contexts (sub-agents then unavailable).
    */
-  forkChild?: (task: string, opts?: { readOnly?: boolean; agentPrompt?: string }) => import("../memory/types.js").Session;
+  forkChild?: (task: string, opts?: { readOnly?: boolean; agentPrompt?: string; verifier?: boolean }) => import("../memory/types.js").Session;
   /**
    * Forward a model call's token usage to the live meter (injected by the engine from
    * its options). Lets a sub-agent's usage count toward the same total instead of

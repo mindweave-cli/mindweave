@@ -55,16 +55,16 @@ test("a finished task's sweep may release pinned results", () => {
   assert.equal(isCleared(microcompact(e, 2).entries, "old0"), false);
 });
 
-test("a result smaller than its own stub is left alone, but its edit body still shrinks", () => {
+test("a result smaller than its own stub is left alone, and an edit body past the budget still shrinks", () => {
   const e: Entry[] = [
     { role: "user", content: "work" },
-    ...round("w", "write_file", "wrote 3 lines", JSON.stringify({ path: "a.ts", content: "x".repeat(4000) })),
+    ...round("w", "write_file", "wrote 3 lines", JSON.stringify({ path: "a.ts", content: "x".repeat(120_000) })),
     ...Array.from({ length: 12 }, (_, i) => round(`n${i}`, "read_file", BIG)).flat(),
   ];
   const { entries } = microcompact(e);
   assert.equal(isCleared(entries, "w"), false, "a 3-token confirmation was replaced by a bigger stub");
   const call = entries.find((x) => x.role === "assistant" && x.toolCalls?.[0]?.id === "w");
-  assert.ok(call && call.role === "assistant" && call.toolCalls![0]!.arguments.length < 400, "the 4000-character body should have shrunk");
+  assert.ok(call && call.role === "assistant" && call.toolCalls![0]!.arguments.length < 400, "the oversized body should have shrunk");
 });
 
 test("kinds: anything unlisted is history", () => {

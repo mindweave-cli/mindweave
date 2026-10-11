@@ -62,17 +62,53 @@ function writeThenLaterRound(): Entry[] {
   ];
 }
 
-test("old edit/write tool-call INPUTS are cleared once the write is stale", () => {
+test("the model's own recent edits keep what it wrote, even when their results are old", () => {
   const { entries: out, inputsCleared } = microcompact(writeThenLaterRound(), 1);
-  assert.equal(inputsCleared, 1, "the stale write's input was cleared");
+  assert.equal(inputsCleared, 0, "a write inside the budget is not cleared");
   const args = JSON.parse(toolCallsOf(out[1]!)[0]!.arguments) as Record<string, unknown>;
-  assert.ok(!("content" in args), "the 820-line content payload is gone");
-  assert.equal(args.path, "src/App.tsx", "which file was edited is preserved");
-  assert.ok(typeof args._cleared === "string", "a cleared marker is left");
+  assert.equal(args.content, bigContent, "what it wrote is still in the conversation");
+});
+
+/** N whole-file writes of `chars` each, oldest first, then a read round so every write is old. */
+function manyWrites(n: number, chars: number): Entry[] {
+  const entries: Entry[] = [userMsg("build it")];
+  for (let i = 0; i < n; i++) {
+    entries.push({ role: "assistant", content: "", toolCalls: [{ id: `w${i}`, name: "write_file", arguments: JSON.stringify({ path: `src/f${i}.ts`, content: "x".repeat(chars) }) }] });
+    entries.push({ role: "tool", toolCallId: `w${i}`, content: `wrote src/f${i}.ts (${chars} chars)` });
+  }
+  entries.push({ role: "assistant", content: "", toolCalls: [{ id: "r1", name: "read_file", arguments: JSON.stringify({ path: "src/x.ts" }) }] });
+  entries.push({ role: "tool", toolCallId: "r1", content: "file body" });
+  return entries;
+}
+const inputOf = (e: Entry): Record<string, unknown> => JSON.parse(toolCallsOf(e)[0]!.arguments) as Record<string, unknown>;
+
+test("past the budget the OLDEST inputs are cleared and the newest stay", () => {
+  // Six writes of about 8,000 tokens each: the budget holds the newest two or three.
+  const entries = manyWrites(6, 28_000);
+  const { entries: out, inputsCleared } = microcompact(entries, 1);
+  assert.ok(inputsCleared >= 3 && inputsCleared <= 4, `cleared ${inputsCleared}`);
+  const cleared = [1, 3, 5, 7, 9, 11].map((i) => typeof inputOf(out[i]!)._cleared === "string");
+  assert.deepEqual(cleared.slice(0, inputsCleared), Array(inputsCleared).fill(true), "the oldest are the ones cleared");
+  assert.equal(cleared[5], false, "the newest write keeps its content");
+  assert.equal(inputOf(out[11]!).path, "src/f5.ts");
+  const args = inputOf(out[1]!);
+  assert.ok(!("content" in args), "a cleared one drops its payload");
+  assert.equal(args.path, "src/f0.ts", "and keeps which file it was");
+});
+
+test("no more than the newest forty edits are kept, however small", () => {
+  const entries = manyWrites(45, 20);
+  const { inputsCleared } = microcompact(entries, 1);
+  assert.equal(inputsCleared, 5, "the five oldest of 45 go");
+});
+
+test("at a task boundary nothing is kept: a finished task's edits are history", () => {
+  const { inputsCleared } = microcompact(manyWrites(3, 400), 1, new Set(), true);
+  assert.equal(inputsCleared, 3);
 });
 
 test("clearing INPUTs is idempotent — a second pass clears nothing", () => {
-  const once = microcompact(writeThenLaterRound(), 1);
+  const once = microcompact(manyWrites(6, 28_000), 1);
   const twice = microcompact(once.entries, 1);
   assert.equal(twice.inputsCleared, 0, "already-cleared inputs are left alone");
 });

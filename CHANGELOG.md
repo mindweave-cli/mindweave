@@ -3,6 +3,71 @@
 Notable changes to Mindweave. Dates are release dates.
 
 
+## v3.2.3 (2026-10-11): a sub-agent is a title and an answer, a verifier has to run what it checks, and fixes from a long real session
+
+A long working session with a small model showed several things that were our doing and not the model's,
+and this release fixes them. A verifier that was told to run the tests had no way to run anything, so every
+verdict it gave was a read of the code dressed up as a check. The model's own recent edits were being cleared
+from its memory, and it then made mistakes about code it had written minutes before. The tool that drives an
+app attached to the wrong application without saying so. A screenshot taken with no window named photographed
+the terminal Mindweave runs in. And a sub-agent on screen was a wall of raw calls. It was tested on Windows.
+It has not been run on a real Mac yet.
+
+### Sub-agents on screen
+
+- **A sub-agent is a short title and how it ended.** `Sub-agent  Re-verifying the close guard  read-only`, and
+  under it `! Could not fully verify · 8 checks · 20 steps · 2m 10s`. The mark is a tick when it worked, a
+  cross when it failed, and a bang when it could only half do it. The title is taken from the task it was given,
+  cut at a word, where the line used to be the whole prompt cut in the middle of one.
+- **While it works the dot pulses**, and the line says where it is: `step 12 · reading use-debounced.ts  1m 5s`.
+- **Click it to see the rest.** A shaded band shows the task, the result, a count of what it did (`Read 6 files,
+  ran 4 commands, 1 failed`), and each call, with repeats merged: a poll that came back six times is one line
+  with `×6`. A refused call is red.
+- **Several at once are one group**, each with its own two lines, so you can see who is doing what.
+
+### Verification you can believe
+
+- **A verifier can now run what it checks.** It gets the command tool and the app driver, which it was told to
+  use and did not have. It still cannot edit or write files. It runs alone, not in parallel with another.
+- **It runs a narrow set of commands.** Builds, tests, the typechecker, scripts that call the code, the app, and
+  commands that only read. It is refused, with the reason, anything that deletes, moves, renames or copies files,
+  changes a git repository, installs or publishes packages, stops processes, changes the machine's settings,
+  connects to other machines, fetches from outside this machine, or writes anywhere but the temporary directory.
+- **A check counts only if its command ran.** The report cites `$ command` lines as its checks. Each one is now
+  compared with the commands the verifier really made. A line whose command never ran, such as a file read written
+  up as a command, is not counted, and a PASS under it is marked as not a check.
+- **A pass is not a pass if a project file changed while it ran.** The project's files are looked at before and
+  after. Build output and installed packages are left out. A changed file is named in the verdict and handed to
+  `/undo`. What it started in the background is stopped when it finishes.
+- **A sub-agent that has nobody to ask** is told so, in words, instead of being told the user declined.
+
+### The model keeps what it wrote
+
+- **Its recent edits are no longer cleared from its memory.** When an old tool result was cleared, the input of
+  the edit that produced it was cleared too, and the model was left holding its last two or three edits and
+  nothing before them. It now keeps up to 40 of its recent edits, or 24,000 tokens of them, newest first.
+  Older ones are still cleared, and a cleared one says how much it wrote.
+
+### Safer around other apps and processes
+
+- **The app driver says when a port is not yours.** A debugging port is a number, not an app: another
+  application can hold it, and the page behind it then answers as if it were the one being tested. When the
+  program behind a port was not started by this session, the tool says so with the page's title, and reminds the
+  model on each click or keystroke.
+- **A screenshot with no window named never photographs the terminal Mindweave runs in.** It says so, and lists
+  the other windows. The app driver also refuses to drive that window, since a key there lands in the
+  conversation. The tool no longer tells the model to leave the title out to reach an app; a window with a blank
+  title bar is listed by its process name.
+- **Stopping every process with a name asks first.** `Stop-Process -Name`, `taskkill /IM`, `pkill`, `killall`
+  and the like stop every such program on the machine, a desktop app or an editor included. Stopping one by its
+  number is unchanged.
+
+### Also
+
+- `/help` explains how a sub-agent reads on screen.
+- A sub-agent now reports how it ended, its step count and its full task along with the rest, for any front end
+  that wants them. The desktop app is unaffected.
+
 ## v3.2.2 (2026-10-11): a UI test is one folded line, opened text sits on a shaded band, and a single call opens in one click
 
 The folded `Ran 3 commands` line from 3.2.0 now covers the last thing that still stacked up. When

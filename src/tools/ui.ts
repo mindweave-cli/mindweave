@@ -104,6 +104,8 @@ type UiState =
       hidden?: MovedWindow[];
       /** The app runs on the hidden desktop: never on screen, and cannot be brought there. */
       hiddenDesktop?: boolean;
+      /** The program behind the port is not one this session started: another application's, or one the user opened. */
+      foreign?: boolean;
       /** Set when WE close it, so the connection dropping is not read as someone else
        *  closing the app. */
       closing?: boolean;
@@ -126,6 +128,21 @@ function newLiveId(): string {
 const HIDE_NOTE =
   "You started this app, so its window was moved off the user's screen while you test it; it is still running " +
   "and drawing, and goes back where it was when you close it. If the user asked to see it, call again with show: true.";
+
+/**
+ * Told when the debugging port belongs to a program this session did not start. A port is a number, not
+ * an app: another application can hold 9222, and the page behind it then answers as if it were the one
+ * being tested. Said at the attach, where the title is the only other clue, and again on a click or a
+ * keystroke, which is the moment it would matter that it is somebody else's app.
+ */
+export function foreignNote(port: number, title: string): string {
+  return (
+    `Port ${port} is held by a program this session did not start${title ? ` (the page is "${title}")` : ""}: another application's, or one the user opened. ` +
+    "It may not be the app you launched. Check that the title is the app you mean before you read anything from it as a result, " +
+    "and do not click or type in it unless the user told you to test that app. Your own app is probably on a different port: start it with another one."
+  );
+}
+const FOREIGN_REMINDER = "This page belongs to a program you did not start (see the note when it was opened).";
 
 /** Told once, for an app started on the hidden desktop (hiddenDesktop.ts). */
 const HIDDEN_DESKTOP_NOTE =
@@ -658,6 +675,15 @@ async function runWindow(req: UiRequest, ctx: ToolContext, prior: UiState | unde
       );
     }
     if (pick.kind === "ambiguous") return fail(ambiguousMessage(req.window, pick.candidates));
+    // Never the window this conversation is typed into: a click or a key there lands in the prompt, and
+    // anything it reads from that window is the conversation itself coming back as if it were the app.
+    if (pick.kind === "match" && pick.window.host) {
+      return fail(
+        `"${pick.window.title}" is the window Mindweave itself runs in. Driving it would type into this conversation, so it is refused. ` +
+          `Name the app under test instead. ${listTitles(windows.filter((w) => !w.host))}`,
+      );
+    }
+    if (pick.kind !== "match") return fail(`No window could be chosen for "${req.window}".`);
     target = { handle: pick.window.handle, title: pick.window.title };
     // A different window: the old numbers mean nothing here.
     if (state && state.handle !== target.handle) state = undefined;
@@ -838,7 +864,9 @@ async function runPage(req: UiRequest, ctx: ToolContext, prior: UiState | undefi
       const found = await hideAppWindows({ port: req.port }, !req.show);
       state.hidden = found.moved;
       state.hiddenDesktop = found.hiddenDesktop;
+      state.foreign = found.ours === false;
       othersNote = found.moved.length ? HIDE_NOTE : found.hiddenDesktop ? (req.show ? CANNOT_SHOW_NOTE : HIDDEN_DESKTOP_NOTE) : "";
+      if (state.foreign) othersNote = (othersNote ? `${othersNote}\n\n` : "") + foreignNote(req.port, state.title);
       if (others.length) {
         othersNote =
           (othersNote ? `${othersNote}\n\n` : "") +
@@ -875,6 +903,10 @@ async function runPage(req: UiRequest, ctx: ToolContext, prior: UiState | undefi
     return fail(
       "Nothing is open yet. Pass `url` to open a web page or dev server, or `port` to use an Electron/Tauri app. " + PORT_RECIPES,
     );
+  }
+  // Acting in somebody else's app, not only looking at it: said again, short, on each such call.
+  if (state.foreign && req.action !== "look" && !othersNote.includes("did not start")) {
+    othersNote = othersNote ? `${othersNote}\n\n${FOREIGN_REMINDER}` : FOREIGN_REMINDER;
   }
   // Asked to show it: put it back on screen if it was moved. One on the hidden desktop
   // cannot be, and the model is told so rather than left believing it is visible.

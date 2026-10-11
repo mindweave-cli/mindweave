@@ -2133,9 +2133,9 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
             }
             if (gov) gov.notices = [];
           } else if (e.type === "subagent" && e.phase === "start") {
-            enqueueReveal({ type: "subagentStart", agentId: e.id, task: e.task, readOnly: e.readOnly });
+            enqueueReveal({ type: "subagentStart", agentId: e.id, task: e.task, readOnly: e.readOnly, ...(e.taskFull ? { full: e.taskFull } : {}) });
           } else if (e.type === "subagent" && e.phase === "end") {
-            enqueueReveal({ type: "subagentEnd", agentId: e.id, ok: !e.error, summary: e.summary });
+            enqueueReveal({ type: "subagentEnd", agentId: e.id, ok: !e.error, summary: e.summary, ...(e.headline ? { headline: e.headline } : {}), ...(e.verdict ? { verdict: e.verdict } : {}), ...(e.steps !== undefined ? { steps: e.steps } : {}) });
           } else if (e.type === "todos") {
             setMarathonUi((ui) => marathonUiReduce(ui, { type: "todos", items: e.items }));
           } else if (e.type === "usage") {

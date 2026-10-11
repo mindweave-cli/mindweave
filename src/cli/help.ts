@@ -78,6 +78,8 @@ export function formatHelp(sections: readonly HelpSection[]): string {
       "  Their raw tool loops and output never enter the main conversation, so a large\n" +
       "  search costs you a summary instead of a hundred results. They return finished\n" +
       "  work (a patch, an answer), compact their own context independently, and cannot\n" +
-      "  change files unless the job they were given is a job that changes files.",
+      "  change files unless the job they were given is a job that changes files.\n" +
+      "  On screen a sub-agent is a short title and how it ended (✓ done, ✗ failed, ! only\n" +
+      "  partly), with its steps and time. Click it to see its task, what it did and the result.",
   ].join("\n\n");
 }

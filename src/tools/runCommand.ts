@@ -53,6 +53,7 @@ import { powershellLintReason, powershellParseError, powershellReservedAssignmen
 import { findRunningDuplicate, findRecentUserClose, guessNotifyPolicy, type NotifyPolicy } from "./backgroundShells.js";
 import { fail, failQuietly } from "./results.js";
 import { defaultOpenRewrite } from "./openDefault.js";
+import { verifierCommandReason } from "./verifierCommands.js";
 import { composeFileOutput, createOutputFile, removeOutputFile, tailOf } from "./commandOutput.js";
 import { stripNativeStderrNoise } from "./nativeStderr.js";
 import { hiddenDesktopName, launcherPath, VIRTUAL_DISPLAY_ARGS, wantsHiddenDesktop } from "./hiddenDesktop.js";
@@ -205,6 +206,14 @@ export const runCommand: Tool = {
     // left alone; see openDefault.ts.
     const redirected = defaultOpenRewrite(requested);
     const command = redirected ? redirected.command : requested;
+
+    // A verifier runs a narrow set of commands (verifierCommands.ts). Decided before anything else, and
+    // not something the user can be asked about: a verifier has nobody to ask, and the narrowing is the
+    // point. Everyone else is not touched by it.
+    if (ctx.verifierTools === true) {
+      const why = verifierCommandReason(command);
+      if (why) return fail(why);
+    }
 
     // A shell can change files in ways the checkpoint net never sees (a formatter, a
     // codegen step, a `git checkout`). Flag the turn so /undo says what it did NOT

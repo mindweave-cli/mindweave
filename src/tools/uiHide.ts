@@ -41,6 +41,13 @@ export interface MovedWindow {
 export interface HideResult {
   moved: MovedWindow[];
   hiddenDesktop: boolean;
+  /**
+   * Whether this process started the program listening on the port: true when it descends from it,
+   * false when it does not (another application's, or one the user started), undefined when it could
+   * not be told. Only a port in use is judged; this is how a model attached to a debugging port
+   * learns the app behind it is not the one it launched.
+   */
+  ours?: boolean;
 }
 
 const SCRIPT = String.raw`
@@ -205,6 +212,17 @@ async function run(args: string[]): Promise<string> {
   });
 }
 
+/**
+ * Whether the script found the program behind a port to be this process's own (pure): false when it
+ * walked the program's ancestry and never reached this process, true when it did, undefined when
+ * nothing was listening or nothing was said.
+ */
+export function ownershipFrom(stdout: string): boolean | undefined {
+  if (/^NOTOURS\s*$/m.test(stdout)) return false;
+  if (/^NONE\s*$/m.test(stdout) || stdout.trim() === "") return undefined;
+  return true;
+}
+
 /** Parse the script's MOVED lines. Pure. */
 export function parseMoved(stdout: string): MovedWindow[] {
   const out: MovedWindow[] = [];
@@ -231,7 +249,8 @@ export async function hideAppWindows(target: { port: number } | { handle: string
     const mode = move ? "hide" : "check";
     const args = "port" in target ? ["-Mode", mode, "-Port", String(target.port)] : ["-Mode", mode, "-Handle", target.handle];
     const out = await run([...args, "-Owner", String(process.pid), "-Hidden", hiddenDesktopName()]);
-    return { moved: parseMoved(out), hiddenDesktop: /^HIDDEN\s*$/m.test(out) };
+    const ours = ownershipFrom(out);
+    return { moved: parseMoved(out), hiddenDesktop: /^HIDDEN\s*$/m.test(out), ...(ours !== undefined ? { ours } : {}) };
   } catch {
     return { moved: [], hiddenDesktop: false };
   }
@@ -313,16 +332,16 @@ async function hideByProtocol(target: { port: number } | { handle: string }, mov
     const pid = await listenerPid(target.port);
     if (!pid) return none;
     const from = await lineage(pid);
-    if (!from.ours) return none;
+    if (!from.ours) return { ...none, ours: false };
     // Started on a virtual display: already where nobody sees it.
-    if (from.virtual) return { moved: [], hiddenDesktop: true };
+    if (from.virtual) return { moved: [], hiddenDesktop: true, ours: true };
     if (process.platform === "linux" && existsSync("/proc")) {
       const theirs = displayOf(pid);
-      if (theirs !== null && theirs !== (process.env.DISPLAY ?? "")) return { moved: [], hiddenDesktop: true };
+      if (theirs !== null && theirs !== (process.env.DISPLAY ?? "")) return { moved: [], hiddenDesktop: true, ours: true };
     }
-    if (!move) return none;
+    if (!move) return { ...none, ours: true };
     const page = pageTargets(await listTargets(target.port))[0];
-    if (!page?.webSocketDebuggerUrl) return none;
+    if (!page?.webSocketDebuggerUrl) return { ...none, ours: true };
     const conn = await CdpConnection.open(page.webSocketDebuggerUrl);
     try {
       const w = (await conn.send("Browser.getWindowForTarget", { targetId: page.id })) as { windowId?: number; bounds?: { left?: number; top?: number } };

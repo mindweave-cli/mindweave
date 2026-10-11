@@ -447,38 +447,34 @@ test("a command in a notice is never markdown-mangled", () => {
 
 // ── sub-agent topology ───────────────────────────────────────────────────────
 
-test("one worker keeps its full rail", () => {
+test("one worker is a title and how it ended, with its calls a click away", () => {
   const s = run([
     { type: "subagentStart", agentId: "a", task: "find every authFetch call site", readOnly: true },
     { type: "subToolStart", agentId: "a", toolId: "1", name: "Read", arg: "login.ts", action: "read" },
     { type: "subToolEnd", agentId: "a", toolId: "1", ok: true, summary: "Read login.ts (88 lines)" },
-    { type: "subagentEnd", agentId: "a", ok: true, summary: "3 steps · read-only" },
+    { type: "subagentEnd", agentId: "a", ok: true, summary: "3 steps · read-only", headline: "Done", verdict: "pass", steps: 3 },
   ]);
   const frame = frameOf(blocks(s));
-  assert.match(frame, /● Subagent · read-only/);
-  assert.match(frame, /Read login\.ts \(88 lines\)/, "with one worker there is room for its calls");
-  assert.match(frame, /3 steps · read-only/);
+  assert.match(frame, /● Sub-agent {2}Find every authFetch call site · read-only/);
+  assert.match(frame, /✓ Done · 3 steps/, "how it ended comes first, and the step count after it");
+  assert.doesNotMatch(frame, /login.ts/, "what it read is behind a click, not on the line");
 });
 
-test("several workers become a tree, and each branch says how far along it is", () => {
+test("several workers are one group, each with its own title and verdict", () => {
   const s = run([
     { type: "subagentStart", agentId: "a", task: "find every authFetch call site", readOnly: true },
     { type: "subagentStart", agentId: "b", task: "draft unit tests for runCommand.ts", readOnly: false },
     { type: "subToolStart", agentId: "b", toolId: "1", name: "Read", arg: "runCommand.ts", action: "read" },
-    { type: "subagentEnd", agentId: "a", ok: true, summary: "4 steps · read-only" },
+    { type: "subagentEnd", agentId: "a", ok: true, summary: "4 steps · read-only", headline: "Done", verdict: "pass", steps: 4 },
   ]);
   const frame = frameOf(blocks(s));
-  assert.match(frame, /● Subagents/);
+  assert.match(frame, /● Sub-agents/);
   assert.match(frame, /2 delegated/);
-  assert.match(frame, /├──/, "a branch for each worker…");
-  assert.match(frame, /└──/, "…and an elbow on the last");
-  // The finished one reports its summary; the running one is described by what it has
-  // done so far, or a running branch would say nothing and read as stalled.
-  assert.match(frame, /4 steps · read-only/);
-  assert.match(frame, /working · 1 step/);
-  // Which one may write is on the branch: it is the difference that matters most.
-  assert.match(frame, /#1 · read-only/);
-  assert.doesNotMatch(frame, /#2 · read-only/);
+  assert.match(frame, /#1 {2}Find every authFetch call site · read-only/);
+  assert.match(frame, /✓ Done · 4 steps/, "the finished one says how it ended");
+  assert.match(frame, /step 1/, "the running one says which step it is on, or it would read as stalled");
+  // Which one may write is on its line: it is the difference that matters most.
+  assert.match(frame, /#2 {2}Draft unit tests for runCommand.ts(?! · read-only)/);
 });
 
 test("the topology shows only what a sub-agent actually reports", () => {

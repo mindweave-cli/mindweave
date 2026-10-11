@@ -52,7 +52,9 @@ export type WindowPick =
    *  used to choose between. Empty when the match was the only candidate. */
   | { kind: "match"; window: WindowInfo; tied: WindowInfo[] }
   | { kind: "none"; candidates: WindowInfo[] }
-  | { kind: "ambiguous"; candidates: WindowInfo[] };
+  | { kind: "ambiguous"; candidates: WindowInfo[] }
+  /** No title was given and the focused window is the one Mindweave itself runs in. `candidates` are the others. */
+  | { kind: "host"; window: WindowInfo; candidates: WindowInfo[] };
 
 /**
  * Choose the window to capture. Pure, and the whole of the matching policy.
@@ -69,6 +71,10 @@ export function pickWindow(query: string | undefined, windows: WindowInfo[]): Wi
 
   if (!query) {
     const focused = windows.find((w) => w.foreground);
+    // The focused window is the one the user is typing into, and while the agent works that is the terminal
+    // Mindweave runs in. "Whichever has focus" then photographs the conversation itself, which is never what
+    // was meant; an app was asked for by name, or was focused on purpose.
+    if (focused?.host) return { kind: "host", window: focused, candidates: windows.filter((w) => !w.host) };
     return focused
       ? { kind: "match", window: focused, tied: windows.filter((w) => w !== focused) }
       : { kind: "ambiguous", candidates: windows };
@@ -143,11 +149,24 @@ export function ambiguousMessage(query: string | undefined, candidates: WindowIn
   );
 }
 
+/**
+ * What to say when the focused window is the one Mindweave runs in (pure). It is the answer to a
+ * call with no title while the user is looking at the terminal, which is nearly every call: the model
+ * is told what the window is, that nothing was captured, and how to name the app instead.
+ */
+export function hostMessage(host: WindowInfo, others: WindowInfo[]): string {
+  return (
+    `The focused window is the one Mindweave itself runs in ("${host.title}"), so nothing was captured: a picture of ` +
+    `it cannot tell you anything about the app you are testing. Name the app's window by part of its title. ` +
+    `A window with a blank title bar is listed by its process name, such as "electron".\n${listTitles(others)}`
+  );
+}
+
 /** Render window titles for an error the model can act on without another call. */
 export function listTitles(windows: WindowInfo[]): string {
   if (windows.length === 0) return "No capturable windows are open.";
   const shown = windows.slice(0, MAX_LISTED);
-  const lines = shown.map((w) => `  - ${w.title}${w.foreground ? "  (focused)" : ""}`);
+  const lines = shown.map((w) => `  - ${w.title}${w.foreground ? "  (focused)" : ""}${w.host ? "  (where Mindweave runs)" : ""}`);
   const hidden = windows.length - shown.length;
   if (hidden > 0) lines.push(`  … and ${hidden} more`);
   return `Open windows:\n${lines.join("\n")}`;
@@ -177,10 +196,11 @@ export const screenshot: Tool = {
     "Take a picture of one open window and look at it. Use it to check that an app " +
     "actually came up and renders correctly — a running process is not proof of that — " +
     "or to see a layout, a chart, or an error dialog for yourself. " +
-    "Pass `window` with part of the window's title; leave it out to capture the window " +
-    "the user is currently focused on. For an app you just launched, or one with a custom " +
-    "title bar that shows a blank OS title (common for desktop apps), omit `window` to grab " +
-    "the focused window rather than guessing its title. " +
+    "Pass `window` with part of the window's title. An app with a custom title bar that shows a blank " +
+    "OS title (common for desktop apps) is listed by its process name, such as \"electron\": use that. " +
+    "Leave `window` out only to capture the window the user has focused on purpose; the window " +
+    "Mindweave itself runs in is never captured that way, because while you work it is almost always the " +
+    "one with focus and a picture of it shows you nothing about the app. " +
     "It photographs whatever that window is showing, so call it when looking will " +
     "genuinely tell you something, not as a routine check. " +
     "Windows only, one window at a time — the whole screen is never captured. " +
@@ -193,8 +213,8 @@ export const screenshot: Tool = {
       window: {
         type: "string",
         description:
-          "Part of the target window's title, e.g. \"Vite\" or \"localhost\". " +
-          "Omit to capture whichever window has focus.",
+          "Part of the target window's title, e.g. \"Vite\" or \"localhost\", or the process name for a window " +
+          "with a blank title (\"electron\"). Omit only to capture a window the user has focused on purpose.",
       },
     },
   },
@@ -242,14 +262,16 @@ export const screenshot: Tool = {
           ? `No open window's title contains "${query}". ${listTitles(pick.candidates)}\n` +
               `Three things to try, in order: if you just launched the app, its window may need a ` +
               `moment — call again. If it has a custom title bar (many desktop apps, and Tauri or ` +
-              `Electron with window decorations off, show a blank OS title), omit \`window\` to ` +
-              `capture whichever window is focused. Or name one of the windows listed above. ` +
+              `Electron with window decorations off, show a blank OS title), it is listed by its ` +
+              `process name: use that. Or name one of the windows listed above. ` +
               `Do NOT capture a different named window as a stand-in: a picture of something else ` +
               `cannot tell you anything about "${query}".`
           : `There is no window to capture. ${listTitles(pick.candidates)}`,
       );
     }
     if (pick.kind === "ambiguous") return fail(ambiguousMessage(query, pick.candidates));
+    // Refused before anyone is asked: the user is not asked to approve a picture that was never going to help.
+    if (pick.kind === "host") return fail(hostMessage(pick.window, pick.candidates));
 
     const target = pick.window;
     // The window is resolved BEFORE this either way, so the user is never asked about a

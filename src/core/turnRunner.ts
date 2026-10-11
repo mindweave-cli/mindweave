@@ -11,6 +11,7 @@
  * terminal assumptions. A GUI or a server can drive a session with just this file.
  */
 import { compactNow, respond, type EngineEvent, type SteeredMessage } from "../dynamo/engine.js";
+import type { SubagentOutcome } from "../tools/subagentOutcome.js";
 import {
   startMarathon,
   resumeMarathon,
@@ -343,8 +344,8 @@ export type TurnEvent =
   | { type: "toolStart"; id: string; name: string; arg?: string; kind: string; group: boolean; covers?: number; /** The tool itself (`ui`), where `name` is how the row reads ("Click"). */ tool?: string; /** What the call was given (full paths, a read range, a command), long text clipped. For a front end that shows the work itself rather than a one-line label. */ args?: Record<string, unknown> }
   | { type: "toolProgress"; id: string; text: string }
   | { type: "toolEnd"; id: string; ok: boolean; summary: string; detail?: string; detailFull?: string; detailKind?: "diff" | "text" | "shell"; quiet?: boolean; images?: string[]; web?: WebDisplay; ui?: UiDisplay }
-  | { type: "subagentStart"; id: string; task: string; readOnly: boolean }
-  | { type: "subagentEnd"; id: string; ok: boolean; summary: string }
+  | { type: "subagentStart"; id: string; task: string; readOnly: boolean; taskFull?: string }
+  | { type: "subagentEnd"; id: string; ok: boolean; summary: string; headline?: string; verdict?: SubagentOutcome; steps?: number }
   /** A tool call made BY a spawned sub-agent, not the lead — nests under that
    *  worker's own block instead of the main stream. */
   | { type: "subToolStart"; agentId: string; toolId: string; name: string; arg?: string; kind: string }
@@ -777,9 +778,9 @@ export function forwardEngineEvent(e: EngineEvent, onEvent: (event: TurnEvent) =
     // app to finish building). Latest-wins text, not a log.
     if (!e.agent) onEvent({ type: "toolProgress", id: e.id, text: e.text });
   } else if (e.type === "subagent" && e.phase === "start") {
-    onEvent({ type: "subagentStart", id: e.id, task: e.task, readOnly: e.readOnly });
+    onEvent({ type: "subagentStart", id: e.id, task: e.task, readOnly: e.readOnly, ...(e.taskFull ? { taskFull: e.taskFull } : {}) });
   } else if (e.type === "subagent" && e.phase === "end") {
-    onEvent({ type: "subagentEnd", id: e.id, ok: !e.error, summary: e.summary });
+    onEvent({ type: "subagentEnd", id: e.id, ok: !e.error, summary: e.summary, ...(e.headline ? { headline: e.headline } : {}), ...(e.verdict ? { verdict: e.verdict } : {}), ...(e.steps !== undefined ? { steps: e.steps } : {}) });
   } else if (e.type === "usage") {
     onEvent({ type: "usage", promptTokens: e.promptTokens, completionTokens: e.completionTokens, totalTokens: e.totalTokens });
   }

@@ -92,3 +92,56 @@ test("run_command asks before a risky command, and runs nothing on a no", async 
   assert.match(asked, /deletes stashed work/);
   assert.match(r.output, /declined/);
 });
+
+// ── stopping processes by name ───────────────────────────────────────────────────────────────────
+
+test("stopping every process with a name asks first, in every shell's spelling", () => {
+  for (const c of [
+    "Get-Process electron -ErrorAction SilentlyContinue | Stop-Process -Force",
+    "Get-Process -Name electron | Stop-Process -Force; Start-Sleep -Milliseconds 800; npx electron .",
+    "gps node | kill",
+    "Stop-Process -Name chrome -Force",
+    "Stop-Process -ProcessName code,node",
+    "spps -name electron",
+    "taskkill /F /IM electron.exe",
+    "taskkill /im node.exe /t /f",
+    "taskkill.exe /FI \"IMAGENAME eq python.exe\"",
+    "pkill node",
+    "pkill -f vite",
+    "killall electron",
+    "kill $(pgrep node)",
+    "pgrep -f electron | xargs kill -9",
+    "$p = Get-Process electron\nStop-Process $p -Force",
+    "Get-CimInstance Win32_Process -Filter \"name='electron.exe'\" | Invoke-CimMethod -MethodName Terminate",
+  ]) {
+    const why = riskyCommandReason(c);
+    assert.ok(why && /every process with that name/.test(why), `not flagged: ${c}`);
+  }
+});
+
+test("stopping one process, by its id or through the tool that knows which are yours, does not ask", () => {
+  for (const c of [
+    "Stop-Process -Id 4242 -Force",
+    "Get-Process -Id 4242 | Stop-Process",
+    "$c = Get-NetTCPConnection -LocalPort 9222; Stop-Process -Id $c.OwningProcess",
+    "taskkill /PID 4242 /T /F",
+    "kill 4242",
+    "kill -9 4242",
+    "pkill -P 4242",
+    "Get-Process electron | Select-Object Id, StartTime",
+    "Get-Process | Where-Object Name -eq electron | Format-Table",
+    "pgrep node",
+    "tasklist /FI \"IMAGENAME eq node.exe\"",
+  ]) {
+    assert.equal(riskyCommandReason(c), null, c);
+  }
+});
+
+test("a sub-agent that cannot ask is refused, with the reason in plain words", async () => {
+  const run = TOOLS.find((t) => t.name === "run_command")!;
+  const cwd = mkdtempSync(join(tmpdir(), "mw-kill-"));
+  const ctx = { cwd, roots: [cwd], reads: new Map(), todos: [] } as unknown as ToolContext;
+  const r = await run.execute({ command: "Get-Process electron | Stop-Process -Force" }, ctx);
+  assert.match(r.output, /every process with that name on this machine/);
+  assert.match(r.output, /no way to ask/);
+});

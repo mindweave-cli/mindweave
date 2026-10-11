@@ -26,7 +26,9 @@
  */
 import { randomUUID } from "node:crypto";
 import { STATUS_INSTRUCTION, renderVerdict, verifySubagentReport } from "./subagentReport.js";
-import { VERDICT_INSTRUCTION, VERIFIER_PROMPT, parseVerdict, renderVerdict as renderVerdictLine } from "./verifyReport.js";
+import { VERDICT_INSTRUCTION, VERIFIER_PROMPT, parseVerdict, renderVerdict as renderVerdictLine, type VerdictReport } from "./verifyReport.js";
+import { verifierOutcome, workerOutcome } from "./subagentOutcome.js";
+import { verifyWithGuards } from "./verifierRun.js";
 import type { Tool, ToolResult } from "./types.js";
 import type { EngineEvent } from "../dynamo/engine.js";
 import { fail, failQuietly } from "./results.js";
@@ -83,7 +85,9 @@ export const spawnSubagent: Tool = {
   // worker must run alone (serial lane) so concurrent edits can't race. This is what
   // lets the model emit several read-only spawn_subagent calls in one message and have
   // them run concurrently.
-  isConcurrencySafe: (args) => args.read_only === true,
+  // A verifier runs commands (a build, the app) and its files are checked before and after, so it
+  // runs alone even if it was also marked read-only: two at once would see each other's output.
+  isConcurrencySafe: (args) => args.read_only === true && args.verify !== true,
   // Three limits were enforced in code and absent from the text: a child cannot spawn
   // its own child, parallel workers are capped, and running out of steps is a clean
   // PAUSE rather than a failure. That last one changes what the model should do about
@@ -144,11 +148,13 @@ export const spawnSubagent: Tool = {
       verify: {
         type: "boolean",
         description:
-          "Spawn an adversarial VERIFIER of work that has already been done, instead of a worker. It is read-only " +
-          "(implied — do not also pass read_only), it is told to try to BREAK the change rather than confirm it, and " +
-          "it must show the command and output behind every check it claims. It answers `VERDICT: pass|fail|partial`, " +
-          "and a pass with no command output is automatically downgraded to partial. Give it the ORIGINAL request, " +
-          "the files that changed, and what the approach was — it cannot see this conversation.",
+          "Spawn an adversarial VERIFIER of work that has already been done, instead of a worker. It cannot edit or " +
+          "write files (implied — do not also pass read_only), but it CAN run commands and drive the app, because " +
+          "checking means running. It is told to try to BREAK the change rather than confirm it, and it must show the " +
+          "command and output behind every check it claims. It answers `VERDICT: pass|fail|partial`. The verdict is " +
+          "judged against what it really did: a check whose command never ran does not count, a pass with no command " +
+          "output is downgraded to partial, and a pass is also downgraded if any project file changed while it ran. " +
+          "Give it the ORIGINAL request, the files that changed, and what the approach was — it cannot see this conversation.",
       },
     },
   },
@@ -185,7 +191,7 @@ export const spawnSubagent: Tool = {
     // that can edit is a verifier that can make the thing it is judging pass.
     const readOnly = verifying || args.read_only === true;
 
-    const child = ctx.forkChild(framedTask, { readOnly, ...(verifying ? { agentPrompt: VERIFIER_PROMPT } : {}) });
+    const child = ctx.forkChild(framedTask, { readOnly, ...(verifying ? { agentPrompt: VERIFIER_PROMPT, verifier: true } : {}) });
     // Dynamic import: the static registry ← engine edge would otherwise cycle. By the
     // time execute() runs, both modules are fully loaded, so this is safe.
     const { respond } = await import("../dynamo/engine.js");
@@ -194,12 +200,14 @@ export const spawnSubagent: Tool = {
     // worker's nested rail distinct even when several fan out in parallel.
     const agentId = randomUUID().slice(0, 8);
     const taskLabel = task.replace(/\s+/g, " ").trim().slice(0, 100);
-    ctx.emitEvent?.({ type: "subagent", phase: "start", id: agentId, task: taskLabel, readOnly });
+    ctx.emitEvent?.({ type: "subagent", phase: "start", id: agentId, task: taskLabel, readOnly, taskFull: task.replace(/\s+/g, " ").trim().slice(0, 600) });
 
-    let reply: string;
-    try {
+    let reply = "";
+    let verified: VerdictReport | undefined;
+    // Run the child. `watch` sees every event first, so a verifier's own commands are known.
+    const runChild = (watch?: (e: EngineEvent) => void): Promise<string> =>
       // Bounded: a wide fan-out queues here rather than launching every worker at once.
-      reply = await gate.run(() =>
+      gate.run(() =>
         respond(child, {
           signal: ctx.abortSignal,
           maxSteps: budget,
@@ -208,13 +216,22 @@ export const spawnSubagent: Tool = {
           // id so the UI nests them in the worker's rail (its prose/reasoning stays
           // muted — only the final distilled report crosses back, as the tool result).
           onEvent: (e: EngineEvent) => {
+            watch?.(e);
             if (e.type === "usage") ctx.reportUsage?.(e);
             else if (e.type === "tool") ctx.emitEvent?.({ ...e, agent: agentId });
           },
         }),
       );
+    try {
+      if (verifying) {
+        // A verifier's verdict is judged against what it DID: the commands it really ran, and whether
+        // the project's files are the same afterwards. See verifierRun.ts.
+        verified = await verifyWithGuards({ cwd: ctx.cwd, checkpoints: ctx.checkpoints, shells: ctx.backgroundShells, run: (watch) => runChild(watch) });
+      } else {
+        reply = await runChild();
+      }
     } catch (error) {
-      ctx.emitEvent?.({ type: "subagent", phase: "end", id: agentId, summary: "failed", error: true });
+      ctx.emitEvent?.({ type: "subagent", phase: "end", id: agentId, summary: "failed", error: true, headline: "Failed", verdict: "fail" });
       return fail(`the sub-agent failed: ${error instanceof Error ? error.message : String(error)}`);
     }
 
@@ -229,7 +246,7 @@ export const spawnSubagent: Tool = {
     if (verifying) {
       // The verifier's report is judged on its EVIDENCE, not on its confidence: a pass
       // carrying no command output is downgraded before the parent ever reads the word.
-      const report = parseVerdict(reply);
+      const report = verified ?? parseVerdict(reply);
       const line = renderVerdictLine(report);
       ctx.emitEvent?.({
         type: "subagent",
@@ -237,6 +254,8 @@ export const spawnSubagent: Tool = {
         id: agentId,
         summary: `${stepLabel} · ${line}`,
         error: report.verdict === "fail",
+        ...verifierOutcome(report.verdict, report.evidence),
+        steps,
       });
       const header = [
         report.concerns.length > 0 ? `Treat with care: ${report.concerns.join("; ")}.` : "",
@@ -252,7 +271,15 @@ export const spawnSubagent: Tool = {
 
     const verdict = verifySubagentReport(reply, { steps, budget, outputFormat });
     const flag = verdict.trustworthy ? "" : ` · ${verdict.status === "unstated" ? "unverified" : verdict.status}`;
-    ctx.emitEvent?.({ type: "subagent", phase: "end", id: agentId, summary: `${stepLabel}${flag}`, error: verdict.status === "failed" });
+    ctx.emitEvent?.({
+      type: "subagent",
+      phase: "end",
+      id: agentId,
+      summary: `${stepLabel}${flag}`,
+      error: verdict.status === "failed",
+      ...workerOutcome({ status: verdict.status, trustworthy: verdict.trustworthy, exhausted: steps >= budget }),
+      steps,
+    });
     return {
       output: renderVerdict(verdict),
       summary: `subagent · ${stepLabel}${flag}`,

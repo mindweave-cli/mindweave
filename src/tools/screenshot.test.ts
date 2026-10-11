@@ -266,14 +266,66 @@ test("giving up says NOT to capture a different window, and offers the focused-w
 
 test("with no window named and none focused, the message says that instead of a fake match count", () => {
   // Real session: `screenshot {}` came back as `"(focused window)" matches 5 windows`.
-  const pick = pickWindow(undefined, [win("Manicule", "1"), win("cmd.exe", "2")]);
+  const pick = pickWindow(undefined, [win("Notes App", "1"), win("cmd.exe", "2")]);
   assert.equal(pick.kind, "ambiguous");
   const text = ambiguousMessage(undefined, pick.kind === "ambiguous" ? pick.candidates : []);
   assert.match(text, /No window had focus/);
-  assert.match(text, /Manicule/);
+  assert.match(text, /Notes App/);
   assert.doesNotMatch(text, /\(focused window\)" matches/);
 });
 
 test("a named query that matches several windows still says how many", () => {
   assert.match(ambiguousMessage("vite", [win("Vite A", "1"), win("Vite B", "2")]), /"vite" matches 2 windows/);
+});
+
+// ── the window Mindweave itself runs in is never "whichever has focus" ───────────────────────────
+
+import { hostMessage } from "./screenshot.js";
+
+const host = (title: string, handle: string, foreground = false): WindowInfo => ({ handle, title, foreground, host: true });
+
+test("the script's third column marks the window this process runs in", () => {
+  const windows = parseWindowList("*10\tCommand Prompt\thost\r\n-11\tNotes App\r\n-12\tA title\twith a tab\r\n");
+  assert.deepEqual(windows, [
+    { handle: "10", title: "Command Prompt", foreground: true, host: true },
+    { handle: "11", title: "Notes App", foreground: false },
+    { handle: "12", title: "A title\twith a tab", foreground: false },
+  ]);
+});
+
+test("with no title, a focused terminal is refused and the others are offered; a focused app is still captured", () => {
+  const terminal = host("Command Prompt", "10", true);
+  const app = win("Notes App", "11");
+  const refused = pickWindow(undefined, [terminal, app]);
+  assert.equal(refused.kind, "host");
+  if (refused.kind === "host") {
+    assert.equal(refused.window.handle, "10");
+    assert.deepEqual(refused.candidates.map((w) => w.title), ["Notes App"], "the terminal is not offered as a choice");
+  }
+  const focusedApp = pickWindow(undefined, [host("terminal", "10"), win("Notes App", "11", true)]);
+  assert.equal(focusedApp.kind, "match", "a user who focused the app on purpose still gets it");
+});
+
+test("naming the terminal is still allowed: the user may have asked for exactly that", () => {
+  const pick = pickWindow("Command", [host("Command Prompt", "10", true), win("Notes App", "11")]);
+  assert.equal(pick.kind, "match");
+});
+
+test("the refusal says what the window is, that nothing was taken, and how to name the app", () => {
+  const text = hostMessage(host("Command Prompt", "10", true), [win("Notes App", "11"), win("electron", "12")]);
+  assert.match(text, /the one Mindweave itself runs in \("Command Prompt"\)/);
+  assert.match(text, /nothing was captured/);
+  assert.match(text, /listed by its process name, such as "electron"/);
+  assert.match(text, /- Notes App/);
+  assert.doesNotMatch(text, /cmd\.exe\s+\(focused\)/, "the terminal is not in the list it offers");
+});
+
+test("a listed window says when it is where Mindweave runs", () => {
+  assert.match(listTitles([host("Windows Terminal", "10", true), win("Notes App", "11")]), /- Windows Terminal {2}\(focused\) {2}\(where Mindweave runs\)/);
+});
+
+test("the tool no longer tells the model to omit the title to reach an app", () => {
+  assert.doesNotMatch(screenshot.description, /omit `window` to grab the focused window rather than guessing/);
+  assert.match(screenshot.description, /process name/);
+  assert.match(screenshot.description, /never captured that way/);
 });

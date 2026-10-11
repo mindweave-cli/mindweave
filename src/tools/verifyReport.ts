@@ -29,6 +29,20 @@ export interface VerdictReport {
   downgraded: boolean;
   /** Things the caller must not read past. Empty when the report is clean. */
   concerns: string[];
+  /** Checks that cite a command which never ran: reading dressed as a check. Zero when not known. */
+  unbacked?: number;
+  /** Project files that changed while it ran (see treeGuard.ts). Empty when none, or not known. */
+  modified?: string[];
+}
+
+/**
+ * What the run itself shows, from the calls the engine saw it make (not from what the report says).
+ * `executed` is each command it really ran (and each look at the app, as `ui <action> ...`), and
+ * `modified` the project files that were different afterwards.
+ */
+export interface RunFacts {
+  executed: string[];
+  modified: string[];
 }
 
 /**
@@ -53,7 +67,9 @@ These are the exact sentences you will reach for. Each one is wrong:
 - "This is probably fine" — probably is not verified.
 - "I don't have the tools for this" — check what you actually have before deciding that.
 
-YOU CANNOT MODIFY ANYTHING. Your edit and write tools are removed, not discouraged — this is enforced, so do not plan around it. Read, search, and run commands. A scratch file under the system temp directory is fine; the project is not.
+YOU CANNOT MODIFY ANYTHING. Your edit and write tools are removed, not discouraged — this is enforced, so do not plan around it. You can read, search, run builds, tests, the typechecker and scripts that call the code, start the app and drive it, and run commands that only read. You cannot delete, move, rename or copy files, install or publish packages, change a git repository, stop processes, fetch from outside this machine or write anywhere but the system temp directory: those are refused, with the reason. Do not use the app's own delete or reset controls unless testing them is the job. A scratch file under the system temp directory is fine; the project is not, and it is checked: the project's files are looked at before you start and after you finish, and if a command of yours changed one, it is named in the verdict and the verdict cannot be pass.
+
+WHAT COUNTS AS A CHECK. Only a command you really ran. The call you made is compared with what you report: a \`$ ...\` line whose command was never run is marked as not a check, and reading a file is not a command. A check you could not run — because a tool was refused, or the app would not start — is a skip: say so, and say why.
 
 WHAT TO DO. Run the build. Run the tests, including the full suite when the change is broad enough to warrant it. Run the typechecker and any linter. Then — and this is the part that matters — exercise the change itself: call the function, hit the endpoint, run the command, drive the UI. Finally, try to break it: boundary values, empty and malformed input, the same operation twice, an id that does not exist.
 
@@ -101,7 +117,17 @@ const VERDICT_LINE = /^[ \t>*_#-]*VERDICT[:\s]+\s*(pass|fail|partial)[ \t*_.!]*$
  * OUTPUT to follow, which is the half that cannot be produced without running anything.
  */
 export function evidenceCount(text: string): number {
-  let count = 0;
+  return checkLines(text).length;
+}
+
+/** A line in the report that names a command and has output after it, and the command as written. */
+export interface CheckLine {
+  at: number;
+  command: string;
+}
+
+export function checkLines(text: string): CheckLine[] {
+  const out: CheckLine[] = [];
   const lines = text.split(/\r?\n/);
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!;
@@ -110,9 +136,58 @@ export function evidenceCount(text: string): number {
     // A command with nothing after it is a command someone typed into a report, not one
     // they ran. Something non-empty has to follow before the next check heading.
     const next = lines.slice(i + 1, i + 6).find((l) => l.trim() && !/^\s*\$\s+\S/.test(l));
-    if (next && !/^#{1,6}\s/.test(next)) count += 1;
+    if (next && !/^#{1,6}\s/.test(next)) {
+      out.push({ at: i, command: line.replace(/^\s*\$\s+/, "").replace(/^\s*\*{0,2}Command run:?\**\s*/i, "").trim() });
+    }
   }
-  return count;
+  return out;
+}
+
+/** The words of a command, lowercased, with quotes and flags' punctuation off (pure). */
+function words(command: string): string[] {
+  return command
+    .toLowerCase()
+    .replace(/["'`]/g, "")
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+/**
+ * Is a command the report cites one the run really made (pure)?
+ *
+ * The report abbreviates: it says `npm test` where the call was `npm run test 2>&1 | tail`. So a cited
+ * command is backed when every word of it appears, in order, in some command that ran. What it
+ * cannot be is something that never ran at all: `read src/main/index.ts:91-123` is a look at a file,
+ * and there is no command behind it.
+ */
+export function commandMatches(reported: string, executed: readonly string[]): boolean {
+  const need = words(reported);
+  if (need.length === 0) return false;
+  return executed.some((e) => {
+    const have = words(e);
+    let at = 0;
+    for (const w of need) {
+      const found = have.indexOf(w, at);
+      if (found < 0) return false;
+      at = found + 1;
+    }
+    return true;
+  });
+}
+
+/** A PASS under a check that no command backs says so, where the reader will see it (pure). */
+function markUnbacked(body: string, unbacked: readonly CheckLine[]): string {
+  if (unbacked.length === 0) return body;
+  const lines = body.split(/\r?\n/);
+  for (const c of unbacked) {
+    for (let i = c.at + 1; i < lines.length && !/^#{1,6}\s/.test(lines[i]!); i++) {
+      if (/^\s*=>\s*PASS\b/i.test(lines[i]!)) {
+        lines[i] = `${lines[i]!.trimEnd()} [NOT A CHECK: no command like this was run, so this is reading, not verifying]`;
+        break;
+      }
+    }
+  }
+  return lines.join("\n");
 }
 
 /**
@@ -124,16 +199,36 @@ export function evidenceCount(text: string): number {
  * downgraded: claiming something is broken, or that you were blocked, is not a claim that
  * benefits the claimer, so there is no incentive to fake it and no reason to second-guess.
  */
-export function parseVerdict(reply: string): VerdictReport {
+export function parseVerdict(reply: string, run?: RunFacts): VerdictReport {
   const text = (reply ?? "").trim();
   const match = VERDICT_LINE.exec(text);
   const stated = (match?.[1]?.toLowerCase() ?? "unstated") as Verdict;
-  const body = match ? text.replace(VERDICT_LINE, "").trim() : text;
-  const evidence = evidenceCount(body);
+  let body = match ? text.replace(VERDICT_LINE, "").trim() : text;
+  const cited = checkLines(body);
+  // With the run's own record, a check counts only when a command like it ran. Without one (an old
+  // caller, a test) the report's own lines are all there is, as before.
+  const unbackedLines = run ? cited.filter((c) => !commandMatches(c.command, run.executed)) : [];
+  const evidence = cited.length - unbackedLines.length;
+  if (run) body = markUnbacked(body, unbackedLines);
   const concerns: string[] = [];
+  if (unbackedLines.length > 0) {
+    concerns.push(
+      `${unbackedLines.length} check${unbackedLines.length === 1 ? "" : "s"} cite${unbackedLines.length === 1 ? "s" : ""} a command that never ran, so ${unbackedLines.length === 1 ? "it is" : "they are"} reading the code, not testing it`,
+    );
+  }
+  const modified = run?.modified ?? [];
+  if (modified.length > 0) {
+    concerns.push(
+      `it changed ${modified.length} project file${modified.length === 1 ? "" : "s"} while it ran (${modified.slice(0, 4).join(", ")}${modified.length > 4 ? ` and ${modified.length - 4} more` : ""}); a verifier that changes the code can make it pass, so do not trust this verdict, and undo puts them back`,
+    );
+  }
 
   let verdict = stated;
   let downgraded = false;
+  if (stated === "pass" && modified.length > 0) {
+    verdict = "partial";
+    downgraded = true;
+  }
   if (stated === "pass" && evidence === 0) {
     verdict = "partial";
     downgraded = true;
@@ -147,7 +242,7 @@ export function parseVerdict(reply: string): VerdictReport {
     // adversarial probe the contract asks for as well as the happy path.
     concerns.push("only one check carried evidence; nothing here looks like an attempt to break it");
   }
-  return { verdict, body, evidence, downgraded, concerns };
+  return { verdict, body, evidence, downgraded, concerns, unbacked: unbackedLines.length, modified };
 }
 
 /** One line for the transcript. The caller gets the body; the user gets this. */

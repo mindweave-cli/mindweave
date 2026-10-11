@@ -49,12 +49,18 @@ export interface WindowInfo {
   title: string;
   /** True for the window that currently has focus: what "the app" usually means. */
   foreground: boolean;
+  /**
+   * The window this process itself runs in: the terminal Mindweave is typed into, or the desktop app that
+   * hosts it. It is where the user is looking while the agent works, so it is the focused window almost
+   * every time, and a picture of it is never a picture of the app being tested.
+   */
+  host?: boolean;
 }
 
 const PS_TIMEOUT_MS = 20_000;
 
 const SCRIPT = String.raw`
-param([string]$Mode = "list", [string]$Handle = "", [string]$Out = "", [string]$Desktop = "", [string]$Hidden = "")
+param([string]$Mode = "list", [string]$Handle = "", [string]$Out = "", [string]$Desktop = "", [string]$Hidden = "", [int]$Owner = 0)
 $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.Drawing
 
@@ -67,6 +73,9 @@ using System.Runtime.InteropServices;
 using System.Text;
 
 public static class MwCapture {
+    // The processes this one runs inside (the terminal, its console host, the app hosting it).
+    // Their windows are marked "host" in the list, so the caller can tell them from the app under test.
+    public static HashSet<uint> HostPids = new HashSet<uint>();
     delegate bool EnumProc(IntPtr hWnd, IntPtr lParam);
     [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr l);
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
@@ -85,6 +94,19 @@ public static class MwCapture {
     [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
 
     public static void Dpi() { SetProcessDPIAware(); }
+
+    [DllImport("kernel32.dll")] static extern IntPtr GetConsoleWindow();
+    [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr h, uint flags);
+
+    // The window the console this process is attached to is drawn in. In Windows Terminal the console
+    // window is a hidden stand-in owned by the real top-level window, so the owner is what is returned.
+    // Empty when there is no console (the desktop app, a service).
+    public static string HostWindow() {
+        IntPtr c = GetConsoleWindow();
+        if (c == IntPtr.Zero) return "";
+        IntPtr root = GetAncestor(c, 3 /* GA_ROOTOWNER */);
+        return (root == IntPtr.Zero ? c : root).ToInt64().ToString();
+    }
 
     // A DWM-cloaked window passes IsWindowVisible but is not actually on screen — the
     // invisible UWP and host windows that would otherwise flood the list. Any failure to
@@ -155,7 +177,9 @@ public static class MwCapture {
             }
             // The leading marker is how the caller knows which window the user is
             // actually looking at, so it can name it when asking permission.
-            found.Add((h == fg && mark.Length == 0 ? "*" : "-") + mark + h.ToInt64().ToString() + "\t" + title);
+            uint wpid; GetWindowThreadProcessId(h, out wpid);
+            string hostCol = mark.Length == 0 && HostPids.Contains(wpid) ? "\thost" : "";
+            found.Add((h == fg && mark.Length == 0 ? "*" : "-") + mark + h.ToInt64().ToString() + "\t" + title + hostCol);
             return true;
         }, IntPtr.Zero);
         return found;
@@ -205,7 +229,34 @@ ${DESK_CS}
 # Before any measurement, or every rectangle is in the wrong coordinate space.
 [MwCapture]::Dpi() | Out-Null
 
+if ($Mode -eq "host") {
+    Write-Output ([MwCapture]::HostWindow())
+    exit 0
+}
+
 if ($Mode -eq "list") {
+    # Which windows are the one this process runs in: walk up from it, stopping at the shell that
+    # started the whole session (the desktop, services), and take each console host that belongs to
+    # one of those on the way. Every process passed may own the window.
+    if ($Owner -gt 0) {
+        $procs = Get-CimInstance Win32_Process -Property ProcessId, ParentProcessId, Name
+        $parent = @{}
+        $name = @{}
+        foreach ($p in $procs) { $parent[[int]$p.ProcessId] = [int]$p.ParentProcessId; $name[[int]$p.ProcessId] = ([string]$p.Name).ToLower() }
+        $stop = @("explorer.exe", "services.exe", "wininit.exe", "winlogon.exe", "csrss.exe", "svchost.exe", "system")
+        $seen = @{}
+        $at = $Owner
+        while ($at -gt 0 -and -not $seen.ContainsKey($at)) {
+            $seen[$at] = $true
+            if ($stop -contains $name[$at]) { break }
+            [void][MwCapture]::HostPids.Add([uint32]$at)
+            $at = $parent[$at]
+        }
+        foreach ($p in $procs) {
+            $n = ([string]$p.Name).ToLower()
+            if (($n -eq "conhost.exe" -or $n -eq "openconsole.exe") -and [MwCapture]::HostPids.Contains([uint32]$p.ParentProcessId)) { [void][MwCapture]::HostPids.Add([uint32]$p.ProcessId) }
+        }
+    }
     [MwCapture]::List("") | ForEach-Object { Write-Output $_ }
     # The windows of apps started for testing, which are never on the screen.
     if ($Hidden -and [MwDesk]::Exists($Hidden)) { Write-Output ([MwCapture]::ListOn($Hidden)) }
@@ -238,13 +289,14 @@ async function ensureScript(): Promise<string> {
 }
 
 /** Run the script in one of its two modes. Rejects with the script's own message. */
-async function runScript(args: string[], signal?: AbortSignal): Promise<string> {
+async function runScript(args: string[], signal?: AbortSignal, shareConsole = false): Promise<string> {
   const script = await ensureScript();
   return await new Promise<string>((resolve, reject) => {
     const child = spawn(
       "powershell.exe",
       ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script, ...args],
-      { windowsHide: true },
+      // Hidden, with a console of its own, unless it must see THIS process's console (see hostWindowHandle).
+      shareConsole ? { stdio: ["ignore", "pipe", "pipe"] } : { windowsHide: true },
     );
     let out = "";
     let err = "";
@@ -255,8 +307,8 @@ async function runScript(args: string[], signal?: AbortSignal): Promise<string> 
     const onAbort = () => child.kill();
     signal?.addEventListener("abort", onAbort, { once: true });
 
-    child.stdout.on("data", (d: Buffer) => (out += d.toString()));
-    child.stderr.on("data", (d: Buffer) => (err += d.toString()));
+    child.stdout!.on("data", (d: Buffer) => (out += d.toString()));
+    child.stderr!.on("data", (d: Buffer) => (err += d.toString()));
     child.on("error", (e) => {
       clearTimeout(timer);
       signal?.removeEventListener("abort", onAbort);
@@ -286,10 +338,13 @@ export function parseWindowList(stdout: string): WindowInfo[] {
     const tab = line.indexOf("\t");
     if (tab <= 0) continue;
     const marked = line.slice(0, tab).trim();
-    const title = line.slice(tab + 1).trim();
+    // A third column, "host", marks the window this process runs in.
+    const rest = line.slice(tab + 1).split("\t");
+    const host = rest.length > 1 && rest[rest.length - 1]!.trim() === "host";
+    const title = (host ? rest.slice(0, -1) : rest).join("\t").trim();
     const match = new RegExp(`^([*-])(${HIDDEN_MARK}?\\d+)$`).exec(marked);
     if (!match || !title) continue;
-    windows.push({ handle: match[2]!, title, foreground: match[1] === "*" });
+    windows.push({ handle: match[2]!, title, foreground: match[1] === "*", ...(host ? { host: true } : {}) });
   }
   return windows;
 }
@@ -300,7 +355,36 @@ export function parseWindowList(stdout: string): WindowInfo[] {
  * title (a custom title bar) kept and labelled by its process rather than dropped.
  */
 export async function listWindows(signal?: AbortSignal): Promise<WindowInfo[]> {
-  return parseWindowList(await runScript(["-Mode", "list", "-Hidden", hiddenDesktopName()], signal));
+  const [raw, host] = await Promise.all([
+    runScript(["-Mode", "list", "-Hidden", hiddenDesktopName(), "-Owner", String(process.pid)], signal),
+    hostWindowHandle(signal),
+  ]);
+  const windows = parseWindowList(raw);
+  // The terminal's own window: found from the console this process is attached to, which the list cannot see
+  // (Windows Terminal is not a parent of the shell, only the owner of its window).
+  if (host) for (const w of windows) if (w.handle === host) w.host = true;
+  return windows;
+}
+
+let hostHandleCache: string | null | undefined;
+
+/**
+ * The window of the terminal this process is typed into, as a handle, or null when it has none (the desktop
+ * app) or it cannot be told. Asked once and kept: it does not change while the process runs. The question
+ * is put by a child that shares this console rather than making one of its own, since a console is what
+ * names the window, and that is only done when this process has a terminal at all, so a program with none
+ * is never made to open a window.
+ */
+export async function hostWindowHandle(signal?: AbortSignal): Promise<string | null> {
+  if (hostHandleCache !== undefined) return hostHandleCache;
+  if (!process.stdout.isTTY && !process.stdin.isTTY) return (hostHandleCache = null);
+  try {
+    const out = (await runScript(["-Mode", "host"], signal, true)).trim().split(/\s+/).pop() ?? "";
+    hostHandleCache = /^\d+$/.test(out) ? out : null;
+  } catch {
+    hostHandleCache = null;
+  }
+  return hostHandleCache;
 }
 
 /** Capture one window to `outPath`. `handle` may be the literal "foreground". */

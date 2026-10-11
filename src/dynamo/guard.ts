@@ -77,6 +77,14 @@ export const GUARD_REFUSAL =
   "Stopped: the user declined this action in Sentinel mode. Do not retry it — briefly say what you " +
   "were about to do and wait for the user's direction on how to proceed.";
 
+/**
+ * What a sub-agent is told when the session asks before acting and it has nobody to ask.
+ * Not the user declining: they were never asked, so the words say what actually happened.
+ */
+export const GUARD_NO_ONE_TO_ASK =
+  "Not run: this session asks before it acts, and a sub-agent has nobody to ask. Only commands made " +
+  "of read-only parts run without a question. Say in your report what you could not check, and why.";
+
 /** A short, human-readable description of a mutating call, for the approval prompt. */
 export function describeCall(name: string, args: Record<string, unknown>): string {
   const path = typeof args.path === "string" ? args.path : undefined;

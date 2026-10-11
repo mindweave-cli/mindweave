@@ -210,3 +210,16 @@ test("a worker is never handed the user's messages", async () => {
   assert.ok(call > 0, "the worker no longer runs through respond()");
   assert.ok(!/\bsteer:/.test(source.slice(call, call + 600)), "a worker is being given the user's message queue");
 });
+
+test("a verifier runs alone even when it was also marked read-only: it runs commands, and two would see each other's output", () => {
+  assert.equal(spawnSubagent.isConcurrencySafe!({ task: "x", verify: true }), false);
+  assert.equal(spawnSubagent.isConcurrencySafe!({ task: "x", read_only: true, verify: true }), false);
+  assert.equal(spawnSubagent.isConcurrencySafe!({ task: "x", read_only: true }), true, "a research worker still fans out");
+});
+
+test("forkSession gives a verifier its command tool, and nobody else", () => {
+  const parent = parentSession();
+  assert.equal(forkSession(parent, "t", { readOnly: true, verifier: true }).toolContext.verifierTools, true);
+  assert.equal(forkSession(parent, "t", { readOnly: true }).toolContext.verifierTools, false);
+  assert.equal(forkSession(parent, "t").toolContext.verifierTools, false);
+});

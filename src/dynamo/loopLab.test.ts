@@ -535,3 +535,70 @@ test("answering 'never ask again' for a command prefix saves an allow rule for t
   assert.equal(asked.length, before + 1, "other npm commands still ask");
   assertAllWellFormed("prefix-allow");
 });
+
+// ── a verifier runs what it checks; a research worker still cannot ───────────────────────────────
+
+import { forkSession } from "../memory/session.js";
+
+test("a verifier is offered the command tool and the app driver, never the edit tools; a plain read-only worker gets none of them", async () => {
+  const { session: parent, root } = await lab();
+  const marker = join(root, "src", "from-verifier.txt");
+
+  // A verifier: it can run a command, and still cannot write a file. (The app driver is held back until
+  // the conversation has asked for it, and a child can use what its parent has already asked for.)
+  parent.toolContext.activatedTools = new Set([...(parent.toolContext.activatedTools ?? []), "ui"]);
+  const verifier = forkSession(parent, "check it", { readOnly: true, verifier: true });
+  script = [
+    { tools: [{ name: "run_command", args: { command: "echo verified-by-running" } }, { name: "write_file", args: { path: marker, content: "x" } }] },
+    { text: "done" },
+  ];
+  verifier.transcript.push({ role: "user", content: "check it" });
+  await respond(verifier, {});
+  const offered = (bodies[0]!.tools ?? []).map((t) => t.function.name);
+  assert.ok(offered.includes("run_command"), `a verifier must be offered the command tool, got: ${offered.join(",")}`);
+  assert.ok(offered.includes("ui"), "and the app driver");
+  assert.ok(!offered.includes("write_file") && !offered.includes("edit") && !offered.includes("replace_symbol_body"), "but no tool that edits");
+  const results = bodies[1]!.messages.filter((m) => m.role === "tool").map(toolText).join("\n");
+  assert.match(results, /verified-by-running/, "its command really ran");
+  assert.match(results, /read-only/i, "a write it tried anyway was refused, and the refusal said why");
+  assert.throws(() => readFileSync(marker), "the file must not have been written");
+
+  // A plain read-only worker: none of it.
+  bodies = [];
+  const worker = forkSession(parent, "look around", { readOnly: true });
+  script = [{ tools: [{ name: "run_command", args: { command: "echo should-not-run" } }] }, { text: "ok" }];
+  worker.transcript.push({ role: "user", content: "look around" });
+  await respond(worker, {});
+  const workerOffered = (bodies[0]!.tools ?? []).map((t) => t.function.name);
+  assert.ok(!workerOffered.includes("run_command") && !workerOffered.includes("ui"), `a research worker was offered: ${workerOffered.join(",")}`);
+  const workerResults = bodies[1]!.messages.filter((m) => m.role === "tool").map(toolText).join("\n");
+  assert.doesNotMatch(workerResults, /should-not-run\s*$/m);
+  assert.match(workerResults, /read-only/i);
+  assertAllWellFormed("verifier-tools");
+});
+
+test("a child of a verifier is a plain worker: the command tool is not handed down", async () => {
+  const { session: parent } = await lab();
+  const verifier = forkSession(parent, "check it", { readOnly: true, verifier: true });
+  assert.equal(verifier.toolContext.verifierTools, true);
+  const grandchild = forkSession(verifier, "look", { readOnly: true });
+  assert.equal(grandchild.toolContext.verifierTools, false);
+});
+
+test("a verifier is refused a command that deletes, and the file is still there; an ordinary command still runs", async () => {
+  const { session: parent, root } = await lab();
+  const victim = join(root, "src", "keep-me.txt");
+  writeFileSync(victim, "precious");
+  const verifier = forkSession(parent, "check it", { readOnly: true, verifier: true });
+  script = [
+    { tools: [{ name: "run_command", args: { command: `Remove-Item -Force "${victim}"` } }, { name: "run_command", args: { command: "echo still-allowed" } }] },
+    { text: "could not check that" },
+  ];
+  verifier.transcript.push({ role: "user", content: "check it" });
+  await respond(verifier, {});
+  const results = bodies[1]!.messages.filter((m) => m.role === "tool").map(toolText).join("\n");
+  assert.match(results, /a verifier does not delete, move, rename or copy files/);
+  assert.match(results, /still-allowed/, "the ordinary command beside it ran");
+  assert.equal(readFileSync(victim, "utf8"), "precious", "the file is untouched");
+  assertAllWellFormed("verifier-refused");
+});

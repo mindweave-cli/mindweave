@@ -51,7 +51,8 @@ import type { ImageRef } from "../memory/images.js";
 import { forkSession } from "../memory/session.js";
 import { respond, type PauseReason, type RespondOptions } from "./engine.js";
 import { formatCost, summarizeTask, taskLimitReason, type TaskLimits } from "./pricing.js";
-import { VERIFIER_PROMPT, VERDICT_INSTRUCTION, parseVerdict, type VerdictReport } from "../tools/verifyReport.js";
+import { VERIFIER_PROMPT, VERDICT_INSTRUCTION, type VerdictReport } from "../tools/verifyReport.js";
+import { verifyWithGuards } from "../tools/verifierRun.js";
 
 /** How many consecutive non-passing verifications before Marathon gives up and
  *  hands back to the user, rather than retry the same goal forever. Same shape as
@@ -329,9 +330,22 @@ export async function verifyGoal(
   options: { signal?: AbortSignal; onEvent?: RespondOptions["onEvent"] } = {},
 ): Promise<VerdictReport> {
   const task = `Verify whether this goal has actually been achieved:\n\n${goal}\n\n${VERDICT_INSTRUCTION}`;
-  const child = forkSession(session, task, { readOnly: true, agentPrompt: VERIFIER_PROMPT });
-  const reply = await respond(child, { signal: options.signal, maxSteps: VERIFY_BUDGET, ...(options.onEvent ? { onEvent: options.onEvent } : {}) });
-  return parseVerdict(reply);
+  const child = forkSession(session, task, { readOnly: true, verifier: true, agentPrompt: VERIFIER_PROMPT });
+  // Judged against what the verifier did, not only what it says it did (see verifierRun.ts).
+  return verifyWithGuards({
+    cwd: session.cwd,
+    checkpoints: session.toolContext.checkpoints,
+    shells: session.toolContext.backgroundShells,
+    run: (watch) =>
+      respond(child, {
+        signal: options.signal,
+        maxSteps: VERIFY_BUDGET,
+        onEvent: (e) => {
+          watch(e);
+          options.onEvent?.(e);
+        },
+      }),
+  });
 }
 
 // ---------------------------------------------------------------------------

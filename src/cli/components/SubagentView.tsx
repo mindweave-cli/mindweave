@@ -1,179 +1,168 @@
 /**
- * SubagentView — delegated work, as a distinct NESTED block.
+ * SubagentView — delegated work, as a title and an answer, with the working a click away.
  *
- * ONE worker keeps its full rail, because there is room to watch it:
+ *   ● Sub-agent  Re-verifying a FIXED bug in Notes App  · read-only
+ *     ! Could not fully verify · 8 checks · 20 steps · 2m 10s  ▸
  *
- *   ◆ Subagent · read-only   find every authFetch call site
- *   │ Searching authFetch
- *   │ Read login.ts
- *     ⎿ 3 steps · read-only        ← collapses here once it reports back
+ * While it works, the dot pulses and the second line says where it is:
  *
- * SEVERAL at once become a topology instead, because read-only workers fan out in
- * parallel and their rails, side by side, are a stripe nobody can follow:
+ *   ● Sub-agent  Re-verifying a FIXED bug in Notes App  · read-only
+ *     step 12 · reading use-debounced.ts  1m 5s  ▸
  *
- *   ◆ Subagents · 2 delegated
- *   ├── #1 · read-only  find every authFetch call site
- *   │      ⎿ 3 steps · read-only
- *   └── #2              draft unit tests for runCommand.ts
- *          ⎿ working · 4 steps
+ * What you want from a worker is the answer, so that is what shows: how it ended (a tick, a cross,
+ * or a bang when it could only half do it), the steps it took and the time. Its task is a prompt
+ * written for a model, so the line holds a short title taken from it, not the prompt itself. A
+ * click opens a shaded band: the task, the result, a count of what it did, then each thing it
+ * did, with repeats merged (a poll that came back six times is one line, ×6).
  *
- * The trade is deliberate: with one worker you can afford to watch each call; with
- * several you need the SHAPE of the delegation — who is doing what, and how far along
- * — and the individual calls become noise. What is shown is only what a worker
- * actually reports (its task, whether it may write, its progress). The reference
- * design also labels each with a model and an "isolated 8k window"; a sub-agent
- * carries neither, so inventing them would be decoration that reads as fact.
- *
- * A violet ◆ marker sets the whole family apart from the blue tool rows — these are
- * separate minds working inside the transcript, not more tools. A child's prose is
- * never shown; only its final distilled report crosses back, as the spawn's result.
+ * Several at once are one group, each with its own two lines, so the shape of the delegation is
+ * visible: who is doing what and how far along. A child's own prose is never shown; only its
+ * report crosses back. The same look as the folded commands row, so there is one thing to learn.
  */
-import { Box, Text } from "ink";
-import { ERROR_COLOR } from "../toolDisplay.js";
-import { collapseAdjacent } from "../toolItems.js";
+import { Box, Text, type DOMElement } from "ink";
 import { PulseDot } from "./PulseDot.js";
+import { Elapsed } from "./ToolLine.js";
+import { agentTitle, bandRows, bodyRows, humanSpan, markOf, nowText, toneOf, type Tone } from "../agentLines.js";
+import { registerExpandable, itemHit } from "../expandHits.js";
 import type { AgentEntry } from "../transcript.js";
-import { BAD } from "../theme.js";
+import { BAD, GOOD, USER_BG, USER_FG, WARN } from "../theme.js";
 
-const DIAMOND = "●";
-const BRANCH = "⎿";
-const RAIL = "│";
-const TEE = "├──";
-const ELBOW = "└──";
-// The rail/branch occupy 3 columns; item text hangs beside them, aligned under the
-// header content and never spilling left into the marker gutter.
-const RAIL_INDENT = 3;
-/** A sub-agent is not given a colour of its own: plain, and red when one failed. */
-const AGENT_COLOR: string | undefined = undefined;
+const DOT = "●";
+
+const COLOUR: Record<"good" | "bad" | "warn", string> = { good: GOOD, bad: BAD, warn: WARN };
+const colourOf = (tone: Tone): string | undefined => (tone ? COLOUR[tone] : undefined);
 
 export function SubagentView({
+  id,
   agents,
   done,
   columns,
   tightTop,
+  hoveredItem,
 }: {
+  id: number;
   agents: AgentEntry[];
   done: boolean;
   columns: number;
   tightTop?: boolean;
+  /** The pointer is over the worker at this place in the group, or -1. */
+  hoveredItem?: number;
 }) {
   if (agents.length === 0) return null;
-  const anyError = agents.some((a) => a.status === "error");
-  const dotColor = anyError ? ERROR_COLOR : AGENT_COLOR;
-
+  const solo = agents.length === 1;
   return (
     <Box marginTop={tightTop ? 0 : 1} flexDirection="column">
-      <Box flexDirection="row">
-        <Box minWidth={2}>
-          {/* White like every tool dot: it pulses while the work goes on and is still once it is done. */}
-          {done ? <Text>{DIAMOND}</Text> : <PulseDot glyph={DIAMOND} />}
+      {solo ? null : (
+        <Box flexDirection="row">
+          <Box minWidth={2}>{done ? <Text>{DOT}</Text> : <PulseDot glyph={DOT} />}</Box>
+          <Text bold>Sub-agents</Text>
+          <Text dimColor>{` · ${agents.length} delegated`}</Text>
         </Box>
-        {agents.length === 1 ? (
-          <SoloHeader agent={agents[0]!} columns={columns} color={dotColor} />
-        ) : (
-          <>
-            <Text bold color={dotColor}>Subagents</Text>
-            <Text dimColor>{` · ${agents.length} delegated`}</Text>
-          </>
-        )}
-      </Box>
-
-      {agents.length === 1 ? (
-        <SoloBody agent={agents[0]!} columns={columns} done={done} />
-      ) : (
-        <Topology agents={agents} columns={columns} />
       )}
+      {agents.map((agent, i) => (
+        <AgentBlock key={agent.agentId} id={id} index={i} agent={agent} lead={solo} done={done} columns={columns} hot={hoveredItem === i} />
+      ))}
     </Box>
   );
 }
 
-/** One worker's header: its identity and the task it was given. */
-function SoloHeader({ agent, columns, color }: { agent: AgentEntry; columns: number; color: string | undefined }) {
-  const taskLabel = clip(agent.task, Math.max(16, columns - 22));
-  return (
-    <>
-      <Text bold color={color}>Subagent</Text>
-      {agent.readOnly ? <Text dimColor> · read-only</Text> : null}
-      {taskLabel ? <Text dimColor>{"  "}{taskLabel}</Text> : null}
-    </>
-  );
-}
+function AgentBlock({
+  id,
+  index,
+  agent,
+  lead,
+  done,
+  columns,
+  hot,
+}: {
+  id: number;
+  index: number;
+  agent: AgentEntry;
+  /** The only worker: its dot is the block's dot. */
+  lead: boolean;
+  done: boolean;
+  columns: number;
+  hot: boolean;
+}) {
+  const running = agent.status === "running";
+  const tone = toneOf(agent);
+  const name = lead ? "Sub-agent" : `#${index + 1}`;
+  const tag = agent.readOnly ? " · read-only" : "";
+  // Everything on the title line has a fixed place, so a long title is cut at a word and never squeezes
+  // the name, as it once did ("Subagen").
+  const room = Math.max(10, columns - 2 - name.length - 2 - tag.length - 1);
+  const title = agentTitle(agent.task, room);
+  const steps = agent.steps ?? agent.items.length;
+  const took = agent.endedAt !== undefined && agent.startedAt !== undefined ? humanSpan(agent.endedAt - agent.startedAt) : "";
+  const arrow = agent.open ? " ▾" : " ▸";
+  const registered = (node: DOMElement | null) => registerExpandable(itemHit(id, index), node);
 
-/** One worker's live rail: every call it makes, then its closing line. */
-function SoloBody({ agent, columns, done }: { agent: AgentEntry; columns: number; done: boolean }) {
-  const content = Math.max(8, columns - RAIL_INDENT - 1);
-  const errored = agent.status === "error";
+  const band = agent.open ? bandRows(bodyRows(agent, running, bandWidth(columns)), columns) : [];
+
   return (
-    <Box flexDirection="column">
-      {collapseAdjacent(agent.items).map((row) => (
-        <Box key={row.item.toolId} flexDirection="row" width={columns}>
-          <Text color={AGENT_COLOR} dimColor>{` ${RAIL} `}</Text>
-          <Box width={content}>
-            <Text color={row.anyError ? BAD : undefined} dimColor={!row.anyError} wrap="truncate-end">
-              {row.label}{row.count > 1 ? `  ×${row.count}` : ""}
-            </Text>
-          </Box>
+    <Box flexDirection="column" ref={registered}>
+      <Box flexDirection="row" width={columns}>
+        <Box minWidth={2} flexShrink={0}>
+          {lead ? running ? <PulseDot glyph={DOT} /> : <Text>{DOT}</Text> : <Text>{"  "}</Text>}
         </Box>
-      ))}
-      {done && agent.summary ? (
-        <Box flexDirection="row" width={columns}>
-          <Text dimColor>{` ${BRANCH} `}</Text>
-          <Box width={content}>
-            <Text color={errored ? BAD : undefined} dimColor={!errored} wrap="truncate-end">
-              {agent.summary}
-            </Text>
+        <Box flexShrink={0}>
+          <Text bold>{name}</Text>
+        </Box>
+        {title ? (
+          <Box flexShrink={0}>
+            <Text bold={hot}>{"  "}{title}</Text>
           </Box>
+        ) : null}
+        {tag ? (
+          <Box flexShrink={0}>
+            <Text dimColor>{tag}</Text>
+          </Box>
+        ) : null}
+      </Box>
+      <Box flexDirection="row" width={columns}>
+        <Text>{"  "}</Text>
+        {running ? (
+          <>
+            <Box flexShrink={0}>
+              <Text dimColor>{`step ${agent.items.length}${nowText(agent.items) ? ` · ${nowText(agent.items)}` : ""}`.slice(0, Math.max(12, columns - 16))}</Text>
+            </Box>
+            {agent.startedAt !== undefined ? <Elapsed since={agent.startedAt} /> : null}
+          </>
+        ) : (
+          <>
+            <Box flexShrink={0}>
+              <Text color={colourOf(tone)} bold={tone === "bad"}>{`${markOf(tone)} ${agent.headline ?? agent.summary ?? "Finished"}`}</Text>
+            </Box>
+            <Box flexShrink={0}>
+              <Text dimColor>{` · ${steps} step${steps === 1 ? "" : "s"}${took ? ` · ${took}` : ""}`}</Text>
+            </Box>
+          </>
+        )}
+        <Box flexShrink={0}>
+          <Text dimColor={!hot} bold={hot}>{arrow}</Text>
+        </Box>
+      </Box>
+      {agent.open ? (
+        <Box flexDirection="column" width={columns}>
+          {band.map((r, j) => (
+            <Box key={j} flexDirection="row" width={columns}>
+              <Text>{"  "}</Text>
+              <Text backgroundColor={USER_BG} color={USER_FG}>
+                {" "}
+                <Text dimColor>{r.label.padEnd(8)}</Text>
+                <Text color={colourOf(r.tone)}>{r.text}</Text>
+                {" ".repeat(r.pad)}
+                {" "}
+              </Text>
+            </Box>
+          ))}
         </Box>
       ) : null}
     </Box>
   );
 }
 
-/** Several workers as a tree: one branch each, task on the branch, progress under it. */
-function Topology({ agents, columns }: { agents: AgentEntry[]; columns: number }) {
-  return (
-    <Box flexDirection="column">
-      {agents.map((agent, i) => {
-        const last = i === agents.length - 1;
-        const errored = agent.status === "error";
-        // A worker still going is described by what it has DONE so far, since its
-        // closing summary does not exist yet — otherwise a running branch says nothing
-        // and reads as stalled.
-        const steps = agent.items.length;
-        const progress = agent.summary
-          ? agent.summary
-          : `working${steps > 0 ? ` · ${steps} step${steps === 1 ? "" : "s"}` : ""}`;
-        const label = `#${i + 1}${agent.readOnly ? " · read-only" : ""}`;
-        const taskWidth = Math.max(8, columns - 8 - label.length);
-        return (
-          <Box key={agent.agentId} flexDirection="column">
-            <Box flexDirection="row" width={columns}>
-              <Text color={AGENT_COLOR} dimColor>{`  ${last ? ELBOW : TEE} `}</Text>
-              <Text bold color={errored ? ERROR_COLOR : AGENT_COLOR}>{label}</Text>
-              <Box width={taskWidth}>
-                <Text dimColor wrap="truncate-end">{"  "}{clip(agent.task, taskWidth)}</Text>
-              </Box>
-            </Box>
-            <Box flexDirection="row" width={columns}>
-              {/* The rail continues past a branch that is not the last one, so the
-                  tree stays connected down the left edge. */}
-              <Text color={AGENT_COLOR} dimColor>{`  ${last ? " " : RAIL}    ${BRANCH} `}</Text>
-              <Box width={Math.max(8, columns - 12)}>
-                <Text color={errored ? BAD : undefined} dimColor={!errored} wrap="truncate-end">
-                  {progress}
-                </Text>
-              </Box>
-            </Box>
-          </Box>
-        );
-      })}
-    </Box>
-  );
-}
-
-/** Flatten and clip a task to one short line for a header. */
-function clip(s: string, max: number): string {
-  const flat = s.replace(/\s+/g, " ").trim();
-  if (max <= 1) return "";
-  return flat.length <= max ? flat : flat.slice(0, max - 1) + "…";
+/** The width its task and the rest are wrapped to inside the band. */
+function bandWidth(columns: number): number {
+  return Math.max(8, columns - 14);
 }
