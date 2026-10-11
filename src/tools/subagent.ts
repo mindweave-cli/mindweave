@@ -98,9 +98,13 @@ export const spawnSubagent: Tool = {
   // The briefing advice was also making one point three times, which dilutes it.
   description:
     "Delegate a focused, self-contained subtask to a child agent with its own context, " +
-    "then get back just its result. This is how a wide search, an inventory, or a " +
-    "bounded chunk of work stays out of your context (e.g. \"find and list every call " +
-    "site of authFetch\"). The child does NOT see this conversation and cannot ask the " +
+    "then get back just its result. This is a heavy tool, used rarely: only for a job " +
+    "that is genuinely large (a wide search or inventory whose steps would bury your " +
+    "context, e.g. \"find and list every call site of authFetch\" across a big codebase), " +
+    "or when the user asks for one.\n" +
+    "DO NOT use it to read a file or a few files, to find one definition, to make or check " +
+    "a single change, or to run the tests or the build: do those yourself, they are " +
+    "faster and cheaper. The child does NOT see this conversation and cannot ask the " +
     "user anything, so the task must stand alone: the objective, its boundaries (what " +
     "NOT to touch), and via output_format the exact shape of the result you want. " +
     "Set read_only:true for research and inventory that must not change files.\n" +
@@ -266,7 +270,7 @@ export const spawnSubagent: Tool = {
         id: agentId,
         summary: `${stepLabel} · ${line}`,
         error: report.verdict === "fail",
-        ...verifierOutcome(report.verdict, report.evidence, exhausted),
+        ...verifierOutcome(report.verdict, report.evidence, exhausted, report.ran ?? 0),
         steps,
       });
       const header = [

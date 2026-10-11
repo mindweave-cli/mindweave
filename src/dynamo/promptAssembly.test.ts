@@ -223,3 +223,11 @@ test("the reply rule asks for what the user could not have seen", () => {
   assert.match(prompt, /unexpected that you did not act on/);
   assert.match(prompt, /an invented next step is worse than none/, "the escape from a forced offer");
 });
+
+test("the base prompt keeps sub-agents rare: the agent checks its own work, a verifier is the exception", () => {
+  const p = basePrompt("bash");
+  assert.match(p, /heavy tool and a rare one/);
+  assert.match(p, /Run the checks yourself/);
+  assert.doesNotMatch(p, /SEPARATE verifier/);
+  assert.doesNotMatch(p, /fix what it found and run it again/);
+});

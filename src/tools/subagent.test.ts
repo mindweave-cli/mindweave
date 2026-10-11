@@ -223,3 +223,9 @@ test("forkSession gives a verifier its command tool, and nobody else", () => {
   assert.equal(forkSession(parent, "t", { readOnly: true }).toolContext.verifierTools, false);
   assert.equal(forkSession(parent, "t").toolContext.verifierTools, false);
 });
+
+test("sub-agents are described as a rare tool, with what NOT to use them for", async () => {
+  const { spawnSubagent: subagentTool } = await import("./subagent.js");
+  assert.match(subagentTool.description, /heavy tool, used rarely/);
+  assert.match(subagentTool.description, /DO NOT use it to read a file/);
+});

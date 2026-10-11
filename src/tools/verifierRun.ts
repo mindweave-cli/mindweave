@@ -102,5 +102,6 @@ export async function verifyWithGuards(o: {
   }
   const changes = await treeChanges(before);
   if (changeCount(changes) > 0) await giveToUndo(o.checkpoints, changes);
-  return parseVerdict(reply, { executed: runs.ran(), modified: listChanges(o.cwd, changes) });
+  const report = parseVerdict(reply, { executed: runs.ran(), modified: listChanges(o.cwd, changes) });
+  return { ...report, ran: runs.ran().length };
 }

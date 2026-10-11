@@ -16,3 +16,11 @@ test("a worker that finished cleanly is done, and the other endings say why they
   assert.equal(workerOutcome({ status: "partial", trustworthy: false, exhausted: false }).headline, "Only part of it");
   assert.equal(workerOutcome({ status: "unstated", trustworthy: false, exhausted: false }).verdict, "unknown");
 });
+
+test("a verifier that answered in prose says how many commands it ran, not '0 checks'", () => {
+  assert.deepEqual(verifierOutcome("fail", 0, false, 5), { headline: "Failed verification · ran 5 commands", verdict: "fail" });
+  assert.equal(verifierOutcome("unstated", 0, true, 1).headline, "Stopped at its step limit · ran 1 command");
+  // With real checks counted, or with nothing run at all, the old wording stands.
+  assert.equal(verifierOutcome("pass", 3, false, 9).headline, "Verified · 3 checks");
+  assert.equal(verifierOutcome("fail", 0, false, 0).headline, "Failed verification · 0 checks");
+});

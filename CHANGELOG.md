@@ -2,6 +2,29 @@
 
 Notable changes to Mindweave. Dates are release dates.
 
+## v3.2.5 (2026-10-12): Sub-agents are a rare tool, and a verifier that answers in prose shows what it ran
+
+In one session the agent started four verifier sub-agents for ordinary work, one only to re-check its own fixes,
+and the person using it had to tell it to stop. The cause was the built-in instructions, not the model: they told
+the agent to check any non-trivial work with a separate verifier and to run it again after fixing what it found.
+
+### Sub-agents
+
+- **The agent now does ordinary work itself.** Reading files, searching, editing, running the tests and the build,
+  and checking its own result are its own job. A sub-agent is for a job that is genuinely large and self-contained,
+  such as a sweep over a big codebase, or for when you ask for one.
+- **A verifier is the exception, not the routine.** It is for high-risk work, such as something about to be
+  published or something that could lose your data, or when you ask. It is used once, and it is not run again to
+  re-check the agent's own fixes.
+- **The tool says what it is not for.** Its description now lists what not to hand it: reading a file or a few
+  files, finding one definition, making or checking a single change, running the tests or the build.
+
+### The verifier line
+
+- **A verifier that answers in plain prose shows how many commands it ran.** The screen said
+  `Failed verification · 0 checks` for a verifier that had run the project's checks and several probes, because
+  only lines written in the `$ command` form were counted. It now says `Failed verification · ran 5 commands`.
+  The verdict itself is unchanged.
 
 ## v3.2.4 (2026-10-11): Lightning asks nothing about commands, a sub-agent out of steps still reports, and a clearer permission message
 

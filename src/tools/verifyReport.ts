@@ -31,6 +31,8 @@ export interface VerdictReport {
   concerns: string[];
   /** Checks that cite a command which never ran: reading dressed as a check. Zero when not known. */
   unbacked?: number;
+  /** How many commands it really ran (known only when its run was watched). */
+  ran?: number;
   /** Project files that changed while it ran (see treeGuard.ts). Empty when none, or not known. */
   modified?: string[];
 }
