@@ -436,3 +436,16 @@ test("a row of one command or one step opens straight onto what it did; two or m
   const both = await paint(two, { open: true });
   assert.ok(!both.includes("file.txt") && !both.includes("/tmp"), "with two, each is still its own click");
 });
+
+test("a row whose only call is a batch of steps does not say the same thing twice: the header, then what the steps did", async () => {
+  const batch: Commands["items"] = [{ toolId: "b", name: "Steps", arg: "11 steps", covers: 11, kind: "screenshot", status: "ok", summary: "ok", detail: "Steps 11 of 11 ran", full: "Steps 11 of 11 ran\n1. Clicked [3] button.", open: true }];
+  const text = await paint(batch, { open: true });
+  assert.equal((text.match(/Tested 11 steps/g) ?? []).length, 1, "the header says it once");
+  assert.doesNotMatch(text, /Steps 11 steps/, "the call's own line is not repeated under it");
+  assert.match(text, /Clicked \[3\] button/, "what the steps did is still there");
+});
+
+test("a single ordinary step keeps its line: it says which step it was", async () => {
+  const one: Commands["items"] = [{ toolId: "c", name: "Click", arg: "#11", kind: "screenshot", status: "ok", summary: "ok", detail: "Clicked.", full: "Clicked.", open: true }];
+  assert.match(await paint(one, { open: true }), /Click #11/);
+});

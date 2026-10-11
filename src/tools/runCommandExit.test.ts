@@ -104,9 +104,7 @@ test(
       "Get-Item C:\\mindweave-no-such-path-xyzzy -EA 0",
       "Get-Item C:\\mindweave-no-such-path-xyzzy -ErrorAction:Ignore",
     ]) {
-      // Stopping a process by name asks first now (guard.ts), so the user is shown saying yes: what is
-      // being checked is how the silenced error is reported, not whether the question is asked.
-      const result = await runCommand.execute({ command }, { ...ctx(), requestApproval: async () => "Yes, run it" });
+      const result = await runCommand.execute({ command }, ctx());
       assert.equal(result.isError, false, `reported as failed: ${command}\n${result.output}`);
     }
   },

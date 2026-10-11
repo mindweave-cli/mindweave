@@ -356,7 +356,12 @@ export function findControl(controls: UiControl[], raw: string): { n: number } |
       return { error: `more than one control matches "${raw}": ${hits.slice(0, 6).map((h) => controlLine(h.n, h.c)).join("; ")}. Use the number of the one you mean.` };
     }
   }
-  return { error: `no control in the latest list is named "${raw}". Look again, or use a number from the list.` };
+  return {
+    error:
+      `no control in the latest list is named "${raw}". Look again, or use a number from the list. ` +
+      `A control that only appears while something is pointed at (a row's "⋯" button, a delete icon) is not in the list until ` +
+      `you hover that row with \`hover\`; do that first, then click it.`,
+  };
 }
 
 /** Why a file:// address may not be shown (the read_file guard on its path), or null. */

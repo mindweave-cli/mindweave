@@ -111,6 +111,80 @@ export function commandShellLabel(): string {
   return posixShell().isBash ? "bash" : "a strict POSIX shell (sh)";
 }
 
+/**
+ * The refusals that apply to a command whatever anyone says (pure of the shell: it reads only the background
+ * shells and the command itself): already running, an app the user just closed, a guaranteed parse error.
+ *
+ * Its own function so the engine can ask it BEFORE it asks the user. In Sentinel mode every command is a
+ * question, and a question about a command that is refused whatever the answer is a question for nothing.
+ */
+export function commandTurnedAway(args: Record<string, unknown>, ctx: ToolContext): ToolResult | null {
+  const requested = typeof args.command === "string" ? args.command.trim() : "";
+  if (!requested) return null;
+  const redirected = defaultOpenRewrite(requested);
+  const command = redirected ? redirected.command : requested;
+  const shell: Shell = args.shell === "cmd" ? "cmd" : "powershell";
+
+  // The guards that turn a command away whatever anyone says come BEFORE any question. A user asked to
+  // approve a command that is then refused because it is already running has been made to answer for
+  // nothing: it was seen as the same prompt, twice, in one session.
+  //
+  // Already-running guard: don't start a second copy of something already running in
+  // the background. Two dev servers collide on a port and the model then burns a long
+  // loop fighting the conflict it created; two of anything else is nearly always a
+  // mistake too.
+  //
+  // This deliberately does NOT ask whether the command looks like a server. It used to,
+  // which meant the guard only covered the names in one regex: `cargo run`,
+  // `docker compose up`, `flask run` and a plain path to a binary were all unprotected.
+  // "Is this exact command already running" needs no such guess and covers everything.
+  if (ctx.backgroundShells) {
+    const dup = findRunningDuplicate(ctx.backgroundShells.running(), command);
+    if (dup) {
+      return {
+        output:
+          `\`${clip(command)}\` is already running in the background as shell #${dup.id}, so I'm not ` +
+          `starting a second copy — a second one would collide with it. It's already up; if you want a ` +
+          `fresh start, call kill_shell(${dup.id}) first, then relaunch.`,
+        isError: true,
+        summary: `already running as shell #${dup.id}`,
+      };
+    }
+
+    // Reopen guard: don't relaunch an app the USER just closed. Without this, an agent
+    // that reopens a closed window turns into a loop — the user shuts their app, it comes
+    // straight back, they shut it again, and so on. The match is scoped to apps that came
+    // up and were closed WITHOUT a kill_shell (`findRecentUserClose`), so the agent's own
+    // kill-then-relaunch is untouched and a server that failed to start can still be
+    // retried. The cooldown lets a restart the user asks for later through.
+    const closed = findRecentUserClose(ctx.backgroundShells.list(), command, Date.now());
+    if (closed) {
+      const secs = closed.finishedAt ? Math.round((Date.now() - closed.finishedAt) / 1000) : 0;
+      return {
+        output:
+          `The user closed \`${clip(command)}\` themselves ${secs}s ago (shell #${closed.id}, after it had come up), ` +
+          `so I'm not reopening it. Reopening an app the user just shut turns into a loop where they keep closing ` +
+          `it and it keeps coming back. Leave it down. If it genuinely needs to be running, ask the user first and ` +
+          `let them decide — don't relaunch it on your own.`,
+        isError: true,
+        summary: `user closed #${closed.id} ${secs}s ago — not reopening`,
+      };
+    }
+  }
+
+  // Pre-execution gate: don't waste a run on a guaranteed PowerShell parse error
+  // (`&&`/`||`) or an assignment to a read-only automatic variable (`$pid = …`). Catch
+  // it here and hand back the fix so the model corrects in one step instead of running,
+  // failing, and re-reading the error (the wall that spawned a long flailing loop).
+  if (IS_WINDOWS && shell === "powershell") {
+    const parseError = powershellParseError(command);
+    if (parseError) return fail(parseError);
+    const reserved = powershellReservedAssignmentReason(command);
+    if (reserved) return fail(reserved);
+  }
+  return null;
+}
+
 export const runCommand: Tool = {
   name: "run_command",
   readOnly: false,
@@ -240,10 +314,20 @@ export const runCommand: Tool = {
           `Nothing here can read it for you; ask the user for the value you need.`,
       );
     }
-    // Commands that throw work away or run code from the internet ask first in every mode,
-    // with what they would lose. In a mode that already asked about this exact call, once
-    // is enough.
-    const risky = riskyCommandReason(command) ?? (verdict.prompt ? `matches your rule to ask first (\`${verdict.prompt.words.join(" ")}\`)` : null);
+    const shell: Shell = args.shell === "cmd" ? "cmd" : "powershell";
+
+    // The guards that turn a command away whatever anyone says come BEFORE any question: see commandTurnedAway.
+    const away = commandTurnedAway(args, ctx);
+    if (away) return away;
+
+    // Commands that throw work away or run code from the internet ask first, with what they would lose, but
+    // only in Sentinel, the mode that asks. Lightning is the mode that does not ask about the work: a
+    // force-push or a reset there is the user's to answer for, and a question every time is the one thing
+    // it exists to remove. A rule the user wrote themselves to ask about a command is their own word and
+    // is asked in every mode. In a mode that already asked about this exact call, once is enough.
+    const risky =
+      (ctx.guarded === true ? riskyCommandReason(command) : null) ??
+      (verdict.prompt ? `matches your rule to ask first (\`${verdict.prompt.words.join(" ")}\`)` : null);
     const justAsked =
       ctx.guarded === true && !ctx.guardAllowed?.has("run_command") && !ctx.governance?.sentinelAllow?.includes("run_command");
     if (risky && !justAsked) {
@@ -293,62 +377,6 @@ export const runCommand: Tool = {
     let timeout = DEFAULT_TIMEOUT_MS;
     if (typeof args.timeout === "number" && Number.isFinite(args.timeout)) {
       timeout = Math.min(MAX_TIMEOUT_MS, Math.max(1000, Math.floor(args.timeout)));
-    }
-
-    const shell: Shell = args.shell === "cmd" ? "cmd" : "powershell";
-
-    // Already-running guard: don't start a second copy of something already running in
-    // the background. Two dev servers collide on a port and the model then burns a long
-    // loop fighting the conflict it created; two of anything else is nearly always a
-    // mistake too.
-    //
-    // This deliberately does NOT ask whether the command looks like a server. It used to,
-    // which meant the guard only covered the names in one regex: `cargo run`,
-    // `docker compose up`, `flask run` and a plain path to a binary were all unprotected.
-    // "Is this exact command already running" needs no such guess and covers everything.
-    if (ctx.backgroundShells) {
-      const dup = findRunningDuplicate(ctx.backgroundShells.running(), command);
-      if (dup) {
-        return {
-          output:
-            `\`${clip(command)}\` is already running in the background as shell #${dup.id}, so I'm not ` +
-            `starting a second copy — a second one would collide with it. It's already up; if you want a ` +
-            `fresh start, call kill_shell(${dup.id}) first, then relaunch.`,
-          isError: true,
-          summary: `already running as shell #${dup.id}`,
-        };
-      }
-
-      // Reopen guard: don't relaunch an app the USER just closed. Without this, an agent
-      // that reopens a closed window turns into a loop — the user shuts their app, it comes
-      // straight back, they shut it again, and so on. The match is scoped to apps that came
-      // up and were closed WITHOUT a kill_shell (`findRecentUserClose`), so the agent's own
-      // kill-then-relaunch is untouched and a server that failed to start can still be
-      // retried. The cooldown lets a restart the user asks for later through.
-      const closed = findRecentUserClose(ctx.backgroundShells.list(), command, Date.now());
-      if (closed) {
-        const secs = closed.finishedAt ? Math.round((Date.now() - closed.finishedAt) / 1000) : 0;
-        return {
-          output:
-            `The user closed \`${clip(command)}\` themselves ${secs}s ago (shell #${closed.id}, after it had come up), ` +
-            `so I'm not reopening it. Reopening an app the user just shut turns into a loop where they keep closing ` +
-            `it and it keeps coming back. Leave it down. If it genuinely needs to be running, ask the user first and ` +
-            `let them decide — don't relaunch it on your own.`,
-          isError: true,
-          summary: `user closed #${closed.id} ${secs}s ago — not reopening`,
-        };
-      }
-    }
-
-    // Pre-execution gate: don't waste a run on a guaranteed PowerShell parse error
-    // (`&&`/`||`) or an assignment to a read-only automatic variable (`$pid = …`). Catch
-    // it here and hand back the fix so the model corrects in one step instead of running,
-    // failing, and re-reading the error (the wall that spawned a long flailing loop).
-    if (IS_WINDOWS && shell === "powershell") {
-      const parseError = powershellParseError(command);
-      if (parseError) return fail(parseError);
-      const reserved = powershellReservedAssignmentReason(command);
-      if (reserved) return fail(reserved);
     }
 
     const declared =

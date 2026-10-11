@@ -451,6 +451,11 @@ export interface ToolContext {
    */
   readOnlyTools?: boolean;
   /**
+   * Offer no tools at all and refuse a call to one: the last turn of a sub-agent that ran out of steps,
+   * which may only say what it found (see childReport.ts). Set for that turn and cleared after it.
+   */
+  noTools?: boolean;
+  /**
    * This context is a VERIFIER's: read-only like any research worker, plus the tools it needs to
    * run what it is checking (see verifierTools.ts). Never inherited by a child of a verifier.
    */

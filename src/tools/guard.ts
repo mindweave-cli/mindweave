@@ -352,11 +352,10 @@ export function catastrophicCommandReason(command: string): string | null {
 /**
  * Commands a coding agent does run, but that throw work away, rewrite shared history,
  * skip the project's own checks, publish, or run code straight from the internet. Not a
- * floor: each asks the user first (see run_command), in every mode, with this as the
- * warning. A short list on purpose; a long one would be clicked through.
+ * floor: in SENTINEL each asks the user first (see run_command), with this as the warning, even after
+ * "allow all commands". In Lightning none of them asks: that mode does the work without questions, and
+ * what goes wrong there is the user's. A short list on purpose; a long one would be clicked through.
  */
-const BLANKET_KILL = "stops every process with that name on this machine, including ones you did not start (a desktop app, an editor, another app's helper), instead of the one it launched";
-
 const RISKY_COMMANDS: { test: RegExp; what: string }[] = [
   { test: /\bgit\s+push\b[^\n;|&]*\s(-f|--force)\b(?!-with-lease)/i, what: "force-pushes, which overwrites history others may have" },
   { test: /\bgit\s+push\b[^\n;|&]*\s(--delete|-d)\b|\bgit\s+push\b[^\n;|&]*\s:[\w./-]+/i, what: "deletes a branch or tag on the remote" },
@@ -369,18 +368,12 @@ const RISKY_COMMANDS: { test: RegExp; what: string }[] = [
   { test: /\bgit\s+(commit|push|merge|rebase)\b[^\n;|&]*\s--no-verify\b/i, what: "skips the project's own git hooks (--no-verify)" },
   { test: /\b(curl|wget|iwr|irm|invoke-webrequest|invoke-restmethod)\b[^\n;]*\|\s*(sudo\s+)?(sh|bash|zsh|iex|invoke-expression|python3?|node)\b/i, what: "runs code downloaded from the internet" },
   { test: /\b(npm|pnpm|yarn)\s+publish\b|\bcargo\s+publish\b|\btwine\s+upload\b|\bgh\s+release\s+create\b/i, what: "publishes a package or release" },
-  // Stopping processes BY NAME. A name is not a process: `electron`, `node`, `python` and `chrome` are
-  // every such program on the machine, the user's own and other applications included, and a desktop
-  // app built on Electron runs the agent itself. Stopping what it started is done by its id (or with
-  // kill_shell, which knows which ones those are), so only the by-name forms ask. Each is spelled out
-  // because they are spelled differently in every shell.
-  { test: /\b(stop-process|spps|kill)\b[^\n;|&]*\s-(name|processname)\b/i, what: BLANKET_KILL },
-  { test: /\b(get-process|gps)\b(?![^\n|;]*\s-id\b)[^\n;]*\|[^\n;]*\b(stop-process|spps|kill)\b/i, what: BLANKET_KILL },
-  { test: /\bget-process\b(?![^\n]*\s-id\b)[^\n]*(?:;|\n)[^\n]*\b(stop-process|spps)\b(?![^\n]*\s-id\b)/i, what: BLANKET_KILL },
-  { test: /\btaskkill(\.exe)?\b(?=[^\n;|&]*\s[/-](im|fi)\b)/i, what: BLANKET_KILL },
-  { test: /\b(pkill|killall)\b(?![^\n;|&]*\s-P\s)/, what: BLANKET_KILL },
-  { test: /\bpgrep\b[^\n]*\|\s*xargs\s+(-\S+\s+)*kill\b|\bkill\b[^\n]*(\$\(|`)\s*pgrep\b/i, what: BLANKET_KILL },
-  { test: /\bwin32_process\b[^\n]*\b(terminate|invoke-cimmethod|stop-process)\b/i, what: BLANKET_KILL },
+  // Stopping a process by name is NOT here, and was once. Restarting the app under test is the most
+  // common thing an agent does in a working session (`Get-Process electron | Stop-Process -Force; ...;
+  // npx electron .` after every build), so asking about it turned Lightning, whose whole point is that
+  // the agent does the work without asking, into a question every few minutes. A command that goes wrong
+  // is the user's to bear in that mode; Sentinel is the mode that asks about everything. This list is for
+  // the rare and outward-facing: history, publishing, running what was downloaded.
 ];
 
 /** Why `command` should ask the user first even when nothing else does, or null (pure). */

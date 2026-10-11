@@ -219,7 +219,7 @@ test("the launch recipe keeps a hidden app drawing, so it can still be watched",
 // ── a port is a number, not an app ───────────────────────────────────────────────────────────────
 
 import { ownershipFrom } from "./uiHide.js";
-import { foreignNote } from "./ui.js";
+import { findControl, foreignNote } from "./ui.js";
 
 test("the program behind a port is judged this process's own only when its ancestry reaches this process", () => {
   assert.equal(ownershipFrom("NOTOURS\r\n"), false, "another application's");
@@ -236,4 +236,13 @@ test("an app that is not ours is named as such, with the page's title, and the m
   assert.match(note, /different port/);
   assert.match(note, /do not click or type/);
   assert.doesNotMatch(foreignNote(9222, ""), /\(the page is/);
+});
+
+test("a control that is not in the list says it may only appear on hover, and what to do", () => {
+  const r = findControl([], "More options for Chapter 3");
+  assert.ok("error" in r);
+  if ("error" in r) {
+    assert.match(r.error, /no control in the latest list is named "More options for Chapter 3"/);
+    assert.match(r.error, /hover that row with `hover`/);
+  }
 });

@@ -53,6 +53,7 @@ import { respond, type PauseReason, type RespondOptions } from "./engine.js";
 import { formatCost, summarizeTask, taskLimitReason, type TaskLimits } from "./pricing.js";
 import { VERIFIER_PROMPT, VERDICT_INSTRUCTION, type VerdictReport } from "../tools/verifyReport.js";
 import { verifyWithGuards } from "../tools/verifierRun.js";
+import { reportOf } from "../tools/childReport.js";
 
 /** How many consecutive non-passing verifications before Marathon gives up and
  *  hands back to the user, rather than retry the same goal forever. Same shape as
@@ -336,15 +337,19 @@ export async function verifyGoal(
     cwd: session.cwd,
     checkpoints: session.toolContext.checkpoints,
     shells: session.toolContext.backgroundShells,
-    run: (watch) =>
-      respond(child, {
-        signal: options.signal,
-        maxSteps: VERIFY_BUDGET,
-        onEvent: (e) => {
-          watch(e);
-          options.onEvent?.(e);
-        },
-      }),
+    run: async (watch) => {
+      const once = (steps: number) =>
+        respond(child, {
+          signal: options.signal,
+          maxSteps: steps,
+          onEvent: (e) => {
+            watch(e);
+            options.onEvent?.(e);
+          },
+        });
+      // Out of steps: one more turn, with no tools, to say what it found (childReport.ts).
+      return (await reportOf(child, await once(VERIFY_BUDGET), () => once(2))).reply;
+    },
   });
 }
 

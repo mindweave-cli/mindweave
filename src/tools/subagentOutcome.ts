@@ -12,10 +12,12 @@ import type { SubagentStatus } from "./subagentReport.js";
 export type SubagentOutcome = "pass" | "partial" | "fail" | "unknown";
 
 /** The headline for a VERIFIER's verdict about the code it checked. */
-export function verifierOutcome(verdict: string, evidence: number): { headline: string; verdict: SubagentOutcome } {
+export function verifierOutcome(verdict: string, evidence: number, exhausted = false): { headline: string; verdict: SubagentOutcome } {
   const checks = evidence === 1 ? "1 check" : `${evidence} checks`;
   if (verdict === "pass") return { headline: `Verified · ${checks}`, verdict: "pass" };
   if (verdict === "fail") return { headline: `Failed verification · ${checks}`, verdict: "fail" };
+  // Ran out of steps: say so, instead of "no verdict", which hides why. A partial one still counts what it did.
+  if (exhausted) return { headline: `Stopped at its step limit · ${checks}`, verdict: "partial" };
   if (verdict === "partial") return { headline: `Could not fully verify · ${checks}`, verdict: "partial" };
   return { headline: "No verdict", verdict: "unknown" };
 }

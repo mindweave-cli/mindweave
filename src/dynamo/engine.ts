@@ -34,7 +34,7 @@ import { askPendingInstalls } from "../tools/serverConsent.js";
 import { findTool, toolSchemas, TOOLS } from "../tools/registry.js";
 import { deferredToolsIndex } from "../tools/deferredNative.js";
 import { prefixPrint, diffPrefix, cacheCallLine, writeCacheLog } from "./cacheBreak.js";
-import { commandShellLabel } from "../tools/runCommand.js";
+import { commandShellLabel, commandTurnedAway } from "../tools/runCommand.js";
 import { isInteractiveServerCommand, type BackgroundShells, type ShellInfo } from "../tools/backgroundShells.js";
 import { uiLiveState } from "../tools/ui.js";
 import { isAgenticOnlyRefusal, withAuxModel } from "./auxModel.js";
@@ -1230,6 +1230,8 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
   // nothing changes this returns identical bytes every step, so the provider's cached
   // prefix is untouched — the same argument that already applies to deferred MCP tools.
   const stepTools = () => {
+    // The last turn of a sub-agent out of steps: it may speak, and nothing else.
+    if (session.toolContext.noTools) return [];
     const ro = (session.toolContext.planMode ?? false) || session.toolContext.readOnlyTools === true;
     if (ro !== readOnlyTurn) {
       // The MCP catalog is re-snapshotted too, or approving a plan would grant the
@@ -1857,6 +1859,16 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
           detail: undefined as string | undefined,
         };
       }
+      // A sub-agent on its last turn has no tools: a call anyway (a model can still emit one) is not run.
+      if (session.toolContext.noTools) {
+        return {
+          call,
+          output: "Not run: you are out of steps and have no tools. Reply now with what you found so far.",
+          summary: `blocked (out of steps)`,
+          isError: true,
+          detail: undefined as string | undefined,
+        };
+      }
       // A read-only sub-agent: same schema-hiding + refusal, without the plan framing.
       if (session.toolContext.readOnlyTools && !tool.readOnly && !(session.toolContext.verifierTools && VERIFIER_EXTRA_TOOLS.has(tool.name))) {
         return {
@@ -1905,6 +1917,14 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
           ctx.governance?.commandRules ?? [],
           ctx.cwd,
         );
+      // A command that would be turned away whatever is answered is not asked about (already running, a
+      // guaranteed parse error): the person would be answering for nothing, and the model gets the reason at once.
+      if (call.name === "run_command") {
+        const away = commandTurnedAway(parseArgs(call.arguments), ctx);
+        if (away) {
+          return { call, output: away.output, summary: away.summary ?? "turned away", isError: true, detail: undefined as string | undefined };
+        }
+      }
       if (!tool.readOnly && ctx.guarded && !ctx.guardAllowed?.has(call.name) && !savedYes && !plainlyHarmless) {
         const args = parseArgs(call.arguments);
         // A command that can be named safely also offers "never ask again for <prefix>". Not for a risky one:

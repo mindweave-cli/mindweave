@@ -602,3 +602,49 @@ test("a verifier is refused a command that deletes, and the file is still there;
   assert.equal(readFileSync(victim, "utf8"), "precious", "the file is untouched");
   assertAllWellFormed("verifier-refused");
 });
+
+// ── a sub-agent that runs out of steps still reports ─────────────────────────────────────────────
+
+import { reportOf } from "../tools/childReport.js";
+
+test("a sub-agent out of steps is asked, with no tools, for what it found, and that is what comes back", async () => {
+  const { session: parent, root } = await lab();
+  writeFileSync(join(root, "src", "x.txt"), "x");
+  writeFileSync(join(root, "src", "y.txt"), "y");
+  const child = forkSession(parent, "look", { readOnly: true });
+  script = [
+    { tools: [{ name: "read_file", args: { paths: [join(root, "src", "x.txt")] } }] },
+    { tools: [{ name: "read_file", args: { paths: [join(root, "src", "y.txt")] } }] },
+    { tools: [{ name: "read_file", args: { paths: [join(root, "src", "x.txt")] } }] },
+    { text: "Read x and y. Not done: z. STATUS: partial" },
+  ];
+  child.transcript.push({ role: "user", content: "look at everything" });
+  const first = await respond(child, { maxSteps: 2 });
+  assert.match(first, /Paused/, "it stopped for its budget");
+  const calls = bodies.length;
+  const done = await reportOf(child, first, () => respond(child, { maxSteps: 2 }));
+  assert.equal(done.exhausted, true);
+  assert.match(done.reply, /Read x and y\. Not done: z/);
+  const last = bodies[calls]!;
+  assert.deepEqual(last.tools ?? [], [], "that last turn offered no tools");
+  assert.match(last.messages.filter((m) => m.role === "user").map((m) => String(m.content)).join("\n"), /You have used all of your steps/);
+  assert.equal(child.toolContext.noTools, false);
+  assertAllWellFormed("child-wrap-up");
+});
+
+test("Sentinel does not ask about a command that is turned away whatever the answer: one already running", async () => {
+  const { session, root } = await lab();
+  session.toolContext.guarded = true;
+  const asked: string[] = [];
+  session.toolContext.requestApproval = async (q) => (asked.push(q), "Yes, run it");
+  const command = "node server-that-is-already-up.js";
+  session.toolContext.backgroundShells = { running: () => [{ id: 3, command, status: "running" }], list: () => [], setOnChange: () => {}, runningCount: () => 1, drainEvents: () => [] } as never;
+  script = [{ tools: [{ name: "run_command", args: { command } }] }, { text: "it is already up" }];
+  session.transcript.push({ role: "user", content: "start the server" });
+  await respond(session, {});
+  assert.equal(asked.length, 0, "nobody was asked");
+  const results = bodies[1]!.messages.filter((m) => m.role === "tool").map(toolText).join("\n");
+  assert.match(results, /already running in the background as shell #3/);
+  assertAllWellFormed("sentinel-duplicate");
+  void root;
+});

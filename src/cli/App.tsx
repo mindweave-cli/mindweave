@@ -73,6 +73,7 @@ import { APP_EXPLANATION, APP_PAGE_URL, appAnnouncement, openInBrowser } from ".
 import { PromptInput } from "./components/PromptInput.js";
 import { Picker } from "./components/Picker.js";
 import { ApprovalBox } from "./components/ApprovalBox.js";
+import { approvalAnswer, approvalBlock, workedSeconds } from "./approvalText.js";
 import { BlockView } from "./components/BlockView.js";
 import { initialState, lastExpandable, reduce, trimNarration, type Action, type Block, type TranscriptState } from "./transcript.js";
 import { isTight } from "./blockSpacing.js";
@@ -431,6 +432,10 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
   const [lastMs, setLastMs] = useState<number | null>(null);
   const [taskUsage, setTaskUsage] = useState<TaskUsage | null>(null);
   const turnStart = useRef<number | null>(null);
+  // Time spent waiting for the person to answer a question, which is not time the agent worked: the working
+  // line's clock leaves it out, and says it is waiting while it lasts. `waitSince` is when the current wait began.
+  const waitedMs = useRef(0);
+  const waitSince = useRef<number | null>(null);
   // Token accounting for the status line. A task (one turn) may span several model
   // calls; we keep each call's REAL usage and fold it into a meaningful summary
   // (context size + cache-aware cost), not a raw sum of re-sent context — that sum
@@ -634,6 +639,15 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
   // An interactive overlay (session picker, model/think chooser, or an approval
   // prompt). When set, it owns the keyboard and the input box is hidden.
   const [overlay, setOverlay] = useState<Overlay | null>(null);
+  // While a question is open the working line stands still (see StatusLine), so the wait is counted here.
+  useEffect(() => {
+    const open = overlay?.kind === "approval";
+    if (open && waitSince.current == null) waitSince.current = Date.now();
+    if (!open && waitSince.current != null) {
+      waitedMs.current += Date.now() - waitSince.current;
+      waitSince.current = null;
+    }
+  }, [overlay]);
 
   // Set while a command that opens one of those surfaces is on its way, so the box that
   // holds them stays on screen for the gap between the command list closing and the
@@ -671,7 +685,11 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
     if (body) {
       // Titled → a facts block on a rail, rendered verbatim (a command must not be
       // reinterpreted as markdown). Untitled → prose, because it is a document to read.
-      dispatch(detailTitle ? { type: "notice", title: detailTitle, body } : { type: "say", text: body });
+      //
+      // The question goes in the block with what it is about. The block used to hold the command alone, and
+      // the question lived only in the box at the bottom, which is gone once it is answered: what was left
+      // in the conversation was a command with no word about why it had been asked or how it was answered.
+      dispatch(detailTitle ? { type: "notice", title: detailTitle, body: approvalBlock(question, body) } : { type: "say", text: body });
     }
     const answer = approvals.current.ask({
       kind: "approval",
@@ -683,6 +701,14 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
       ...(freeText ? { freeText } : {}),
     } as Overlay);
     showNextApproval.current();
+    // And what was answered, once it is, so the record reads as a question and its answer. Only for a
+    // question that printed a block above; a plain one-line question leaves nothing to answer later.
+    if (body && detailTitle) {
+      void answer.then((choice) => {
+        const line = approvalAnswer(choice);
+        if (line) note(line);
+      });
+    }
     return answer;
   });
   // Bumped whenever a background shell starts/finishes, to re-render the indicator.
@@ -1089,6 +1115,8 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
   // Start/stop a turn's timer (drives the persistent status line).
   function startTurn() {
     turnStart.current = Date.now();
+    waitedMs.current = 0;
+    waitSince.current = null;
     usageSamples.current = [];
     meter.current = meterReset();
     setTaskUsage(null); // clear the previous task's summary while this one runs
@@ -4033,7 +4061,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
         {/* Persistent status line: spinner + timer while working,
             "● Cooked for 1m 23s · N tokens" once finished. */}
         <Box flexShrink={0}>
-          <StatusLine busy={busy} startedAt={turnStart.current} lastMs={lastMs} usage={taskUsage} received={liveTokens} advance={advanceTokens} />
+          <StatusLine busy={busy} startedAt={turnStart.current} lastMs={lastMs} usage={taskUsage} received={liveTokens} advance={advanceTokens} waiting={overlay?.kind === "approval"} waited={() => waitedMs.current + (waitSince.current != null ? Date.now() - waitSince.current : 0)} />
         </Box>
 
         {/* Messages queued while busy — sent in order when the turn ends. */}
@@ -4776,7 +4804,13 @@ function StatusLine({
   usage,
   received,
   advance,
+  waiting,
+  waited,
 }: {
+  /** A question is open and the agent is waiting for the person: the clock stands still and says so. */
+  waiting: boolean;
+  /** Milliseconds of this turn spent waiting for an answer, including the wait in progress. */
+  waited: () => number;
   busy: boolean;
   startedAt: number | null;
   lastMs: number | null;
@@ -4818,7 +4852,7 @@ function StatusLine({
     // are what make it read as a live gauge rather than a sentence, and the verb is
     // swapped every few seconds (see workingVerb) and steady inside each, so the line does not flicker between
     // words while the seconds tick.
-    const secs = Math.floor((Date.now() - startedAt) / 1000);
+    const secs = workedSeconds(Date.now(), startedAt, waited());
     // OUTPUT tokens for THIS task, estimated from what has streamed back. It is the task's
     // own work: the re-sent conversation (the whole session's context, re-billed each tool
     // round) is NOT counted here, because that is session overhead, not what this task
@@ -4828,7 +4862,7 @@ function StatusLine({
     label = (
       <Text>
         {" "}
-        {workingVerb(startedAt, Date.now() - startedAt)}…{"  "}
+        {waiting ? "Waiting for your answer" : workingVerb(startedAt, Date.now() - startedAt - waited())}…{"  "}
         <Text dimColor>{"< "}{fmtElapsed(secs)}{got > 0 ? ` · ↓ ${formatTokens(got)} tokens` : ""}{" >"}</Text>
       </Text>
     );

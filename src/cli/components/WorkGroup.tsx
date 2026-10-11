@@ -244,6 +244,9 @@ function WorkList({ id, items, columns, live, hoveredItem }: { id: number; items
         const registered = reading || single ? undefined : (node: DOMElement | null) => registerExpandable(itemHit(id, row.index), node);
         return (
           <Box key={row.key} flexDirection="column" ref={registered}>
+            {/* A row whose only call is a batch of steps says "Tested 11 steps" in its header; the call's own
+                line ("Steps 11 steps") would say it again, so it is left out and what the steps did opens directly. */}
+            {single && step && it.name === "Steps" ? null : (
             <Box flexDirection="row" width={columns}>
               <Text>{"  "}</Text>
               <Box width={labelWidth} paddingRight={2} flexShrink={0}>
@@ -267,6 +270,7 @@ function WorkList({ id, items, columns, live, hoveredItem }: { id: number; items
               </Box>
               {reading || single ? null : <Text dimColor={!hot && !isOpen} bold={hot || isOpen}>{it.open ? " ▾" : " ▸"}</Text>}
             </Box>
+            )}
             {below ? (
               <Box flexDirection="row" width={columns}>
                 <Text>{"    "}</Text>

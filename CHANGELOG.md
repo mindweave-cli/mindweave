@@ -3,6 +3,57 @@
 Notable changes to Mindweave. Dates are release dates.
 
 
+## v3.2.4 (2026-10-11): Lightning asks nothing about commands, a sub-agent out of steps still reports, and a clearer permission message
+
+A day of using 3.2.3 for real turned up three things, and one of them was a mistake in 3.2.3 itself. 3.2.3
+said that stopping every program with a given name asks first. It did, and that was wrong: the agent restarts
+the app it is testing after almost every build, so Lightning, whose whole point is that the agent does the
+work without asking, was asking every few minutes. That question is gone. It was tested on Windows. It has not
+been run on a real Mac yet.
+
+### Lightning does not ask about commands
+
+- **The built-in list of commands that asked in every mode now asks only in Sentinel.** Force-pushing,
+  `git reset --hard`, `git clean`, deleting a branch, publishing a package and running code downloaded from
+  the internet are no longer questions in Lightning. The agent runs them, and what goes wrong is the user's to
+  answer for. Sentinel still asks about each of them, even after "allow all commands".
+- **Stopping a program by name asks in no mode.** This corrects 3.2.3.
+- **A rule you wrote yourself to ask about a command is still asked.** That is your own word.
+- **A few questions that are not about the work still stay in every mode.** Writing a file that runs code later
+  (a git hook, an editor task), a project's own tool servers, and writing outside the folders you opened.
+
+### A sub-agent that runs out of steps still reports
+
+- **It is given one last turn, with no tools, to say what it found.** Before, a sub-agent that reached its step
+  limit returned only a pause note written for a person ("say continue"), which a parent agent cannot act on, and
+  everything the sub-agent had read and run was thrown away. In one session a verifier spent thirty steps on
+  eight checks and returned nothing. Now it says what it checked, what it did not get to, and ends the way it was
+  told to. If it cannot, the last thing it said while working is used.
+- **A verifier gets more room.** Its default is 40 steps instead of 20, because it runs things one call at a
+  time. The line on screen says `Stopped at its step limit` where it used to say `No verdict`.
+- **Marathon's own check of a goal does the same.**
+
+### The permission message
+
+- **The block in the conversation holds the question and what it is about**, and a dim `allowed:` or
+  `declined:` line follows once you answer. It used to be the command alone, with nothing to say why it was
+  asked or how it was answered.
+- **The working line stops counting while a question waits for you**, and says `Waiting for your answer`. It
+  used to keep counting, and read as six minutes of work.
+
+### Questions that were never going to matter
+
+- **A command that is refused whatever you answer is not asked about.** One that is already running in the
+  background, an app you just closed, and a command with a guaranteed parse error are now refused before any
+  question, in Sentinel too. The same prompt was seen twice in one session for a command that was then refused.
+
+### Also
+
+- A test row whose only call is a batch of steps no longer repeats `Tested 11 steps` on a second line under
+  itself.
+- When a click names a control that is not in the list, the message now says that a control which only appears
+  while its row is pointed at, such as a `⋯` button, is not listed until you hover that row.
+
 ## v3.2.3 (2026-10-11): a sub-agent is a title and an answer, a verifier has to run what it checks, and fixes from a long real session
 
 A long working session with a small model showed several things that were our doing and not the model's,

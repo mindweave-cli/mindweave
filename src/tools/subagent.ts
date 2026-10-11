@@ -29,6 +29,7 @@ import { STATUS_INSTRUCTION, renderVerdict, verifySubagentReport } from "./subag
 import { VERDICT_INSTRUCTION, VERIFIER_PROMPT, parseVerdict, renderVerdict as renderVerdictLine, type VerdictReport } from "./verifyReport.js";
 import { verifierOutcome, workerOutcome } from "./subagentOutcome.js";
 import { verifyWithGuards } from "./verifierRun.js";
+import { reportOf } from "./childReport.js";
 import type { Tool, ToolResult } from "./types.js";
 import type { EngineEvent } from "../dynamo/engine.js";
 import { fail, failQuietly } from "./results.js";
@@ -36,6 +37,8 @@ import { fail, failQuietly } from "./results.js";
 const MAX_SUBAGENT_DEPTH = 1;
 /** Default step budget for a worker; the caller can scale it with `max_steps`. */
 const SUBAGENT_BUDGET = envInt("MINDWEAVE_SUBAGENT_BUDGET", 20);
+/** A verifier runs things, one call at a time, so it needs more than a reader does. */
+const VERIFIER_BUDGET = envInt("MINDWEAVE_VERIFIER_BUDGET", 40);
 /** Ceiling on `max_steps` so one worker can't run away. */
 const MAX_SUBAGENT_STEPS = envInt("MINDWEAVE_SUBAGENT_MAX_STEPS", 60);
 /** How many workers may run concurrently, process-wide. */
@@ -108,8 +111,9 @@ export const spawnSubagent: Tool = {
     "than doing the work inline, and most editing is sequential, so delegate for " +
     "independent READ and discovery rather than to parallelise edits.\n" +
     `LIMITS: a child gets ${SUBAGENT_BUDGET} tool rounds by default (raise with ` +
-    "max_steps). If it runs out it PAUSES cleanly and says so, with its findings " +
-    "intact — that is not a failure, and the fix is a bigger max_steps, not the same " +
+    "max_steps; a verifier gets more). If it runs out it is given one last turn, with no " +
+    "tools, to report what it found so far, and the result says that the limit was hit. " +
+    "That is not a failure: the fix is a bigger max_steps or a narrower task, not the same " +
     "call again. A child cannot spawn its own children, so plan one level of " +
     "delegation and do the rest yourself.\n" +
     "BRIEF IT WELL: write to the child as you would to a competent colleague who just " +
@@ -186,7 +190,7 @@ export const spawnSubagent: Tool = {
     ]
       .filter(Boolean)
       .join("\n\n");
-    const budget = clampSteps(args.max_steps) ?? SUBAGENT_BUDGET;
+    const budget = clampSteps(args.max_steps) ?? (verifying ? VERIFIER_BUDGET : SUBAGENT_BUDGET);
     // Verification is read-only whether or not the caller remembered to say so. A verifier
     // that can edit is a verifier that can make the thing it is judging pass.
     const readOnly = verifying || args.read_only === true;
@@ -205,12 +209,13 @@ export const spawnSubagent: Tool = {
     let reply = "";
     let verified: VerdictReport | undefined;
     // Run the child. `watch` sees every event first, so a verifier's own commands are known.
-    const runChild = (watch?: (e: EngineEvent) => void): Promise<string> =>
+    let exhausted = false;
+    const runOnce = (steps: number, watch?: (e: EngineEvent) => void): Promise<string> =>
       // Bounded: a wide fan-out queues here rather than launching every worker at once.
       gate.run(() =>
         respond(child, {
           signal: ctx.abortSignal,
-          maxSteps: budget,
+          maxSteps: steps,
           // Surface the child's activity, not its chatter: its usage counts toward the
           // meter, and each of its tool calls is forwarded UP tagged with this worker's
           // id so the UI nests them in the worker's rail (its prose/reasoning stays
@@ -222,6 +227,13 @@ export const spawnSubagent: Tool = {
           },
         }),
       );
+    // A child that runs out of steps is given one more turn, with no tools, to say what it found (childReport.ts).
+    const runChild = async (watch?: (e: EngineEvent) => void): Promise<string> => {
+      const first = await runOnce(budget, watch);
+      const done = await reportOf(child, first, () => runOnce(2, watch));
+      exhausted = done.exhausted;
+      return done.reply;
+    };
     try {
       if (verifying) {
         // A verifier's verdict is judged against what it DID: the commands it really ran, and whether
@@ -254,11 +266,13 @@ export const spawnSubagent: Tool = {
         id: agentId,
         summary: `${stepLabel} · ${line}`,
         error: report.verdict === "fail",
-        ...verifierOutcome(report.verdict, report.evidence),
+        ...verifierOutcome(report.verdict, report.evidence, exhausted),
         steps,
       });
       const header = [
-        report.concerns.length > 0 ? `Treat with care: ${report.concerns.join("; ")}.` : "",
+        report.concerns.length > 0 || exhausted
+          ? `Treat with care: ${[...(exhausted ? [`it ran out of its ${budget} steps and was asked for what it had found so far, so some checks may not have been made`] : []), ...report.concerns].join("; ")}.`
+          : "",
         `VERDICT: ${report.verdict} (${report.evidence} check${report.evidence === 1 ? "" : "s"} with evidence)`,
       ]
         .filter(Boolean)
@@ -277,7 +291,7 @@ export const spawnSubagent: Tool = {
       id: agentId,
       summary: `${stepLabel}${flag}`,
       error: verdict.status === "failed",
-      ...workerOutcome({ status: verdict.status, trustworthy: verdict.trustworthy, exhausted: steps >= budget }),
+      ...workerOutcome({ status: verdict.status, trustworthy: verdict.trustworthy, exhausted: exhausted || steps >= budget }),
       steps,
     });
     return {
