@@ -17,10 +17,11 @@ env:
   MINDWEAVE_NO_AUTO_INSTALL: "1"
 
 jobs:
-  # Windows only, deliberately. Mindweave targets Windows today; macOS and Linux are
-  # planned and belong to contributors. Running them here reported a hang nobody was
-  # working on, which says nothing about whether a change is good. Add those jobs back
-  # alongside the work that makes them pass.
+  # Windows is the job that decides whether a change is good: it is what Mindweave has been
+  # built and tested on. macOS and Linux run below as a separate job that does NOT gate
+  # anything (continue-on-error), because they have never been run here and a red result is
+  # information about work still to do, not about the change that triggered it. When a platform
+  # passes consistently it moves up into this job's matrix and starts to count.
   windows:
     name: Windows / Node ${{ matrix.node }}
     runs-on: windows-latest
@@ -115,6 +116,73 @@ jobs:
             echo "### First assertions"
             echo '```'
             grep -A 12 -m 3 "^not ok " test-output.txt | head -60 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build
+        run: npm run build
+
+  # macOS and Linux: a first look at how much works there. Advisory, see the note above `windows`.
+  # One Node version each (the floor), so the extra runners stay cheap.
+  unix:
+    name: ${{ matrix.name }} / Node 24 (advisory)
+    runs-on: ${{ matrix.os }}
+    continue-on-error: true
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS
+            os: macos-latest
+          - name: Linux
+            os: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Environment facts
+        run: |
+          rg_path=$(command -v rg || echo "NOT INSTALLED")
+          echo "::notice title=Env::node=$(node -v) cores=$(node -p 'require("os").availableParallelism()') rg=${rg_path} tmp=${RUNNER_TEMP} os=${RUNNER_OS} arch=${RUNNER_ARCH} shell=${SHELL}"
+
+      - run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        # pipefail so a failing suite is not reported as success by `tee`.
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee test-output.txt
+
+      # The second search engine, as on Windows: the suite above runs the built-in walker, this installs
+      # ripgrep and runs the search tests again.
+      - name: Test the ripgrep search path
+        run: |
+          set -o pipefail
+          if [ "$RUNNER_OS" = "macOS" ]; then brew install ripgrep; else sudo apt-get install -y ripgrep; fi
+          rg --version
+          node --import tsx --test \
+            src/tools/tools.test.ts \
+            src/tools/codeIntel.test.ts \
+            src/tools/multiroot.test.ts 2>&1 | tee rg-output.txt
+
+      - name: Report failures
+        if: failure()
+        run: |
+          while IFS= read -r line; do
+            echo "::warning title=Test failed (${RUNNER_OS})::${line}"
+          done < <(grep -E "^not ok " test-output.txt | head -40)
+          counts=$(grep -E "^# (tests|pass|fail|skipped)" test-output.txt | tr '\n' ' ')
+          echo "::warning title=Suite totals (${RUNNER_OS})::${counts:-suite produced no totals, it may have crashed}"
+          {
+            echo "## Failing tests on ${RUNNER_OS}"
+            echo '```'
+            grep -E "^not ok |^# (tests|pass|fail|skipped)" test-output.txt | head -120 || echo "(none found)"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
