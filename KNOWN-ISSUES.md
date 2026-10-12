@@ -3,19 +3,28 @@
 Written down rather than quietly carried. Several are good places to start if you want to
 contribute, and each says what it would actually take.
 
-## macOS has not been run
+## macOS and Linux: what is and is not covered
 
-Mindweave is developed on Windows. The whole test suite also passes on Linux, and the
-process handling that used to hang there has been fixed. macOS shares the Linux code paths
-and has fixes of its own (folder names that differ only in case are one folder there), but
-nothing has been run on a real Mac. Continuous testing still runs on Windows alone, so a
-green run says nothing about the other two yet.
+Mindweave is developed on Windows. The whole test suite, the typecheck and the build also run
+on every change on Linux (Ubuntu) and on macOS (an Apple silicon runner), and pass.
+
+What that does not cover:
+
+- **A person at a real terminal on a Mac or Linux desktop.** The suite drives the program
+  through fake terminals. How it looks and feels in Terminal.app, iTerm2, GNOME Terminal or
+  Konsole (colours, mouse, copy and paste) has not been checked by eye. Copying handles the Mac, X11,
+  Wayland, tmux and SSH cases, but only the parts that can be tested without a screen are. Reports of anything off are the most useful thing
+  you can send.
+- **Intel Macs.** The runner is Apple silicon. The code does not depend on the chip, but it
+  has not been run on one.
+- **Driving a native desktop app, and window screenshots.** The `ui` tool can drive a web
+  page or a dev server in a browser on every platform. Driving another program's window by
+  its title, and taking a screenshot of a window, work on Windows only and say so elsewhere.
+  Doing it on macOS needs the system's accessibility and screen-recording permissions and a
+  helper program, and on Linux it depends on the display server.
 
 The desktop app, [mwcode](https://github.com/mindweave-cli/mwcode), ships for macOS and
 Linux too, with Mindweave and its own Node inside.
-
-Adding Linux and macOS jobs to continuous testing, and running the suite on a real Mac, is
-the most useful thing an outside contributor can take on. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## The out-of-memory crash is contained, not cured
 

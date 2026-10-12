@@ -26,9 +26,9 @@ desktop app, built on the same engine, for Windows, macOS and Linux.
 
 ## Install
 
-Needs **Node.js 24+**. The npm package is tested on **Windows** and **Linux**. It has not
-been run on a real Mac yet, so on macOS the desktop app is the safe choice
-([details](KNOWN-ISSUES.md)).
+Needs **Node.js 24+**. Every change is tested on **Windows**, **macOS** (Apple silicon) and
+**Linux**. Driving a native desktop app and taking window screenshots are Windows-only for
+now, and the rest of the limits are in [KNOWN-ISSUES.md](KNOWN-ISSUES.md).
 
 ```bash
 npm install -g mindweave
