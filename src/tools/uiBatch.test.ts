@@ -207,10 +207,14 @@ test("a click waits only as long as the page keeps changing", { skip, timeout: 6
   const c = ctx();
   try {
     await ui.execute({ action: "look", url: pathToFileURL(file).href }, c);
+    // A large ceiling, so the proof does not depend on how fast the machine is: a still page settles as soon as it has
+    // been quiet for a moment, so the click comes back far inside the ceiling, while one that waited the ceiling out
+    // would take all of it. (It used to assert under 450ms of a 500ms ceiling, and a slow CI runner took 1089ms just to click.)
+    const ceiling = 8000;
     const t0 = Date.now();
-    await ui.execute({ action: "click", name: "Open menu" }, c);
+    await ui.execute({ action: "click", name: "Open menu", wait_ms: ceiling }, c);
     const took = Date.now() - t0;
-    assert.ok(took < 450, `a still page answers well before the 500ms ceiling (took ${took}ms)`);
+    assert.ok(took < ceiling / 2, `a still page answers well before the ${ceiling}ms ceiling (took ${took}ms)`);
   } finally {
     await ui.execute({ action: "close" }, c);
     await rm(dir, { recursive: true, force: true });
