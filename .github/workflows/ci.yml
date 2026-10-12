@@ -17,11 +17,10 @@ env:
   MINDWEAVE_NO_AUTO_INSTALL: "1"
 
 jobs:
-  # Windows is the job that decides whether a change is good: it is what Mindweave has been
-  # built and tested on. macOS and Linux run below as a separate job that does NOT gate
-  # anything (continue-on-error), because they have never been run here and a red result is
-  # information about work still to do, not about the change that triggered it. When a platform
-  # passes consistently it moves up into this job's matrix and starts to count.
+  # Windows, then macOS and Linux below. All three gate a change: a regression on any of them
+  # fails the build. macOS and Linux started as an advisory job (they had never been run here,
+  # and a red result then was information about work to do, not about the change that triggered
+  # it); they were made to count after the suite passed on them four runs out of four.
   windows:
     name: Windows / Node ${{ matrix.node }}
     runs-on: windows-latest
@@ -122,12 +121,11 @@ jobs:
       - name: Build
         run: npm run build
 
-  # macOS and Linux: a first look at how much works there. Advisory, see the note above `windows`.
-  # One Node version each (the floor), so the extra runners stay cheap.
+  # macOS (Apple silicon) and Linux (Ubuntu). One Node version each (the floor), so the extra
+  # runners stay cheap; Windows covers the newest Node as well.
   unix:
-    name: ${{ matrix.name }} / Node 24 (advisory)
+    name: ${{ matrix.name }} / Node 24
     runs-on: ${{ matrix.os }}
-    continue-on-error: true
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -175,10 +173,10 @@ jobs:
         if: failure()
         run: |
           while IFS= read -r line; do
-            echo "::warning title=Test failed (${RUNNER_OS})::${line}"
+            echo "::error title=Test failed (${RUNNER_OS})::${line}"
           done < <(grep -E "^not ok " test-output.txt | head -40)
           counts=$(grep -E "^# (tests|pass|fail|skipped)" test-output.txt | tr '\n' ' ')
-          echo "::warning title=Suite totals (${RUNNER_OS})::${counts:-suite produced no totals, it may have crashed}"
+          echo "::error title=Suite totals (${RUNNER_OS})::${counts:-suite produced no totals, it may have crashed}"
           {
             echo "## Failing tests on ${RUNNER_OS}"
             echo '```'
