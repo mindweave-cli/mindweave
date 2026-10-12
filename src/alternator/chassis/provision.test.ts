@@ -178,18 +178,26 @@ test("the timed-out child is actually killed, not just abandoned", async () => {
   const deadline = Date.now() + 15_000;
   let settled = readFileSync(marker, "utf8").length;
   let stable = false;
+  // Six equal readings in a row (a second and a half), not two: on a busy shared runner a doomed child that has not yet been
+  // killed can be starved of CPU for longer than 250ms between beats, and two equal readings then looked like "stopped" a
+  // moment before its next beat (it failed as 85 !== 84).
+  let equal = 0;
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 250));
     const now = readFileSync(marker, "utf8").length;
     if (now === settled) {
-      stable = true;
-      break;
+      if (++equal >= 6) {
+        stable = true;
+        break;
+      }
+    } else {
+      equal = 0;
     }
     settled = now;
   }
   assert.ok(stable, "child was still writing 15s after the timeout — it survived the kill");
 
   // Then confirm it stays stopped, rather than having merely paused between beats.
-  await new Promise((r) => setTimeout(r, 500)); // room for ~10 more beats
+  await new Promise((r) => setTimeout(r, 1000)); // room for ~20 more beats
   assert.equal(readFileSync(marker, "utf8").length, settled, "child resumed after appearing to stop");
 });
