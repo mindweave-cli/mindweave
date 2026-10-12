@@ -21,6 +21,10 @@ import { Box, Static, Text, render } from "ink";
 import { BlockView } from "./components/BlockView.js";
 import type { Block } from "./transcript.js";
 
+/** Let Ink repaint. Ink draws on a timer (a millisecond at the cap these tests use), and a single event-loop tick was
+ *  sometimes too soon on a loaded runner, so this is a short real wait. */
+const settle = (): Promise<void> => new Promise((r) => setTimeout(r, 40));
+
 class FakeStdout extends EventEmitter {
   columns = 80;
   rows = 24;
@@ -80,7 +84,7 @@ async function mount() {
     });
   });
   await ready;
-  await new Promise((r) => setImmediate(r));
+  await settle();
   return { stdout, commit: (b: Block) => commit(b) };
 }
 
@@ -94,7 +98,7 @@ test("a committed block is printed once and never reprinted", async () => {
 
   for (let i = 2; i <= 6; i++) {
     commit(block(i, `BLOCK-${i}`));
-    await new Promise((r) => setImmediate(r));
+    await settle();
   }
 
   const after = (printed(stdout).match(/FIRST/g) ?? []).length;
@@ -105,7 +109,7 @@ test("every committed block reaches the terminal exactly once", async () => {
   const { stdout, commit } = await mount();
   for (let i = 2; i <= 5; i++) {
     commit(block(i, `BLOCK-${i}`));
-    await new Promise((r) => setImmediate(r));
+    await settle();
   }
   const text = printed(stdout);
   for (let i = 2; i <= 5; i++) {
@@ -117,7 +121,7 @@ test("every committed block reaches the terminal exactly once", async () => {
 test("the live tail is what gets re-rendered, and it stays below the history", async () => {
   const { stdout, commit } = await mount();
   commit(block(9, "LATEST"));
-  await new Promise((r) => setImmediate(r));
+  await settle();
   const text = printed(stdout);
   assert.ok(text.includes("LIVE-TAIL"), "the live region never rendered");
   assert.ok(
@@ -159,12 +163,15 @@ test("remounting <Static> reprints the WHOLE conversation", async () => {
     });
   });
   await ready;
-  await new Promise((r) => setImmediate(r));
+  await settle();
 
   // Stand in for the switch: everything printed so far went to a buffer that is now gone.
   stdout.writes.length = 0;
   remount();
-  await new Promise((r) => setImmediate(r));
+  // Until the repaint arrives, not one event-loop tick: Ink schedules its render on a timer, and on a loaded machine one tick
+  // was sometimes too soon (the test failed on a busy CI runner and passed on the next run of the same code).
+  const deadline = Date.now() + 5000;
+  while (!/EARLIER-TWO/.test(printed(stdout)) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10));
 
   const text = printed(stdout);
   assert.match(text, /EARLIER-ONE/, "the history was not reprinted — it exists only in a discarded buffer");
@@ -194,7 +201,7 @@ test("a string sentinel and real blocks share one <Static> list", async () => {
       maxFps: 1000,
     },
   );
-  await new Promise((r) => setImmediate(r));
+  await settle();
   app.unmount();
   const text = printed(stdout);
   assert.match(text, /HEADER-LINE/, "the header never printed");
@@ -257,7 +264,7 @@ test("the reprint is BOUNDED, not the whole session", async () => {
       maxFps: 1000,
     },
   );
-  await new Promise((r) => setImmediate(r));
+  await settle();
   app.unmount();
   const text = printed(stdout);
   assert.match(text, /BLOCK-100/, "the most recent block was not reprinted");
@@ -285,7 +292,7 @@ test("blank rows push the first screen down to the bottom", async () => {
       maxFps: 1000,
     },
   );
-  await new Promise((r) => setImmediate(r));
+  await settle();
   app.unmount();
   const rows = printed(stdout).split("\n");
   const at = rows.findIndex((r) => r.includes("FIRST-LINE"));

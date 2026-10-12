@@ -165,7 +165,7 @@ async function withMenu(menuAbove: boolean): Promise<string[]> {
       maxFps: 1000,
     },
   );
-  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setTimeout(r, 40)); // Ink repaints on a timer: one event-loop tick was sometimes too soon on a loaded runner
   stdin.type("/");
   await new Promise((r) => setTimeout(r, 120));
   app.unmount();

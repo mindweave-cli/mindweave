@@ -166,14 +166,14 @@ test("the caret is parked when it MOVES, even though no frame is written", async
   writes.length = 0;
 
   declareCaret({ ref: refTo(boxAt(2, 3)), column: 4 });
-  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setTimeout(r, 40)); // Ink repaints on a timer: one event-loop tick was sometimes too soon on a loaded runner
   assert.equal(writes.join(""), parkAt({ x: 6, y: 3 }), "a moved caret must reach the terminal on its own");
 
   // And a declaration that did not move must stay silent, or every render puts bytes on
   // the wire for a screen where nothing changed.
   writes.length = 0;
   declareCaret({ ref: refTo(boxAt(2, 3)), column: 4 });
-  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setTimeout(r, 40)); // Ink repaints on a timer: one event-loop tick was sometimes too soon on a loaded runner
   assert.equal(writes.join(""), "");
 
   declareCaret(null);

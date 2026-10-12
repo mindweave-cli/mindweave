@@ -505,7 +505,7 @@ test("the cursor parker stands down too", async () => {
   try {
     out.writes.length = 0;
     declareCaret({ ref: { current: null }, column: 4 });
-    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setTimeout(r, 40)); // Ink repaints on a timer: one event-loop tick was sometimes too soon on a loaded runner
     assert.deepEqual(out.writes, [], "the caret was parked into a terminal the app does not own");
   } finally {
     declareCaret(null);

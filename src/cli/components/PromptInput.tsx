@@ -560,6 +560,22 @@ export function PromptInput({
         dispatch({ t: "wordRight" });
         return;
       }
+      // The same moves as the terminals on a Mac and on Linux send them. Terminal.app and iTerm2 send Option+Left/Right as
+      // Esc b / Esc f (the emacs word keys), and xterm-style terminals send Alt+Arrow as a modified arrow, which arrives as
+      // the meta flag with the arrow. Alt+D is the emacs "delete the word ahead". None of these were bound, so on those
+      // machines moving by a word did nothing.
+      if (key.meta && (key.leftArrow || input === "b")) {
+        dispatch({ t: "wordLeft" });
+        return;
+      }
+      if (key.meta && (key.rightArrow || input === "f")) {
+        dispatch({ t: "wordRight" });
+        return;
+      }
+      if (key.meta && input === "d") {
+        dispatch({ t: "killWordForward" });
+        return;
+      }
 
       if (key.backspace || key.delete) {
         dispatch({ t: "backspace" });

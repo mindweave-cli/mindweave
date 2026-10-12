@@ -15,7 +15,10 @@ import { findAvailablePort, redirectUri, waitForCallback } from "./callback.js";
 
 /** Hit the listener the way a browser would, ignoring whatever page comes back. */
 async function visit(port: number, query: string): Promise<void> {
-  await fetch(`http://127.0.0.1:${port}/callback?${query}`).catch(() => {
+  // A fresh connection each time, and a bounded wait. These tests reuse port numbers one after another, and a pooled connection to an
+  // earlier test's listener, or a request that is never answered, looked exactly like a hang (it ran out the 120s test limit once on a
+  // Linux runner, and passed on the next run of the same code).
+  await fetch(`http://127.0.0.1:${port}/callback?${query}`, { headers: { connection: "close" }, signal: AbortSignal.timeout(10_000) }).catch(() => {
     /* the listener closes on us by design; the request having been made is the point */
   });
 }
@@ -104,7 +107,8 @@ test("aborting stops the wait and frees the port immediately", async () => {
   await assert.rejects(waiting, /cancelled/);
 
   // Proven free by binding it again for a fresh flow.
-  const second = waitForCallback({ port, state: "s2" });
+  // A short deadline of its own, so if the visit never arrives this fails in seconds saying so, not after the whole test's limit.
+  const second = waitForCallback({ port, state: "s2", timeoutMs: 15_000 });
   await visit(port, "code=c2&state=s2");
   assert.deepEqual(await second, { code: "c2" });
 });

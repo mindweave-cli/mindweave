@@ -56,6 +56,13 @@ const KEY = {
   ctrlDelete: "\x1b[3;5~",
   ctrlLeft: "\x1b[1;5D",
   ctrlRight: "\x1b[1;5C",
+  // macOS Terminal.app and iTerm2 send Option+Left/Right as Esc b / Esc f; xterm-style terminals (GNOME Terminal, Konsole,
+  // Kitty, Alacritty) send Alt+Arrow as a modified arrow; Alt+D is the emacs "kill word forward".
+  optionLeft: "\x1bb",
+  optionRight: "\x1bf",
+  altLeft: "\x1b[1;3D",
+  altRight: "\x1b[1;3C",
+  altD: "\x1bd",
   backspace: "\x7f",
 };
 
@@ -172,4 +179,27 @@ test("Ctrl+U still clears the line", async () => {
 
 test("typing a plain w is not Ctrl+W", async () => {
   assert.equal(await afterKeys("wow"), "wow");
+});
+
+// ── the chords Mac and Linux terminals send for the same moves ─────────────────────────────
+
+test("Option+Left (Esc b, from Terminal.app and iTerm2) moves by a word", async () => {
+  assert.equal(await afterKeys("alpha beta", KEY.optionLeft, "X"), "alpha Xbeta");
+});
+
+test("Option+Right (Esc f) moves back by a word, mirroring Option+Left", async () => {
+  assert.equal(await afterKeys("alpha beta", KEY.optionLeft, KEY.optionRight, "!"), "alpha beta!");
+});
+
+test("Alt+Left and Alt+Right (xterm-style terminals on Linux) move by a word", async () => {
+  assert.equal(await afterKeys("alpha beta", KEY.altLeft, "X"), "alpha Xbeta");
+  assert.equal(await afterKeys("alpha beta", KEY.altLeft, KEY.altRight, "!"), "alpha beta!");
+});
+
+test("Alt+D takes the word ahead of the cursor", async () => {
+  assert.equal(await afterKeys("keep this drop", KEY.optionLeft, KEY.altD), "keep this");
+});
+
+test("typing a plain b or f or d is not a word move", async () => {
+  assert.equal(await afterKeys("bfd"), "bfd");
 });
