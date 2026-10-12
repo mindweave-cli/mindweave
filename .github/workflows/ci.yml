@@ -186,3 +186,20 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      # What a user gets, not just what the tests see: pack the package, install the tarball into a clean folder, and
+      # run the installed commands. This is what catches a missing file in the package, a command link that does not
+      # point at anything, or a start-up line that only works from the source tree.
+      - name: Smoke test the installed package
+        run: |
+          set -euo pipefail
+          npm pack --silent
+          prefix="$RUNNER_TEMP/mw-install"
+          npm install --global --prefix "$prefix" ./mindweave-*.tgz --no-audit --no-fund --loglevel=error
+          expected=$(node -p "require('./package.json').version")
+          for cmd in mindweave mw; do
+            got=$("$prefix/bin/$cmd" --version)
+            echo "$cmd --version -> $got"
+            case "$got" in *"$expected"*) ;; *) echo "::error::$cmd reported '$got', expected $expected"; exit 1;; esac
+          done
+          "$prefix/bin/mw" --help | head -5
