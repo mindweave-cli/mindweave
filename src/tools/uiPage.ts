@@ -17,7 +17,7 @@
  */
 import { createHash } from "node:crypto";
 import { writeFile } from "node:fs/promises";
-import { CdpConnection, listTargets, pageTargets, type CdpTarget } from "./cdp.js";
+import { CdpConnection, listTargets, listTargetsPatiently, pageTargets, type CdpTarget } from "./cdp.js";
 import type { UiSnapshot } from "./uiWin.js";
 
 /** What reading a page adds to the shared snapshot shape. */
@@ -543,7 +543,8 @@ export class PageSession {
 
   /** Attach to a page behind a local debugging port. `pick` narrows by title or address. */
   static async attach(port: number, pick?: string, owned?: { close(): Promise<void> }): Promise<{ session: PageSession; others: CdpTarget[] }> {
-    const pages = pageTargets(await listTargets(port));
+    // Patient: a browser just started may not answer for a moment (see listTargetsPatiently).
+    const pages = pageTargets(await listTargetsPatiently(port));
     if (pages.length === 0) throw new Error(`port ${port} has no page to drive`);
     const needle = pick?.toLowerCase();
     const target = (needle && pages.find((p) => p.title.toLowerCase().includes(needle) || p.url.toLowerCase().includes(needle))) || pages[0]!;

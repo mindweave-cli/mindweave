@@ -27,7 +27,7 @@
  * per tree. Session teardown kills several at once, so an always-sync version would
  * freeze the UI for a noticeable fraction of a second on every swap.
  */
-import { spawn, spawnSync, type ChildProcess, type SpawnOptions } from "node:child_process";
+import { execFileSync, spawn, spawnSync, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { childEnv } from "./childEnv.js";
 
@@ -205,13 +205,35 @@ export function isProcessStopped(pid: number | undefined): boolean {
     return true; // no such process
   }
   if (IS_WINDOWS) return false;
+  const state = processState(pid);
+  // `null` is "gone between the two checks"; a state starting with Z is reaped-pending, stopped for every practical purpose.
+  return state === null || state.startsWith("Z");
+}
+
+/**
+ * A process's state letters ("S", "R+", "Z"…), or null when it is gone (POSIX).
+ *
+ * Linux keeps them in /proc. macOS and the BSDs have no /proc, so asking for it there failed, and a failure was read as
+ * "the process vanished": every live process on a Mac was reported stopped, which made a running language server look
+ * shut down and a running background command look finished. They are asked of `ps` instead. A machine with no `ps` at
+ * all says nothing about the process, so it is taken as running (the existence probe above already said it is there).
+ */
+function processState(pid: number): string | null {
+  if (process.platform === "linux") {
+    try {
+      // /proc/<pid>/stat: the state letter follows the parenthesised command name,
+      // which can itself contain spaces or parens, so split on the LAST ") ".
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      return stat.slice(stat.lastIndexOf(") ") + 2);
+    } catch {
+      return null; // /proc entry vanished between the two checks
+    }
+  }
   try {
-    // /proc/<pid>/stat: the state letter follows the parenthesised command name,
-    // which can itself contain spaces or parens, so split on the LAST ") ".
-    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-    const after = stat.slice(stat.lastIndexOf(") ") + 2);
-    return after.startsWith("Z"); // reaped-pending is stopped for every practical purpose
-  } catch {
-    return true; // /proc entry vanished between the two checks
+    const out = execFileSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8", timeout: 3000, stdio: ["ignore", "pipe", "ignore"] }).trim();
+    return out === "" ? null : out;
+  } catch (error) {
+    // ps exits 1 when there is no such process. Anything else (no ps, a timeout) tells us nothing: assume it is running.
+    return (error as { status?: number }).status === 1 ? null : "R";
   }
 }

@@ -479,7 +479,11 @@ function vitalFolderReason(target: string): string | null {
   const env = process.env;
   const system = win
     ? [env.SystemRoot, env.ProgramFiles, env["ProgramFiles(x86)"], env.ProgramData]
-    : ["/etc", "/usr", "/bin", "/sbin", "/boot", "/lib", "/System", "/Library", "/Applications", "/var"];
+    : [
+        "/etc", "/usr", "/bin", "/sbin", "/boot", "/lib", "/lib64", "/var", "/opt", "/dev", "/proc", "/sys", "/run", "/srv", "/mnt", "/media",
+        // macOS: the system and user-visible volumes, and /private, which holds the real /etc and /var.
+        "/System", "/Library", "/Applications", "/Volumes", "/private",
+      ];
   if (system.some(isOrAbove)) return "a system folder";
   const vital = [join(home, ".ssh"), join(home, ".gnupg"), join(home, ".mindweave"), ...(win ? [env.APPDATA, env.LOCALAPPDATA, join(home, "AppData")] : [])];
   if (vital.some((d) => d !== undefined && fold(d) === t)) return "a folder that holds keys or settings";

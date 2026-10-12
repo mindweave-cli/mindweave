@@ -167,7 +167,9 @@ test("a command that prints far more than a pipe buffer still finishes", async (
   const command =
     process.platform === "win32"
       ? "1..20000 | ForEach-Object { 'x' * 200 }"
-      : "for i in $(seq 1 20000); do printf '%0.sx' $(seq 1 200); echo; done";
+      // One awk process writing 20,000 lines of 200 characters. This used to fork `seq` once per line, which is 20,000
+      // processes: fine on Linux, over a minute under macOS's older bash, and it looked exactly like the stall under test.
+      : `awk 'BEGIN { s = sprintf("%200s", ""); gsub(/ /, "x", s); for (i = 0; i < 20000; i++) print s }'`;
   const r = await runCommand.execute({ command, timeout: 60_000 }, ctx);
   assert.doesNotMatch(r.output, /timed out/i, "a few megabytes of output stalled the command");
   assert.match(r.output, /omitted from the middle/, "4MB of output was not truncated, so it was never that large");

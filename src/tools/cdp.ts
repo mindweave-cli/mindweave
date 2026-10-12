@@ -180,3 +180,26 @@ export function pageTargets(targets: CdpTarget[]): CdpTarget[] {
       !/^(devtools|chrome-extension|chrome|edge):/i.test(t.url),
   );
 }
+
+/**
+ * The targets behind a port, asked again until the browser answers (or `budgetMs` runs out).
+ *
+ * A browser that has just been started writes its port into the profile as soon as it is listening, which can be a
+ * moment before it answers on it: on a slow or cold machine (a first launch on macOS checks the app's signature, a CI runner
+ * is busy) the first request waited its three seconds and failed with "nothing answered", though the same request a second
+ * later would have worked. So the first answer is waited for, not asked for once.
+ */
+export async function listTargetsPatiently(port: number, budgetMs = 20_000): Promise<CdpTarget[]> {
+  const deadline = Date.now() + budgetMs;
+  for (;;) {
+    try {
+      return await listTargets(port);
+    } catch (error) {
+      // Only a silence is worth waiting out. A port nothing listens on, or one that is not a debugging port, will not
+      // become one, and a wrong port typed by a person should be told so at once.
+      const slow = error instanceof Error && /nothing answered/.test(error.message);
+      if (!slow || Date.now() >= deadline) throw error;
+      await new Promise((r) => setTimeout(r, 300));
+    }
+  }
+}

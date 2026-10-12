@@ -9,7 +9,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { catastrophicCommandReason, riskyCommandReason } from "./guard.js";
 import { TOOLS } from "./registry.js";
 import type { ToolContext } from "./types.js";
@@ -33,7 +33,13 @@ test("every spelling of deleting a drive root or the home folder is refused", ()
         "npm run clean; Remove-Item -Recurse -Force C:\\Windows",
         "Remove-Item -Recurse $env:ProgramFiles",
       ]
-    : ["rm -rf /", "rm -rf ~", "rm -rf $HOME", "rm -rf /usr", "rm -fr /etc", `rm -rf "${homedir()}"`, "rm -rf /home", "make clean && rm -rf ~/*"];
+    : [
+        "rm -rf /", "rm -rf ~", "rm -rf $HOME", "rm -rf /usr", "rm -fr /etc", `rm -rf "${homedir()}"`,
+        // The folder that holds every home folder: /home on Linux, /Users on a Mac.
+        `rm -rf ${dirname(homedir())}`,
+        "make clean && rm -rf ~/*",
+        ...(process.platform === "darwin" ? ["rm -rf /System", "rm -rf /Applications", "rm -rf /Volumes", "rm -rf /private"] : ["rm -rf /var", "rm -rf /opt"]),
+      ];
   for (const c of commands) assert.ok(catastrophicCommandReason(c), `allowed: ${c}`);
 });
 
