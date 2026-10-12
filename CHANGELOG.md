@@ -2,6 +2,39 @@
 
 Notable changes to Mindweave. Dates are release dates.
 
+## v3.2.6 (2026-10-12): Long sessions stay fast, and reopening a very long one is quick
+
+A session of a few hundred messages could make the terminal slow: scrolling dropped frames and typing lagged, and
+reopening the session did not help. There were two causes, and a third thing that made reopening a very long
+session take half a minute.
+
+### Long sessions stay fast
+
+- **Scrolling no longer slows down once a session passes 600 blocks.** The screen draws only the blocks in view and
+  stands in a spacer of the right height for the rest, which needs the height of every block. That table of heights
+  was capped at 600, a number from when the scrollback held 150 blocks, while the scrollback holds 10,000. Past 600
+  the oldest height was dropped, and the screen then laid out every block on every frame, measuring and redrawing
+  without ever settling. The table now holds the whole scrollback. In a test on the real app, scrolling costs the
+  same from a 100-message session to a 25,000-message one, and memory stays flat.
+
+### Reopening a long session
+
+- **A session of 25,000 messages opens in about 2 seconds instead of 28.** A session of 10,000 messages opens in
+  1.6 seconds instead of 7.5. Three things were slow:
+  - Each tool call copied the record of every call the session had ever made, and the record was never trimmed. It
+    now holds only the calls whose rows are still open. This also made every tool call in a long live session cheaper.
+  - Each message you sent copied the whole history to stamp the wait times of a few rows. It now copies only when a
+    row needs one.
+  - Every old message was laid out in full on the first frame, only to learn its height. Now only the newest 300 are,
+    and older ones take an estimated height that is replaced by the real one the first time they come near the
+    window. The scrollable length can shift slightly the first time you scroll through very old history, until those
+    messages have been measured. What is drawn is never affected.
+
+### Also
+
+- A test of the sub-agent safety net failed now and then because it rewrote a file at the same size in the same clock
+  tick. It now changes the size too.
+
 ## v3.2.5 (2026-10-12): Sub-agents are a rare tool, and a verifier that answers in prose shows what it ran
 
 In one session the agent started four verifier sub-agents for ordinary work, one only to re-check its own fixes,

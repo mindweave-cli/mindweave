@@ -707,3 +707,48 @@ test("progress never disturbs a grouped call", () => {
   s = reduce(s, { type: "toolProgress", toolId: "g1", text: "should not land" });
   assert.equal(s, before);
 });
+
+// ── a long conversation must not make each new call slower ─────────────────────────────
+
+test("the toolMap holds only the calls of blocks still open, however many calls the session has made", () => {
+  let s = initialState();
+  for (let n = 0; n < 400; n++) {
+    s = reduce(s, { type: "toolStart", toolId: `c${n}`, name: "Update", arg: `f${n}.ts`, action: "edit" });
+    s = reduce(s, { type: "toolEnd", toolId: `c${n}`, ok: true, summary: "done" });
+    s = reduce(s, { type: "say", text: `step ${n}` });
+  }
+  assert.ok(s.committed.length >= 400, "the finished rows were committed");
+  // Each tool start copies this map. It used to grow by one per call for the whole session.
+  assert.ok(Object.keys(s.toolMap).length <= 3, `toolMap has ${Object.keys(s.toolMap).length} entries`);
+});
+
+test("a late result for a committed call changes nothing", () => {
+  let s = initialState();
+  s = reduce(s, { type: "toolStart", toolId: "a", name: "Update", arg: "x.ts", action: "edit" });
+  s = reduce(s, { type: "toolEnd", toolId: "a", ok: true, summary: "first" });
+  s = reduce(s, { type: "say", text: "next" });
+  assert.equal(s.toolMap["a"], undefined, "the committed call is forgotten");
+  const before = JSON.stringify(s.committed);
+  const after = reduce(s, { type: "toolEnd", toolId: "a", ok: false, summary: "late and wrong" });
+  assert.equal(JSON.stringify(after.committed), before);
+  assert.equal(after.tail.length, s.tail.length);
+});
+
+test("a call whose block is still open keeps its entry, so its result still lands", () => {
+  let s = initialState();
+  s = reduce(s, { type: "toolStart", toolId: "slow", name: "Update", arg: "x.ts", action: "edit" });
+  s = reduce(s, { type: "toolStart", toolId: "fast", name: "Update", arg: "y.ts", action: "edit" });
+  s = reduce(s, { type: "toolEnd", toolId: "fast", ok: true, summary: "fast done" });
+  assert.ok(s.toolMap["slow"] !== undefined, "a running call is still mapped");
+  s = reduce(s, { type: "toolEnd", toolId: "slow", ok: true, summary: "slow done" });
+  const rows = [...s.committed, ...s.tail].filter((b) => b.kind === "tool");
+  assert.deepEqual(rows.map((b) => (b.kind === "tool" ? b.summary : "")).sort(), ["fast done", "slow done"]);
+});
+
+test("settling waits copies nothing when there is nothing to settle", () => {
+  let s = initialState();
+  for (let n = 0; n < 50; n++) s = reduce(s, { type: "user", text: `q${n}` });
+  const committed = s.committed;
+  s = reduce(s, { type: "user", text: "one more" });
+  assert.equal(s.committed.slice(0, committed.length).every((b, i) => b === committed[i]), true, "earlier blocks are the same objects");
+});

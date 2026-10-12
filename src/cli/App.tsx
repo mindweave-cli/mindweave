@@ -80,7 +80,7 @@ import { isTight } from "./blockSpacing.js";
 import { parseScreenArg, screenChoices, screenNotice, startupMode, type ScreenMode } from "./screenMode.js";
 import { applyScreenMode } from "./screenShell.js";
 import { saveScreenMode } from "./screenStore.js";
-import { needsMeasure, pruneHeights } from "./blockHeights.js";
+import { FULL_TAIL_BLOCKS, needsMeasure, pruneHeights, seedHeights } from "./blockHeights.js";
 import { expandableAt, hitBlock, hitItem } from "./expandHits.js";
 import { shellNote } from "./shellNotes.js";
 import { readFileSync, statSync } from "node:fs";
@@ -4016,14 +4016,26 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
   // bottom — so in practice this prefix is everything but the last block or two.
   let known = 0;
   const knownHeights: number[] = [];
-  while (known < rendered.length) {
-    const block = rendered[known]!;
-    const entry = blockHeights.current.get(block.id);
-    // The identity check IS the invalidation: a block that changed is a new object, so
-    // its recorded height belongs to the version before the change.
-    if (entry === undefined || entry.block !== block) break;
-    knownHeights.push(entry.height);
-    known++;
+  const extendKnown = (): void => {
+    while (known < rendered.length) {
+      const block = rendered[known]!;
+      const entry = blockHeights.current.get(block.id);
+      // The identity check IS the invalidation: a block that changed is a new object, so
+      // its recorded height belongs to the version before the change.
+      if (entry === undefined || entry.block !== block) break;
+      knownHeights.push(entry.height);
+      known++;
+    }
+  };
+  extendKnown();
+  // A long conversation reopened has no heights at all, and laying every block out in full just to
+  // learn them cost about a millisecond each: 28 seconds for a very long session, with nothing on the
+  // screen until it was done. Only the newest few hundred are laid out now (they are the ones in view);
+  // the older ones take an ESTIMATE that is marked as one, exactly as after a resize, and each is
+  // measured for real the first time it comes near the window. See seedHeights.
+  if (rendered.length - known > FULL_TAIL_BLOCKS) {
+    seedHeights(blockHeights.current, rendered, known, width);
+    extendKnown();
   }
   const win = virtualWindow(knownHeights, -chatOffset, chatRows);
   if (perfEnabled()) {

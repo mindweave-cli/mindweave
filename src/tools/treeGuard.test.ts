@@ -108,7 +108,9 @@ test("a file too big to hold is reported as not covered, never as covered", asyn
     const big = join(root, "src", "big.txt");
     await writeFile(big, "x".repeat(300 * 1024));
     const before = await snapshotTree(root);
-    await writeFile(big, "y".repeat(300 * 1024));
+    // A different SIZE as well as different text: a file is noticed as changed by its size and its modified time, and a
+    // rewrite of the same length in the same clock tick as the first write has neither, so it went unnoticed now and then.
+    await writeFile(big, "y".repeat(300 * 1024 + 7));
     const c = await treeChanges(before);
     assert.equal(c.changed.length, 1);
     const r = await giveToUndo(new Checkpoints(), c);

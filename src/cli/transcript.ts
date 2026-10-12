@@ -264,7 +264,31 @@ function drain(s: TranscriptState): TranscriptState {
   let i = 0;
   while (i < s.tail.length && s.tail[i]!.done) i++;
   if (i === 0) return s;
-  return { ...s, committed: s.committed.concat(s.tail.slice(0, i)), tail: s.tail.slice(i) };
+  const moved = s.tail.slice(0, i);
+  return { ...s, committed: s.committed.concat(moved), tail: s.tail.slice(i), toolMap: forgetCommitted(s.toolMap, moved) };
+}
+
+/**
+ * The toolMap without the calls whose block has just been committed (pure).
+ *
+ * The map says which tail block a call's later events belong to, and only the tail is ever searched for
+ * that block: an event for a committed one finds nothing and changes nothing. So an entry for a committed
+ * block can never be used, and keeping it made the map grow with every call of the session. Each tool start
+ * copies the whole map (`{ ...toolMap, [id]: block }`), so a long session paid for every call it had ever
+ * made on each new one: reopening a 10,000-message session spent about three of its eight seconds there.
+ * Now the map holds only the calls of blocks still open, which is a handful.
+ */
+function forgetCommitted(toolMap: Record<string, number>, moved: Block[]): Record<string, number> {
+  const ids = new Set<number>();
+  for (const b of moved) if (b.kind === "work" || b.kind === "tool") ids.add(b.id);
+  if (ids.size === 0) return toolMap;
+  let kept: Record<string, number> | null = null;
+  for (const key of Object.keys(toolMap)) {
+    if (!ids.has(toolMap[key]!)) continue;
+    kept ??= { ...toolMap };
+    delete kept[key];
+  }
+  return kept ?? toolMap;
 }
 
 /** Does the uncut block say more than the shortened one did? A row is only worth
@@ -400,12 +424,21 @@ function settleWaits(s: TranscriptState): TranscriptState {
   // BOTH lists, the same as endTurn. A finished tool row drains into `committed` almost
   // immediately, so by the time the model answers, the row holding the clock is no longer
   // in the tail — and a version that only walked the tail left every wait unstamped.
-  const tail: Block[] = s.tail.map(settle);
-  const committed: Block[] = s.committed.map(settle);
-  const changed =
-    tail.some((b: Block, i: number) => b !== s.tail[i]) ||
-    committed.some((b: Block, i: number) => b !== s.committed[i]);
-  return changed ? { ...s, tail, committed } : s;
+  // Scanned rather than mapped: nearly every call changes nothing, and a copy of a long committed list on each
+  // user message made reopening a 10,000-message conversation spend a second here. Copy only when needed.
+  const settleList = (list: Block[]): Block[] => {
+    let out: Block[] | null = null;
+    for (let i = 0; i < list.length; i++) {
+      const b = list[i]!;
+      if (b.kind !== "tool" || b.since === undefined || b.waited !== undefined) continue;
+      out ??= list.slice();
+      out[i] = settle(b);
+    }
+    return out ?? list;
+  };
+  const tail = settleList(s.tail);
+  const committed = settleList(s.committed);
+  return tail !== s.tail || committed !== s.committed ? { ...s, tail, committed } : s;
 }
 
 export function reduce(s: TranscriptState, a: Action): TranscriptState {

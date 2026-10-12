@@ -17,9 +17,17 @@
  * has to be laid out in full again to get it back.
  */
 
-/** How many heights to keep. Comfortably more than the scrollback cap, so pruning can
- *  never reach a block that is still being rendered. */
-export const MAX_TRACKED_HEIGHTS = 600;
+import { SCROLLBACK_BLOCKS } from "./virtualWindow.js";
+import type { Block } from "./transcript.js";
+
+/** How many heights to keep: the whole scrollback and a margin, so pruning can never reach a block
+ *  that is still being rendered.
+ *
+ *  This was a flat 600, sized when the scrollback was 150 blocks and left behind when the scrollback
+ *  grew to 10,000. The measured prefix stops at the first block with no height, so once a session passed
+ *  600 blocks the OLDEST height was pruned, the prefix ended at block 0, and every block was laid out in
+ *  full on every frame: a long session got slower and slower, and stayed slow after reopening it. */
+export const MAX_TRACKED_HEIGHTS = SCROLLBACK_BLOCKS + 1000;
 
 /** Prune when the table grows past the cap, oldest ids first (in place). */
 export function pruneHeights(table: Map<number, unknown>, cap = MAX_TRACKED_HEIGHTS): void {
@@ -62,4 +70,93 @@ export function needsMeasure(entry: HeightEntry | undefined, block: unknown): bo
   if (entry === undefined) return true;
   if (entry.block !== block) return true;
   return entry.scaled === true;
+}
+
+/**
+ * How many of the newest blocks are laid out in full when a long conversation is opened, to learn their
+ * heights. They are the ones in view and the ones just above, so they are measured for real; the older
+ * ones take an estimate (see `seedHeights`).
+ */
+export const FULL_TAIL_BLOCKS = 300;
+
+/** Rows a piece of text takes at `columns`, wrapping long lines (a blank line is a row). */
+function textRows(text: string | undefined, columns: number): number {
+  if (!text) return 0;
+  const room = Math.max(10, columns - 4);
+  let rows = 0;
+  for (const line of text.split("\n")) rows += Math.max(1, Math.ceil(line.length / room));
+  return rows;
+}
+
+/** The most rows a block's detail is allowed to be guessed at: a long output is shown cut short. */
+const DETAIL_GUESS_CAP = 12;
+
+/**
+ * A rough height, in rows, for a block that has not been laid out (pure).
+ *
+ * Only used for blocks far above the window, whose real height is measured the first time they come near
+ * it, so it needs to be sensible and nothing more: a wrong guess moves the scroll extent a little until
+ * the block is measured, and cannot change what is drawn in view. Open rows and expanded output are
+ * counted because they are what makes a block tall.
+ */
+export function estimateHeight(block: Block, columns: number): number {
+  let rows = 1;
+  switch (block.kind) {
+    case "user":
+    case "assistant":
+    case "error":
+    case "completion":
+    case "note":
+    case "context":
+      rows = textRows(block.text, columns);
+      break;
+    case "notice":
+      rows = textRows(block.title, columns) + textRows(block.body, columns);
+      break;
+    case "tool":
+      rows = 1 + (block.expanded && block.full ? textRows(block.full, columns) : Math.min(textRows(block.detail, columns), DETAIL_GUESS_CAP));
+      break;
+    case "work":
+      rows = 1;
+      if (block.open) {
+        for (const it of block.items) rows += 1 + (it.open ? Math.min(textRows(it.full ?? it.detail, columns), DETAIL_GUESS_CAP) : 0);
+      }
+      break;
+    case "subagent":
+      rows = 0;
+      for (const ag of block.agents) rows += 3 + (ag.open ? 4 + ag.items.length : 0);
+      break;
+    case "compaction":
+      rows = 6;
+      break;
+  }
+  // The blank row that separates one block from the next.
+  return Math.max(1, rows) + 1;
+}
+
+/**
+ * Give every finished block from `from` up to the newest `FULL_TAIL_BLOCKS` an ESTIMATED height (in place).
+ *
+ * A conversation that is opened again has no heights, and without these the only way to learn them is to
+ * lay every block out in full: about a millisecond each, so a very long session sat for half a minute
+ * with nothing on screen. An estimate is marked `scaled`, the same flag a window resize uses, which keeps
+ * it usable as a spacer but makes the block count as unmeasured: the first time it is rendered it is laid
+ * out and the estimate is replaced by a fact. So the cost is bounded by what is near the window and not by
+ * the length of the conversation, and a block is never left with a guess once it has been looked at.
+ *
+ * Only blocks that are done: an open one changes with every token and is always among the newest.
+ * Returns how many were given an estimate.
+ */
+export function seedHeights(table: Map<number, HeightEntry>, blocks: readonly Block[], from: number, columns: number): number {
+  let seeded = 0;
+  const end = blocks.length - FULL_TAIL_BLOCKS;
+  for (let i = Math.max(0, from); i < end; i++) {
+    const block = blocks[i]!;
+    if (!block.done) continue;
+    const entry = table.get(block.id);
+    if (entry !== undefined && entry.block === block) continue;
+    table.set(block.id, { height: estimateHeight(block, columns), block, scaled: true });
+    seeded++;
+  }
+  return seeded;
 }

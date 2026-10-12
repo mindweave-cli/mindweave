@@ -7,7 +7,9 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { pruneHeights, MAX_TRACKED_HEIGHTS, needsMeasure } from "./blockHeights.js";
+import { FULL_TAIL_BLOCKS, MAX_TRACKED_HEIGHTS, estimateHeight, needsMeasure, pruneHeights, seedHeights, type HeightEntry } from "./blockHeights.js";
+import type { Block } from "./transcript.js";
+import { SCROLLBACK_BLOCKS } from "./virtualWindow.js";
 
 function table(ids: number[]): Map<number, string> {
   return new Map(ids.map((id) => [id, `h${id}`]));
@@ -50,9 +52,19 @@ test("it prunes down to exactly the cap, not below it", () => {
 });
 
 test("the cap leaves real room above the scrollback", () => {
-  // Pruning must never be able to reach a block that is still rendered. The scrollback
-  // cap is 150 blocks; a table sized near that would evict blocks still on screen.
-  assert.ok(MAX_TRACKED_HEIGHTS >= 300, `cap is ${MAX_TRACKED_HEIGHTS}, too close to the scrollback`);
+  // Pruning must never be able to reach a block that is still rendered. The table was once a flat 600
+  // while the scrollback allowed 10,000 blocks, so a session of 633 blocks lost its oldest height, the
+  // measured prefix ended at block 0, and every block was laid out in full on every frame.
+  assert.ok(MAX_TRACKED_HEIGHTS > SCROLLBACK_BLOCKS, `cap is ${MAX_TRACKED_HEIGHTS}, not above the scrollback`);
+});
+
+test("a long session keeps every block's height: 700, 5,000 and a full scrollback are not pruned", () => {
+  for (const n of [700, 5000, SCROLLBACK_BLOCKS]) {
+    const t = table(Array.from({ length: n }, (_, i) => i));
+    pruneHeights(t);
+    assert.equal(t.size, n, `${n} blocks`);
+    assert.ok(t.has(0), "the oldest block still has its height, so the measured prefix reaches the newest");
+  }
 });
 
 // ── what still owes a real measurement ──────────────────────────────────────
@@ -104,4 +116,59 @@ test("recording a measurement clears the debt", () => {
 test("scaled:false is a measurement, not a debt", () => {
   const block = { id: 1 };
   assert.equal(needsMeasure({ height: 4, block, scaled: false }, block), false);
+});
+
+// ── opening a long conversation: estimates for what is far above the window ──────────────
+
+function chat(n: number): Block[] {
+  return Array.from({ length: n }, (_, i): Block => ({ kind: "assistant", id: i, done: true, text: `message ${i}\n\nsecond paragraph` }));
+}
+
+test("only blocks older than the newest few hundred get an estimate, and it is marked as one", () => {
+  const blocks = chat(FULL_TAIL_BLOCKS + 50);
+  const table = new Map<number, HeightEntry>();
+  assert.equal(seedHeights(table, blocks, 0, 100), 50);
+  assert.equal(table.size, 50);
+  for (let i = 0; i < 50; i++) {
+    const e = table.get(i)!;
+    assert.equal(e.scaled, true, "an estimate counts as unmeasured, so the first render replaces it with a fact");
+    assert.equal(e.block, blocks[i]);
+    assert.ok(e.height >= 2);
+  }
+  assert.equal(table.has(50), false, "the newest blocks are laid out for real, not guessed");
+  assert.equal(needsMeasure(table.get(0), blocks[0]), true);
+});
+
+test("a conversation no longer than the tail is never estimated", () => {
+  const table = new Map<number, HeightEntry>();
+  assert.equal(seedHeights(table, chat(FULL_TAIL_BLOCKS), 0, 100), 0);
+});
+
+test("a measured block keeps its height, an open block is left alone, and seeding starts at `from`", () => {
+  const blocks = chat(FULL_TAIL_BLOCKS + 10);
+  blocks[2] = { ...blocks[2]!, done: false } as Block;
+  const table = new Map<number, HeightEntry>([[1, { height: 17, block: blocks[1]! }]]);
+  seedHeights(table, blocks, 1, 100);
+  assert.equal(table.get(1)!.height, 17, "a real measurement is never overwritten");
+  assert.equal(table.has(2), false, "an open block changes with every token");
+  assert.ok(table.has(3));
+  assert.equal(table.has(0), false, "blocks before `from` were not asked about");
+});
+
+test("an estimate grows with the text and with what is open, and is never below two rows", () => {
+  const short: Block = { kind: "assistant", id: 1, done: true, text: "hi" };
+  const long: Block = { kind: "assistant", id: 2, done: true, text: "word ".repeat(400) };
+  assert.ok(estimateHeight(long, 100) > estimateHeight(short, 100) + 10);
+  assert.ok(estimateHeight(short, 100) >= 2);
+  const closed: Block = { kind: "work", id: 3, done: true, items: [{ toolId: "a", name: "Run", status: "ok" }, { toolId: "b", name: "Run", status: "ok" }] };
+  const open: Block = { ...closed, open: true } as Block;
+  assert.ok(estimateHeight(open, 100) > estimateHeight(closed, 100));
+  for (const b of [{ kind: "compaction", id: 9, done: true, report: {} }, { kind: "subagent", id: 8, done: true, agents: [] }, { kind: "notice", id: 7, done: true, title: "t", body: "b" }] as unknown as Block[]) {
+    assert.ok(estimateHeight(b, 100) >= 2, b.kind);
+  }
+});
+
+test("a narrower terminal estimates taller", () => {
+  const b: Block = { kind: "assistant", id: 1, done: true, text: "word ".repeat(120) };
+  assert.ok(estimateHeight(b, 40) > estimateHeight(b, 140));
 });
