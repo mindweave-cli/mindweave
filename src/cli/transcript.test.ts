@@ -752,3 +752,47 @@ test("settling waits copies nothing when there is nothing to settle", () => {
   s = reduce(s, { type: "user", text: "one more" });
   assert.equal(s.committed.slice(0, committed.length).every((b, i) => b === committed[i]), true, "earlier blocks are the same objects");
 });
+
+// ── a quietly failed step must not split the work row around it ─────────────────────────
+
+test("reads either side of an edit that failed quietly stay ONE work row", () => {
+  let s = initialState();
+  s = reduce(s, { type: "toolStart", toolId: "r1", name: "Read", arg: "a.md", action: "read", group: true });
+  s = reduce(s, { type: "toolEnd", toolId: "r1", ok: true, summary: "ok" });
+  // The edit starts (which closes the work row) and then fails quietly (its row is dropped).
+  s = reduce(s, { type: "toolStart", toolId: "e1", name: "Update", arg: "a.md", action: "edit" });
+  s = reduce(s, { type: "toolEnd", toolId: "e1", ok: false, summary: "not unique", quiet: true });
+  s = reduce(s, { type: "toolStart", toolId: "r2", name: "Read", arg: "a.md", action: "read", group: true });
+  s = reduce(s, { type: "toolEnd", toolId: "r2", ok: true, summary: "ok" });
+  s = reduce(s, { type: "endTurn" });
+  const work = [...s.committed, ...s.tail].filter((b) => b.kind === "work");
+  assert.equal(work.length, 1, "one row, not two");
+  assert.equal(work[0]!.kind === "work" ? work[0]!.items.length : 0, 2, "both reads are in it");
+});
+
+test("an edit that really shows still separates the rows around it", () => {
+  let s = initialState();
+  s = reduce(s, { type: "toolStart", toolId: "r1", name: "Read", arg: "a.md", action: "read", group: true });
+  s = reduce(s, { type: "toolEnd", toolId: "r1", ok: true, summary: "ok" });
+  s = reduce(s, { type: "toolStart", toolId: "e1", name: "Update", arg: "a.md", action: "edit" });
+  s = reduce(s, { type: "toolEnd", toolId: "e1", ok: true, summary: "4 edits", detail: "x" });
+  s = reduce(s, { type: "toolStart", toolId: "r2", name: "Read", arg: "a.md", action: "read", group: true });
+  s = reduce(s, { type: "toolEnd", toolId: "r2", ok: true, summary: "ok" });
+  s = reduce(s, { type: "endTurn" });
+  const kinds = [...s.committed, ...s.tail].map((b) => b.kind);
+  assert.deepEqual(kinds, ["work", "tool", "work"]);
+});
+
+test("words between the reads still end the row, even when a quiet step follows", () => {
+  let s = initialState();
+  s = reduce(s, { type: "toolStart", toolId: "r1", name: "Read", arg: "a.md", action: "read", group: true });
+  s = reduce(s, { type: "toolEnd", toolId: "r1", ok: true, summary: "ok" });
+  s = reduce(s, { type: "say", text: "now the notes" });
+  s = reduce(s, { type: "toolStart", toolId: "e1", name: "Update", arg: "a.md", action: "edit" });
+  s = reduce(s, { type: "toolEnd", toolId: "e1", ok: false, summary: "no", quiet: true });
+  s = reduce(s, { type: "toolStart", toolId: "r2", name: "Read", arg: "b.md", action: "read", group: true });
+  s = reduce(s, { type: "toolEnd", toolId: "r2", ok: true, summary: "ok" });
+  s = reduce(s, { type: "endTurn" });
+  const kinds = [...s.committed, ...s.tail].map((b) => b.kind);
+  assert.deepEqual(kinds, ["work", "assistant", "work"], "what the agent said stays between the two rows");
+});

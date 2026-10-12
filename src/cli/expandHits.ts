@@ -83,3 +83,8 @@ export function expandableAt(
   }
   return rowAt(spans, y, { top: frameTop + c.y, height: c.height });
 }
+
+/** The places that can be clicked right now (for tests: which boxes are registered). */
+export function registeredHits(): number[] {
+  return [...nodes.keys()];
+}

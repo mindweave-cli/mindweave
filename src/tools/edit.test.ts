@@ -119,7 +119,8 @@ test("a long edit keeps the whole diff to open, past the rows the row shows", as
   assert.equal(r.isError, undefined);
   assert.ok((r.detail ?? "").includes("more line"), "the row itself is cut short");
   assert.ok(r.detailFull, "and the whole diff is kept");
-  assert.ok(r.detailFull!.includes("- old 59") && r.detailFull!.includes("+ new 59"), "both ends of the change are in it");
+  assert.match(r.detailFull!, /^- +60 │ old 59$/m, "the last removed line is in it, with its number");
+  assert.match(r.detailFull!, /^\+ +60 │ new 59$/m, "and the last added one");
   assert.ok(r.detailFull!.split("\n").length > (r.detail ?? "").split("\n").length);
 });
 
@@ -130,7 +131,8 @@ test("an edit one line past what the row shows can still be opened", async () =>
   const { hasMore } = await import("../cli/transcript.js");
   const ctx = freshCtx();
   const before = Array.from({ length: 11 }, (_, i) => `old ${i}`).join("\n");
-  const after = Array.from({ length: 20 }, (_, i) => `new ${i}`).join("\n");
+  // 11 removed + 18 added + two lines of context after the change (the tail line and the empty last line) = 31 rows.
+  const after = Array.from({ length: 18 }, (_, i) => `new ${i}`).join("\n");
   await fs.writeFile(join(ctx.cwd, "m.txt"), `${before}\ntail\n`);
   await readFile.execute({ path: "m.txt" }, ctx);
   const r = await edit.execute({ path: "m.txt", edits: [{ old_string: before, new_string: after }] }, ctx);

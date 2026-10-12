@@ -9,6 +9,7 @@
  * renderer can colour them: `+ ` added (green), `- ` removed (red), bare = plain.
  */
 import { capEnds, condense } from "./outputShape.js";
+import { diffHunks } from "./lineDiff.js";
 
 /** Cap a list of display lines, noting how many were hidden. */
 export function capLines(lines: string[], max: number): string {
@@ -321,4 +322,112 @@ export function withOutcome(
 
 function stripTrailingNewline(s: string): string {
   return s.endsWith("\n") ? s.slice(0, -1) : s;
+}
+
+// ── a numbered diff: what changed, with the line numbers, a little context and a gap marker ─────────────────────
+
+/** The gutter's closing mark, between a line number and the line. A diff row is `<+|-| > <number> │ <text>`. */
+export const GUTTER_MARK = "│";
+
+/** How many rows a diff shows before it says how many more there are. */
+export const DIFF_ROWS = 30;
+
+function digits(n: number): number {
+  return String(Math.max(1, n)).length;
+}
+
+function gutterRow(sign: "+" | "-" | " ", no: number | undefined, width: number, text: string): string {
+  return `${sign} ${no === undefined ? " ".repeat(width) : String(no).padStart(width)} ${GUTTER_MARK} ${text}`;
+}
+
+/**
+ * The change from `before` to `after` as rows a front end can paint (pure). Each row is its sign (`+` added, `-` removed,
+ * a space for an unchanged line of context), the line's number in the file, the gutter mark and the line. A gap between
+ * two groups of changes is one dim `⋯` row. Past `max` rows the rest is counted, as every other block does.
+ *
+ * Null when the change is too large to compare cheaply, or when nothing changed: the caller then shows the old and the
+ * new text as before.
+ */
+export function diffDetail(before: string, after: string, max = DIFF_ROWS, context = 2): string | null {
+  const hunks = diffHunks(before, after, context);
+  if (!hunks || hunks.length === 0) return null;
+  let top = 0;
+  for (const h of hunks) for (const l of h) top = Math.max(top, l.newNo ?? 0, l.oldNo ?? 0);
+  const width = digits(top);
+  const rows: string[] = [];
+  hunks.forEach((h, i) => {
+    if (i > 0) rows.push(`  ${" ".repeat(width)} ⋯`);
+    for (const l of h) {
+      if (l.kind === "add") rows.push(gutterRow("+", l.newNo, width, l.text));
+      else if (l.kind === "del") rows.push(gutterRow("-", l.oldNo, width, l.text));
+      else rows.push(gutterRow(" ", l.newNo, width, l.text));
+    }
+  });
+  return capLines(rows, max);
+}
+
+/** A newly created file as numbered additions. */
+export function newFileDetail(content: string, max = 20): string {
+  if (content === "") return "";
+  const lines = stripTrailingNewline(content).split("\n");
+  const width = digits(lines.length);
+  return capLines(lines.map((l, i) => gutterRow("+", i + 1, width, l)), max);
+}
+
+/**
+ * The same replacement as `editDetail`, numbered from `firstLine` (where the old text began), with only the lines that
+ * differ marked. Falls back to the plain old-then-new listing when the two cannot be compared.
+ */
+export function numberedEditDetail(oldStr: string, newStr: string, firstLine: number, max = DIFF_ROWS): string {
+  const hunks = diffHunks(stripTrailingNewline(oldStr), stripTrailingNewline(newStr), 2);
+  if (!hunks || hunks.length === 0) return editDetail(oldStr, newStr, max);
+  const offset = firstLine - 1;
+  let top = 0;
+  for (const h of hunks) for (const l of h) top = Math.max(top, (l.newNo ?? 0) + offset, (l.oldNo ?? 0) + offset);
+  const width = digits(top);
+  const rows: string[] = [];
+  hunks.forEach((h, i) => {
+    if (i > 0) rows.push(`  ${" ".repeat(width)} ⋯`);
+    for (const l of h) {
+      const no = (l.kind === "del" ? l.oldNo : l.newNo)! + offset;
+      rows.push(gutterRow(l.kind === "add" ? "+" : l.kind === "del" ? "-" : " ", no, width, l.text));
+    }
+  });
+  return capLines(rows, max);
+}
+
+/**
+ * What really changed between two versions of a file: the first and last line touched (in the NEW file's numbering, a
+ * removed line counting as the spot it left) and how many lines went and came (pure). Null when nothing changed, or the
+ * change is too large to compare cheaply.
+ *
+ * The scope label under an edit used to take the line counts from the text of each replacement, so a paragraph re-sent
+ * with two lines added was reported as "−26 +58" and a span from the first edit to the last, and the label disagreed
+ * with the diff drawn under it.
+ */
+export function diffSummary(before: string, after: string): { first: number; last: number; removed: number; added: number } | null {
+  const hunks = diffHunks(before, after, 0);
+  if (!hunks || hunks.length === 0) return null;
+  let delta = 0;
+  let first = Infinity;
+  let last = 0;
+  let removed = 0;
+  let added = 0;
+  for (const h of hunks) {
+    for (const l of h) {
+      if (l.kind === "add") {
+        added++;
+        first = Math.min(first, l.newNo!);
+        last = Math.max(last, l.newNo!);
+        delta++;
+      } else if (l.kind === "del") {
+        removed++;
+        const at = l.oldNo! + delta;
+        first = Math.min(first, at);
+        last = Math.max(last, at);
+        delta--;
+      }
+    }
+  }
+  return { first, last, removed, added };
 }

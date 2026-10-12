@@ -45,8 +45,8 @@
 import type { Tool, ToolResult } from "./types.js";
 import { recordWrite, relativize } from "./paths.js";
 import { applyEol } from "./eol.js";
-import { FULL_DETAIL_MAX, multiEditDetail, lineCount, magnitude, rangeLabel, withScope } from "./detail.js";
-import { applyEditSequence, type EditOp } from "./editCore.js";
+import { FULL_DETAIL_MAX, diffDetail, diffSummary, multiEditDetail, lineCount, magnitude, rangeLabel, withScope } from "./detail.js";
+import { applyEditSequence, normalizeLf, type EditOp } from "./editCore.js";
 import { numberedWindow, charToLine } from "./editWindow.js";
 import { prepareEditTarget, unreadError, fail, failQuietly, errText } from "./editTarget.js";
 import { writeFileAtomic } from "./atomicWrite.js";
@@ -203,7 +203,13 @@ export const edit: Tool = {
     // Scope reads as the change actually was: "L120-124 · −2 +5" for one edit, and
     // "3 edits · L120-420 · −18 +40" when several were batched. Leading with an edit
     // count on a single edit would be noise.
-    const magnitudes = `${rangeLabel(startLine, endLine)} · ${magnitude(removed, added)}`;
+    // From the diff itself when it can be made: the counts and the range of what really changed, which is what the rows
+    // under this label show. The text of each replacement over-counts (a paragraph re-sent with two lines added is "-26 +58")
+    // and the span of the first edit to the last is not where the changes were.
+    const real = diffSummary(normalizeLf(content), seq.updated);
+    const magnitudes = real
+      ? `${rangeLabel(real.first, real.last)} · ${magnitude(real.removed, real.added)}`
+      : `${rangeLabel(startLine, endLine)} · ${magnitude(removed, added)}`;
     const scope = nEdits === 1 ? magnitudes : `${nEdits} edits · ${magnitudes}`;
     const headline =
       nEdits === 1
@@ -214,8 +220,9 @@ export const edit: Tool = {
         `${headline}\n` +
         `Changed region — line-numbered so you can make further edits without re-reading:\n${window}`,
       summary: `edited ${shown} · ${scope}`,
-      detail: withScope(scope, multiEditDetail(ops)),
-      detailFull: withScope(scope, multiEditDetail(ops, FULL_DETAIL_MAX)),
+      // What changed in the file, numbered, with a little context; the old-then-new listing only when the two cannot be compared.
+      detail: withScope(scope, diffDetail(normalizeLf(content), seq.updated) ?? multiEditDetail(ops)),
+      detailFull: withScope(scope, diffDetail(normalizeLf(content), seq.updated, FULL_DETAIL_MAX) ?? multiEditDetail(ops, FULL_DETAIL_MAX)),
       detailKind: "diff" as const,
     };
   },

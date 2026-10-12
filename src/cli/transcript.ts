@@ -334,7 +334,18 @@ function dropTool(s: TranscriptState, toolId: string, blockId: number): Transcri
     const done = !!block.closed && items.every((it) => it.status !== "running");
     return drain({ ...s, tail: s.tail.map((b) => (b.id === blockId ? ({ ...b, items, done } as Block) : b)), toolMap });
   }
-  return drain({ ...s, tail: s.tail.filter((b) => b.id !== blockId), toolMap });
+  // A standalone row, dropped. Starting it closed the work row just before it, and with the row gone nothing visible came
+  // between: reopen that work row, so the reads and commands on either side of a quietly failed edit stay ONE row
+  // ("Read 2 files") and not two rows of one file each.
+  const at = s.tail.findIndex((b) => b.id === blockId);
+  const before = at > 0 ? s.tail[at - 1] : at === 0 ? s.committed[s.committed.length - 1] : undefined;
+  const rest = s.tail.filter((b) => b.id !== blockId);
+  if (before && before.kind === "work" && before.closed) {
+    const reopened = { ...before, closed: false, done: false } as Block;
+    if (at > 0) return drain({ ...s, tail: rest.map((b) => (b.id === before.id ? reopened : b)), toolMap });
+    return drain({ ...s, committed: s.committed.slice(0, -1), tail: [reopened, ...rest], toolMap });
+  }
+  return drain({ ...s, tail: rest, toolMap });
 }
 
 /**
@@ -628,7 +639,11 @@ export function reduce(s: TranscriptState, a: Action): TranscriptState {
     }
     case "toggleItem": {
       const flip = (b: Block): Block =>
-        b.kind === "work" && b.id === a.id && b.items[a.index]
+        // A row of ONE call shows that call opened whenever the row is open, so a click on the call folds the ROW: there is no
+        // call-level state to flip, and flipping it did nothing at all.
+        b.kind === "work" && b.id === a.id && b.items.length === 1
+          ? ({ ...b, open: !b.open } as Block)
+          : b.kind === "work" && b.id === a.id && b.items[a.index]
           ? ({ ...b, items: b.items.map((it, i) => (i === a.index ? { ...it, open: !it.open } : it)) } as Block)
           : b.kind === "subagent" && b.id === a.id && b.agents[a.index]
             ? ({ ...b, agents: b.agents.map((ag, i) => (i === a.index ? { ...ag, open: !ag.open } : ag)) } as Block)

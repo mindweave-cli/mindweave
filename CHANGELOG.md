@@ -2,6 +2,71 @@
 
 Notable changes to Mindweave. Dates are release dates.
 
+## v3.2.7 (2026-10-12): Edits show only what changed, macOS and Linux are supported, and three rows behave
+
+An edit used to fill a screen: the old text in red, then the new text in green, even when only two lines had been
+added. This release shows what changed, and it is also the first one tested on a Mac and on Linux on every change.
+
+### Edits show only what changed
+
+- **A real comparison of the file before and after.** Only the lines that changed are marked, with two lines of
+  context around each change, so a paragraph that gained two lines shows those two lines and not the whole paragraph
+  twice. Separate groups of changes are told apart by a `⋯` row. One real edit went from about
+  thirty rows to about eight.
+- **Line numbers in a gutter.** A removed line carries its old number and an added one its new number.
+- **Calmer colour.** Only the lines that changed are tinted, the lines of context are dim, and the words that
+  differ between a removed line and the line that replaced it are marked a step brighter, each change on its own.
+- **Still big enough to follow.** The preview shows up to thirty rows, and `click to show all` opens the rest. An
+  opened block wraps a long line under itself with the number column kept.
+- **The header counts what really changed.** It said `−26 +58` for a two-line addition, because it counted the text
+  of each replacement, and its line range followed only the first edit. It now comes from the comparison.
+- **Everything that writes a file.** An edit, replacing a symbol, and rewriting an existing file show a comparison
+  with what was there. A new file shows numbered additions. A change too large to compare cheaply shows the old and
+  the new text as before, and a session saved by an older version still draws the way it was saved.
+- **A terminal with 256 colours or 16 gets its own tints.** Apple's Terminal.app is one. The nearest-colour guess
+  turned the red used for a changed word purple. A 16-colour terminal gets no tint, and the sign and the text colour
+  carry the change.
+
+### Three rows
+
+- **A row of one command folds when you click the opened box.** Only the header was clickable, so the one-command row
+  could be opened but not closed from the output it showed. Rows of several commands were not affected.
+- **A command that was ended from outside no longer prints a red line.** The agent restarts the app it is testing by
+  stopping it by name, and Windows reports that as exit -1. It was shown as `shell #1 finished with exit -1`, as if
+  the app had crashed.
+- **An edit that failed quietly no longer splits the reads around it.** The edit closed the row of reads before it,
+  then its own row was dropped, so two reads of one file showed as two rows. They stay one row now. If the agent said
+  something between them, they stay two.
+
+### macOS and Linux
+
+- **The test suite, the typecheck and the build now run on macOS (Apple silicon) and Linux (Ubuntu) on every change,**
+  next to Windows, and a failure on any of them fails the build. It also installs the packed package into a clean
+  folder and runs the installed `mindweave` and `mw` commands.
+- **A running process was read as stopped on a Mac.** The check read the process table that only Linux has, so on a
+  Mac every live process looked finished: a running language server looked shut down and a running background command
+  looked ended. It asks the system's own process list there.
+- **Pages in the browser the `ui` tool drives open on a slow machine.** A freshly started Chromium on a Mac did not
+  answer for a few seconds and the first request gave up. It now waits for it. A port that nothing listens on still
+  fails at once.
+- **Deleting a system folder is refused on a Mac and on more Linux folders.** `/Volumes` and `/private` on a Mac, and
+  `/opt`, `/dev`, `/proc`, `/sys`, `/run`, `/srv`, `/mnt`, `/media` and `/lib64` on Linux.
+- **Copying works on Linux desktops and in tmux.** Only the Wayland helper was tried, so an ordinary X11 desktop got
+  nothing from the local route. `xclip` and `xsel` are tried too. Inside tmux the copy also goes to tmux's own
+  buffer, and over SSH the machine's local clipboard is left alone, since it is not the one in front of you.
+- **Moving by a word works with the keys a Mac and Linux terminal send.** `Option+Left` and `Option+Right` in
+  Terminal.app and iTerm2, `Alt+Left` and `Alt+Right` in most Linux terminals, and `Alt+D` to delete the word ahead.
+  Only the Windows chords were bound, so those keys did nothing.
+- **What is still Windows only:** driving another program's window by its title, and taking a screenshot of a
+  window. Both say so on other systems. Driving a web page or a dev server in a browser works everywhere.
+- **Not yet checked by eye:** how it looks in Terminal.app, iTerm2, GNOME Terminal and Konsole, and it has not been
+  run on an Intel Mac. The README and KNOWN-ISSUES say so.
+
+### Also
+
+- Several timing-sensitive tests were made steadier: a kill test that read a still-running child as stopped, the
+  repaint waits in the inline shell tests, and an OAuth listener test that could hang for two minutes.
+
 ## v3.2.6 (2026-10-12): Long sessions stay fast, and reopening a very long one is quick
 
 A session of a few hundred messages could make the terminal slow: scrolling dropped frames and typing lagged, and

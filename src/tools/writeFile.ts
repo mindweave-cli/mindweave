@@ -21,7 +21,8 @@ import { forbiddenRealPathReason } from "../governor/forbidden.js";
 import { requestRunsLaterWrite } from "./runsLater.js";
 import { requestAgentDataAccess, requestForbiddenLift, requestOutsideWorkspaceWrite } from "./approval.js";
 import { recordWrite, relativize, resolvePath } from "./paths.js";
-import { FULL_DETAIL_MAX, writeDetail, withScope } from "./detail.js";
+import { normalizeLf } from "./editCore.js";
+import { FULL_DETAIL_MAX, diffDetail, newFileDetail, writeDetail, withScope } from "./detail.js";
 import { applyEol, dirEol, fileEol } from "./eol.js";
 import { writeFileAtomic } from "./atomicWrite.js";
 import { fail, failQuietly } from "./results.js";
@@ -145,17 +146,16 @@ export const writeFile: Tool = {
 
     // Snapshot for /undo: the file's current bytes if it existed, else null so undo
     // deletes what this write creates.
-    if (ctx.checkpoints) {
-      let original: string | null = null;
-      if (existed) {
-        try {
-          original = await fs.readFile(filePath, "utf8");
-        } catch {
-          original = null;
-        }
+    // Read whenever the file existed: the checkpoint wants it, and so does the diff shown for an overwrite.
+    let original: string | null = null;
+    if (existed) {
+      try {
+        original = await fs.readFile(filePath, "utf8");
+      } catch {
+        original = null;
       }
-      ctx.checkpoints.backup(filePath, original, outgoing);
     }
+    ctx.checkpoints?.backup(filePath, original, outgoing);
 
     try {
       await fs.mkdir(dirname(filePath), { recursive: true });
@@ -179,8 +179,9 @@ export const writeFile: Tool = {
         ? `Rewrote all of ${shown} (${lines} line${plural}).`
         : `Created ${shown} (${lines} line${plural}).`,
       summary: existed ? `rewrote all of ${shown} · ${lines} line${plural}` : `created ${shown} · ${lines} line${plural}`,
-      detail: withScope(scope, writeDetail(content)),
-      detailFull: withScope(scope, writeDetail(content, FULL_DETAIL_MAX)),
+      // A new file is all additions, numbered. Rewriting one shows what actually changed against what was there.
+      detail: withScope(scope, shownDetail(original, content)),
+      detailFull: withScope(scope, shownDetail(original, content, FULL_DETAIL_MAX)),
       detailKind: "diff" as const,
     };
   },
@@ -189,4 +190,10 @@ export const writeFile: Tool = {
 
 function errText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** The rows under a write: the change against the old text when there was one, else the new file. */
+function shownDetail(original: string | null, content: string, max?: number): string {
+  if (original !== null) return diffDetail(normalizeLf(original), normalizeLf(content), max) ?? writeDetail(content, max);
+  return newFileDetail(content, max);
 }

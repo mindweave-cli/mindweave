@@ -12,16 +12,18 @@
  * of its output while it runs. The dot is white, always: the pulse says working, stillness
  * says done, and a failure says so in words.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Box, Text, type DOMElement } from "ink";
 import { ERROR_COLOR, type ToolKind } from "../toolDisplay.js";
 import { PulseDot } from "./PulseDot.js";
 import { activeForm } from "../toolItems.js";
 import { commandLabel } from "../commandLabel.js";
-import { ACCENT, BAD, CODE, GOOD } from "../theme.js";
+import chalk from "chalk";
+import { ACCENT, BAD, CODE, GOOD, diffTints } from "../theme.js";
 import { uiSegments, type Seg } from "../uiLines.js";
 import { registerExpandable } from "../expandHits.js";
 import { wrapDiffLine } from "../diffWrap.js";
+import { isGapRow, markChangedWords, parseDiffRow, type DiffRow, type Span } from "../diffRows.js";
 import { oneLineSteps } from "../../tools/detail.js";
 
 const DOT = "●";
@@ -276,9 +278,31 @@ function BranchLines({
   wrap?: boolean;
 }) {
   const content = Math.max(8, columns - BRANCH_INDENT - 1);
+  // A numbered diff is read once per render: its rows, and the words that differ inside each rewritten line.
+  const parsed = diff && !errored ? lines.map(parseDiffRow) : [];
+  const marks = diff && !errored ? markChangedWords(parsed) : [];
   return (
     <Box flexDirection="column">
       {lines.map((line, i) => {
+        const row = parsed[i];
+        if (row) {
+          return numberedDiffRows(row, marks[i] ?? null, content, !!wrap).map((node, r) => (
+            <Box key={`${i}.${r}`} flexDirection="row" width={columns}>
+              <Text dimColor={!hot}>{i === 0 && r === 0 ? `  ${BRANCH} ` : "    "}</Text>
+              <Box width={content}>{node}</Box>
+            </Box>
+          ));
+        }
+        if (diff && !errored && isGapRow(line)) {
+          return (
+            <Box key={i} flexDirection="row" width={columns}>
+              <Text dimColor={!hot}>{"    "}</Text>
+              <Box width={content}>
+                <Text dimColor wrap="truncate-end">{line}</Text>
+              </Box>
+            </Box>
+          );
+        }
         const style = errored ? { color: BAD } : diff ? diffStyle(line) : undefined;
         const dim = !errored && style === undefined;
         // Padded to the full content width so the tint is a continuous band rather than
@@ -437,8 +461,9 @@ function ShellLines({
  * be legible, so they are a wash rather than a highlight, and the foreground stays the
  * brighter of the two signals.
  */
-const ADDED_BG = "#0d2818";
-const REMOVED_BG = "#2d1113";
+const TINTS = diffTints(chalk.level);
+const ADDED_BG = TINTS.addBg;
+const REMOVED_BG = TINTS.delBg;
 
 interface DiffStyle {
   color?: string;
@@ -446,8 +471,8 @@ interface DiffStyle {
 }
 
 function diffStyle(line: string): DiffStyle | undefined {
-  if (line.startsWith("+")) return { color: GOOD, backgroundColor: ADDED_BG };
-  if (line.startsWith("-")) return { color: BAD, backgroundColor: REMOVED_BG };
+  if (line.startsWith("+")) return { color: GOOD, ...(ADDED_BG ? { backgroundColor: ADDED_BG } : {}) };
+  if (line.startsWith("-")) return { color: BAD, ...(REMOVED_BG ? { backgroundColor: REMOVED_BG } : {}) };
   return undefined;
 }
 
@@ -479,4 +504,64 @@ function humanElapsed(seconds: number): string {
   const m = Math.floor(seconds / 60);
   const s = seconds % 60;
   return s === 0 ? `${m}m` : `${m}m ${s}s`;
+}
+
+/** The tint under a changed WORD inside a rewritten line, a step brighter than the line's own. */
+const ADDED_WORD_BG = TINTS.addWordBg;
+const REMOVED_WORD_BG = TINTS.delWordBg;
+
+/** `text` cut into pieces of at most `room` characters (one piece, even when empty). */
+function pieces(text: string, room: number): { at: number; text: string }[] {
+  if (text.length <= room) return [{ at: 0, text }];
+  const out: { at: number; text: string }[] = [];
+  for (let at = 0; at < text.length; at += room) out.push({ at, text: text.slice(at, at + room) });
+  return out;
+}
+
+/**
+ * One numbered diff line, as the rows it takes (React nodes, one per screen row).
+ *
+ * The gutter (sign, number, bar) is dim and the same width on every row, so the code lines up; a changed line is tinted
+ * across the whole row and the words that differ from the line it replaced are brighter; an unchanged line of context has
+ * no tint and is dim. An opened block carries a long line onto more rows, each with an empty gutter so the bar keeps its
+ * column; a closed one cuts it at the edge.
+ */
+function numberedDiffRows(row: DiffRow, mark: readonly Span[] | null, content: number, wrap: boolean): ReactNode[] {
+  const changed = row.kind !== "ctx";
+  const fg = row.kind === "add" ? GOOD : row.kind === "del" ? BAD : undefined;
+  const bg = row.kind === "add" ? ADDED_BG : row.kind === "del" ? REMOVED_BG : undefined;
+  const wordBg = row.kind === "add" ? ADDED_WORD_BG : REMOVED_WORD_BG; // none on a 16-colour terminal: the words are bold instead
+  const sign = row.kind === "add" ? "+" : row.kind === "del" ? "-" : " ";
+  const gutter = 2 + row.num.length + 3;
+  const room = Math.max(4, content - gutter);
+  const parts = wrap ? pieces(row.text, room) : [{ at: 0, text: row.text.slice(0, room) }];
+  return parts.map((part, r) => {
+    const head = r === 0 ? `${sign} ${row.num} │ ` : `${" ".repeat(gutter - 2)}│ `;
+    const pad = " ".repeat(Math.max(0, content - head.length - part.text.length));
+    // The line cut into plain and marked stretches: the marked ranges, cut to this piece of the line.
+    const stretches: { text: string; hot: boolean }[] = [];
+    let at = 0;
+    for (const [from, to] of changed && mark ? mark : []) {
+      const a = Math.max(at, Math.min(part.text.length, from - part.at));
+      const b = Math.max(a, Math.min(part.text.length, to - part.at));
+      if (a > at) stretches.push({ text: part.text.slice(at, a), hot: false });
+      if (b > a) stretches.push({ text: part.text.slice(a, b), hot: true });
+      at = b;
+    }
+    if (at < part.text.length || stretches.length === 0) stretches.push({ text: part.text.slice(at), hot: false });
+    return (
+      <Text key={r} wrap="truncate-end" {...(bg ? { backgroundColor: bg } : {})}>
+        <Text dimColor {...(fg ? { color: fg } : {})}>{head.slice(0, 2)}</Text>
+        <Text dimColor>{head.slice(2)}</Text>
+        {stretches.map((s, k) =>
+          s.hot ? (
+            <Text key={k} bold {...(wordBg ? { backgroundColor: wordBg } : {})} {...(fg ? { color: fg } : {})}>{s.text}</Text>
+          ) : (
+            <Text key={k} {...(fg ? { color: fg } : {})} dimColor={!changed}>{s.text}</Text>
+          ),
+        )}
+        <Text>{pad}</Text>
+      </Text>
+    );
+  });
 }

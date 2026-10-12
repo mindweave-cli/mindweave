@@ -449,3 +449,43 @@ test("a single ordinary step keeps its line: it says which step it was", async (
   const one: Commands["items"] = [{ toolId: "c", name: "Click", arg: "#11", kind: "screenshot", status: "ok", summary: "ok", detail: "Clicked.", full: "Clicked.", open: true }];
   assert.match(await paint(one, { open: true }), /Click #11/);
 });
+
+// ── a row of ONE call: its opened box folds the row when clicked ─────────────────────────────
+
+test("a click on the one call of an opened row folds the row, as the header does", () => {
+  let s = run([start("a", "npm run build"), end("a"), { type: "endTurn" }, { type: "toggleExpand", id: 1 }]);
+  const [opened] = groups(s);
+  assert.equal(opened!.open, true, "the row is open");
+  // The click lands on the call (item 0 of the row): it must fold the row.
+  s = reduce(s, { type: "toggleItem", id: opened!.id, index: 0 });
+  assert.equal(groups(s)[0]!.open, false, "folded again: back to the one-line row");
+  s = reduce(s, { type: "toggleExpand", id: opened!.id });
+  assert.equal(groups(s)[0]!.open, true, "and the header opens it again");
+});
+
+test("with several calls a click on one still opens only that one", () => {
+  let s = run([start("a", "ls"), start("b", "pwd"), end("a"), end("b"), { type: "endTurn" }]);
+  const id = groups(s)[0]!.id;
+  s = reduce(s, { type: "toggleExpand", id });
+  s = reduce(s, { type: "toggleItem", id, index: 1 });
+  const g = groups(s)[0]!;
+  assert.equal(g.open, true, "the row stays open");
+  assert.deepEqual(g.items.map((it) => !!it.open), [false, true]);
+});
+
+test("the opened box of a one-call row is a place to click; a read's line is not", async () => {
+  const { registeredHits } = await import("./expandHits.js");
+  const out = new FakeStdout();
+  const mount = (items: Commands["items"]) =>
+    render(
+      <WorkGroup id={7} items={items} open live={false} columns={70} />,
+      { stdout: out as unknown as NodeJS.WriteStream, stdin: fakeStdin(), patchConsole: false, interactive: true, debug: true },
+    );
+  const command: Commands["items"] = [{ toolId: "a", name: "Run", arg: "npm run build", status: "ok", kind: "run", detail: "$ npm run build\n✓ 0 · 1s" }];
+  const inst = mount(command);
+  await new Promise((r) => setTimeout(r, 100));
+  const hits = registeredHits();
+  inst.unmount();
+  assert.ok(hits.includes(7), "the header");
+  assert.ok(hits.includes(itemHit(7, 0)), "and the box under it, which folds the row");
+});

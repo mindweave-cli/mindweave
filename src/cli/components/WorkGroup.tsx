@@ -241,7 +241,8 @@ function WorkList({ id, items, columns, live, hoveredItem }: { id: number; items
         const shade = isOpen ? shadeRows(body, columns - 4) : [];
         const verdictBox = outcomeOnly || below ? VERDICT_WIDTH : Math.max(VERDICT_WIDTH, room2);
         // Only a command opens; a read has nothing behind its line to show.
-        const registered = reading || single ? undefined : (node: DOMElement | null) => registerExpandable(itemHit(id, row.index), node);
+        // A row of one call opens onto that call, so its box is a place to click too: it folds the row (see toggleItem).
+        const registered = reading ? undefined : (node: DOMElement | null) => registerExpandable(itemHit(id, row.index), node);
         return (
           <Box key={row.key} flexDirection="column" ref={registered}>
             {/* A row whose only call is a batch of steps says "Tested 11 steps" in its header; the call's own

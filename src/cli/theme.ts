@@ -52,3 +52,18 @@ export const SYNTAX = {
   prop: "#E3CFA8",
   comment: "#87928D",
 } as const;
+
+/**
+ * The tints behind added and removed diff lines, for the colours the terminal can show (pure).
+ *
+ * Exact hex values on a truecolor terminal. A 256-colour terminal (Apple's Terminal.app is one, and so is a plain `TERM=xterm-256color` session
+ * over SSH) turns a hex colour into the nearest of a 6x6x6 cube, and a very dark tint lands on a different hue: the brighter red used to mark
+ * a changed word came out purple. So 256-colour terminals get picked entries of the palette instead, and a 16-colour terminal gets no tint at
+ * all (the sign and the text colour carry it), since the only backgrounds it has are far too loud behind text. `ansi256(n)` is how Ink takes
+ * a palette entry.
+ */
+export function diffTints(level: number): { addBg?: string; delBg?: string; addWordBg?: string; delWordBg?: string } {
+  if (level >= 3) return { addBg: "#0d2818", delBg: "#2d1113", addWordBg: "#1a5c33", delWordBg: "#6e2229" };
+  if (level === 2) return { addBg: "ansi256(22)", delBg: "ansi256(52)", addWordBg: "ansi256(28)", delWordBg: "ansi256(88)" };
+  return {};
+}

@@ -32,3 +32,12 @@ test("a command gone quiet, or waiting on a prompt, is told", () => {
   const prompt = shellNote(shell({ stallReason: "prompt" } as Partial<ShellInfo>), "stalled", clip);
   assert.ok(prompt && /waiting for input/.test(prompt.text));
 });
+
+test("a command ended from outside (exit -1, or Ctrl+C) is not a crash and says nothing", () => {
+  // The agent restarts the app it is testing by stopping it by name: Windows reports that as exit -1.
+  for (const exitCode of [-1, -1073741510]) {
+    assert.equal(shellNote(shell({ status: "exited", exitCode } as Partial<ShellInfo>), "ended", clip), undefined, String(exitCode));
+  }
+  // A real failure still is told.
+  assert.ok(shellNote(shell({ status: "exited", exitCode: 2 } as Partial<ShellInfo>), "ended", clip));
+});

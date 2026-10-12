@@ -29,5 +29,9 @@ export function shellNote(sh: ShellInfo, kind: ShellEventKind, clip: (command: s
   // Ended by itself with success: the agent was told and says what it found. Ending badly is news,
   // because nothing else would tell you a dev server had fallen over.
   if (sh.exitCode === 0) return undefined;
+  // Ended from OUTSIDE: Windows reports a process that was terminated (the agent restarting the app it is testing by
+  // stopping it by name, or a window closed) as exit -1, or as the code for a Ctrl+C. That is not a crash, the agent's
+  // own command is on screen, and a red line for every restart was noise between its rows.
+  if (sh.exitCode === -1 || sh.exitCode === -1073741510) return undefined;
   return { text: `${name} finished with exit ${sh.exitCode}`, error: true };
 }
