@@ -24,6 +24,9 @@ export class RpcError extends Error {
   }
 }
 
+/** The code a request is rejected with when its caller aborted it. */
+export const CANCELLED = -32800;
+
 /** A server-initiated message: no id, so nothing is waiting on it. */
 export interface Notification {
   method: string;
@@ -39,7 +42,19 @@ export interface Transport {
    * contract: a transport with no headers to speak of ignores it, which is exactly what
    * the spec permits a non-HTTP client to do with those annotations.
    */
-  request(method: string, params?: Record<string, unknown>, headers?: Record<string, string>): Promise<unknown>;
+  request(
+    method: string,
+    params?: Record<string, unknown>,
+    headers?: Record<string, string>,
+    /** Overrides the default limit for THIS request. A tool call can legitimately run for
+     *  minutes (a disassembler analysing a binary); the 30s default is for the protocol's
+     *  own bookkeeping, where a silent server should be given up on quickly. */
+    timeoutMs?: number,
+    /** Aborting it abandons THIS request: the caller gets a rejection at once and the
+     *  server is told to stop (`notifications/cancelled`). It is how Esc reaches a tool
+     *  call that is minutes into slow work. */
+    signal?: AbortSignal,
+  ): Promise<unknown>;
   /** Fire-and-forget notification (no id, no reply). */
   notify(method: string, params?: Record<string, unknown>): void;
   /** Release the underlying resource. Idempotent.
@@ -69,3 +84,17 @@ export interface Transport {
 
 /** How long a single request may take before we give up on it. */
 export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+
+/**
+ * How long one TOOL call may take. Deliberately far above the protocol default: the 30s
+ * limit is right for `tools/list` and `server/discover`, and wrong for a tool whose whole
+ * job is slow work (analysing a binary, running a query, a long build). Cutting those off
+ * at 30s made every slow-but-working tool look broken. Overridable for a server that
+ * really does hang: MINDWEAVE_MCP_TOOL_TIMEOUT_MS.
+ */
+export const DEFAULT_TOOL_TIMEOUT_MS = 10 * 60_000;
+
+export function toolTimeoutMs(): number {
+  const raw = Number(process.env.MINDWEAVE_MCP_TOOL_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw >= 1_000 ? Math.floor(raw) : DEFAULT_TOOL_TIMEOUT_MS;
+}

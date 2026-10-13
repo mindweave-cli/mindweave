@@ -20,9 +20,7 @@
  * catalog change — instead of once per turn or, worse, once per step.
  */
 import type { Tool, ToolResult, ToolSchema } from "../tools/types.js";
-import { outputDetail } from "../tools/detail.js";
-import { formatBytes } from "../tools/webFetch.js";
-import { formatElapsed } from "../tools/webSearch.js";
+import { RESULT_LINES_FULL, RESULT_LINES_SHOWN, mcpDetailText, mcpErrorReason, mcpSummary, resultLines } from "./resultView.js";
 import {
   estimateCatalogTokens,
   frameUntrusted,
@@ -75,28 +73,41 @@ export interface McpSnapshot {
  * Wrap one MCP tool def as a runnable Tool. Shared by the live lookup and the per-turn
  * snapshot so both dispatch through exactly the same path.
  */
-function buildTool(name: string, def: McpToolDef, connection: McpConnection, spillRoot: () => string): Tool {
+function buildTool(name: string, def: McpToolDef, connectionFor: () => Promise<McpConnection>, spillRoot: () => string): Tool {
   return {
     name,
     description: def.description,
     parameters: def.inputSchema,
     readOnly: def.readOnly,
-    async execute(args): Promise<ToolResult> {
+    async execute(args, ctx): Promise<ToolResult> {
       try {
         // Timed at the call site: a remote server's round trip is the one cost in a
         // tool row that nothing else on screen reveals, and it is what tells a slow
         // server apart from a slow query.
         const startedAt = Date.now();
-        const result = await connection.callTool(def.name, args);
+        // The connection is looked up NOW, not captured when the tool was offered. A server
+        // can be replaced (enabled again, re-added, restarted) between the turn starting
+        // and this call; a tool bound to the old object would then fail for the rest of
+        // the turn against a server that is perfectly healthy.
+        const connection = await connectionFor();
+        // The turn's abort signal reaches the call, so Esc stops a tool that is minutes
+        // into slow work (and the server is told to stop) instead of waiting it out.
+        const result = await connection.callTool(def.name, args, ctx?.abortSignal);
         const elapsedMs = Date.now() - startedAt;
         const { blocks, isError } = parseContentBlocks(result);
         const text = await renderBlocks(blocks, def, spillRoot());
         // Framed as data, not instruction: this text is written by a third party and
         // lands where the model trusts built-in tool output.
+        const lines = resultLines(text);
         return {
           output: frameUntrusted(def.server, text),
-          summary: `${def.server} · ${def.name}`,
-          detail: mcpDetail(def.name, args, text, isError, elapsedMs),
+          // What the row's verdict says (see resultView.ts): the time when it worked, the
+          // server's own reason when it did not.
+          summary: mcpSummary(isError, text, elapsedMs),
+          detail: mcpDetailText(args, text, RESULT_LINES_SHOWN),
+          // The uncut result, only when the row's block is a cut of it.
+          ...(lines.length > RESULT_LINES_SHOWN ? { detailFull: mcpDetailText(args, text, RESULT_LINES_FULL) } : {}),
+          detailKind: "text" as const,
           ...(isError ? { isError: true } : {}),
         };
       } catch (error) {
@@ -107,29 +118,11 @@ function buildTool(name: string, def: McpToolDef, connection: McpConnection, spi
         return {
           output: `Error: MCP tool '${name}' failed: ${error instanceof Error ? error.message : String(error)}`,
           isError: true,
-          summary: `${name} failed`,
+          summary: mcpErrorReason(error instanceof Error ? error.message : String(error)),
         };
       }
     },
   };
-}
-
-/** The UI-only detail block under an MCP call row — never sent to the model
- *  (`frameUntrusted`'s `output` is what the model sees). A short args preview
- *  plus how much came back, capped the same way any other tool's output is. */
-function mcpDetail(toolName: string, args: Record<string, unknown>, text: string, isError: boolean, elapsedMs?: number): string {
-  const argsPreview = Object.keys(args).length > 0 ? JSON.stringify(args).slice(0, 120) : "";
-  const lines: string[] = [];
-  // "Connected" is implied by having a result at all; the LATENCY is the part worth
-  // stating, and it is omitted rather than invented when nothing measured it.
-  if (elapsedMs !== undefined) lines.push(`Status: Connected [Latency: ${formatElapsed(elapsedMs)}]`);
-  lines.push(`Executed: ${toolName}${argsPreview ? `(${argsPreview})` : "()"}`);
-  lines.push(
-    isError
-      ? "Received an error result"
-      : `Received ${formatBytes(Buffer.byteLength(text, "utf8"))} (OK) → ${text.length.toLocaleString("en-US")} chars`,
-  );
-  return outputDetail(lines.join("\n"));
 }
 
 /**
@@ -385,7 +378,10 @@ export class McpManager {
    * One handler for both so a catalog refresh can never reach the model without passing
    * the trust gate — the previous wiring repainted and nothing else.
    */
+  private changes = 0;
+
   private onConnectionChange(): void {
+    this.changes++;
     // Catalogs are reloaded here (connect, and again on `list_changed`), so this is the
     // one point every drop passes through, whichever load produced it.
     for (const connection of this.connections.values()) this.notices.push(...connection.takeToolWarnings());
@@ -667,12 +663,10 @@ export class McpManager {
    */
   snapshot(readOnlyOnly = false): McpSnapshot {
     const defs = this.allowedCatalog().filter((d) => !readOnlyOnly || d.readOnly);
-    // Bind each def to the connection that owned it AT SNAPSHOT TIME, so dispatch does
-    // not go looking through a pool that may have changed underneath us.
-    const owners = new Map<string, McpConnection>();
-    for (const connection of this.connections.values()) {
-      for (const def of connection.tools()) owners.set(mcpToolName(def.server, def.name), connection);
-    }
+    // What the turn ADVERTISES is frozen (so the model is never offered a tool and then
+    // refused it, and the cached prompt prefix holds still). WHICH CONNECTION a call
+    // goes to is not: it is resolved when the call runs. Binding the connection here made
+    // a server that was restarted mid-turn unreachable until the next turn.
     const deferred = shouldDefer(defs.length);
     // Under the threshold everything is exposed; over it, only what has been activated.
     const exposed = (): McpToolDef[] => (deferred ? defs.filter((d) => this.activated.has(mcpToolName(d.server, d.name))) : defs);
@@ -684,9 +678,13 @@ export class McpManager {
       tokens: () => estimateCatalogTokens(exposed()),
       asTool: (name) => {
         const def = defs.find((d) => mcpToolName(d.server, d.name) === name);
-        const connection = owners.get(name);
-        if (!def || !connection) return undefined;
-        return buildTool(name, def, connection, () => this.spillRoot());
+        // Not in the frozen list: a server connected (or re-connected) after the turn
+        // began. It was not advertised, but the model may have just learned of it from a
+        // search or from adding it, and "no such tool" for a tool that exists is the
+        // contradiction the snapshot was built to avoid. The live lookup applies the
+        // same governance gates.
+        if (!def) return this.asTool(name);
+        return buildTool(name, def, () => this.liveConnection(def.server), () => this.spillRoot());
       },
     };
   }
@@ -795,13 +793,33 @@ export class McpManager {
     // that closes three of four doors is not a gate.
     const def = this.allowedCatalog().find((d) => mcpToolName(d.server, d.name) === name);
     if (!def) return undefined;
-    // Config names are normalized on the way INTO a tool name, so a server called
-    // "acme.tools" is looked up by its normalized form here.
-    const connection = [...this.connections.values()].find(
-      (c) => c.isConnected() && mcpToolName(c.config.name, "x") === mcpToolName(parsed.server, "x"),
-    );
-    if (!connection) return undefined;
-    return buildTool(name, def, connection, () => this.spillRoot());
+    return buildTool(name, def, () => this.liveConnection(parsed.server), () => this.spillRoot());
+  }
+
+  /**
+   * The live connection for a server, brought up if it is down.
+   *
+   * Resolved at CALL time, by name, against the pool as it is right now. A server that
+   * died or was mid-start is revived by the call that needs it; one that was removed, is
+   * disabled, or cannot start fails with the reason and what to do about it. Config names
+   * are normalized on the way into a tool name, so "acme.tools" is matched by its
+   * normalized form.
+   */
+  private async liveConnection(server: string): Promise<McpConnection> {
+    const want = mcpToolName(server, "x");
+    const connection = [...this.connections.values()].find((c) => mcpToolName(c.config.name, "x") === want);
+    if (!connection) {
+      throw new Error(`mcp server '${server}' is not configured any more (it was removed). Its tools are gone; add it again with mcp_server if it is still wanted.`);
+    }
+    if (!connection.isConnected()) await connection.ensureConnected();
+    if (!connection.isConnected()) throw new Error(connection.notRunningMessage());
+    return connection;
+  }
+
+  /** Counts every change to a server's state or catalog. A turn compares it between steps
+   *  to know its frozen view of the tools has gone stale and should be taken again. */
+  revision(): number {
+    return this.changes;
   }
 
   async dispose(): Promise<void> {

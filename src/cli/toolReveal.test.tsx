@@ -533,7 +533,7 @@ test("the engine gives each call its OWN progress channel", async () => {
   const engine = await readFile(new URL("../dynamo/engine.ts", import.meta.url), "utf8");
   assert.match(
     engine,
-    /tool\.execute\(parseArgs\(call\.arguments\), session\.toolContext, \{\s*\n\s*progress: \(text\) => options\.onEvent\?\.\(\{ type: "tool", phase: "progress", id: call\.id/,
+    /tool\.execute\(parseArgs\(call\.arguments\), session\.toolContext, \{\s*\n\s*(?:id: call\.id,\s*\n\s*)?progress: \(text\) => options\.onEvent\?\.\(\{ type: "tool", phase: "progress", id: call\.id/,
     "the progress channel is not scoped to the call",
   );
 });

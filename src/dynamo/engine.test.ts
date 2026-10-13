@@ -469,3 +469,11 @@ test("a failure while resolving a steered message cannot kill the turn", () => {
   assert.match(drain, /try \{/, "the steer callback is called without a guard");
   assert.match(drain, /catch/, "the steer callback is called without a guard");
 });
+
+test("the turn re-takes its MCP snapshot when a server changes, and fiddling with a server does not reset the repeat-failure streak", () => {
+  // A server added or restarted DURING the turn must be reachable on the next step, and an
+  // agent alternating "enable server" with "call its tool" must still trip the breaker:
+  // a successful management step used to reset the streak to zero every time.
+  assert.match(engineSource, /mcp\?\.revision\?\.\(\)/, "the step must notice the MCP pool changed");
+  assert.match(engineSource, /isServerManagementStep\(/, "management steps must be exempt from the streak reset");
+});

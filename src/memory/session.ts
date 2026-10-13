@@ -16,6 +16,7 @@ import { checkpointDir, latestSession, listSessions, loadEarlier, loadMeta, load
 import { fullReadPaths, writtenPaths } from "./presence.js";
 import { startChassis } from "../alternator/lane.js";
 import { BackgroundShells } from "../tools/backgroundShells.js";
+import { ForegroundCommands } from "../tools/foregroundCommands.js";
 import { Checkpoints } from "../tools/checkpoints.js";
 import { projectContextText } from "../project/context.js";
 import { loadGovernance, governanceStamp } from "../governor/index.js";
@@ -145,6 +146,7 @@ function freshToolContext(cwd: string, governance: Governance, roots: string[]):
     chassis: chassisByRoot.get(cwd), // the primary root's map (drives the auto-map)
     chassisByRoot,
     backgroundShells: new BackgroundShells(),
+    foregroundCommands: new ForegroundCommands(),
     checkpoints: new Checkpoints(),
     todos: [],
     // Deferred tools the model has surfaced via find_tools become callable from then on

@@ -18,7 +18,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { killTree, killTreeSync, spawnManaged } from "../../tools/killTree.js";
 import { childEnv } from "../../tools/childEnv.js";
-import { DEFAULT_REQUEST_TIMEOUT_MS, RpcError, type Notification, type Transport } from "./types.js";
+import { CANCELLED, DEFAULT_REQUEST_TIMEOUT_MS, RpcError, type Notification, type Transport } from "./types.js";
 
 /** How much of the child's stderr to keep for diagnostics. */
 const STDERR_TAIL_CHARS = 4_000;
@@ -213,17 +213,46 @@ export class StdioTransport implements Transport {
 
   /** Mirrored headers are accepted and ignored: a pipe has no headers, and the spec lets
    *  a non-HTTP client ignore `x-mcp-header` annotations entirely. */
-  request(method: string, params?: Record<string, unknown>): Promise<unknown> {
+  request(
+    method: string,
+    params?: Record<string, unknown>,
+    _headers?: Record<string, string>,
+    timeoutMs?: number,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
     if (this.disposed) return Promise.reject(new RpcError(-32603, "mcp transport is closed"));
+    if (signal?.aborted) return Promise.reject(new RpcError(CANCELLED, `mcp request cancelled: ${method}`));
     const id = this.nextId++;
+    const limit = timeoutMs ?? this.timeoutMs;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        reject(new RpcError(-32603, `mcp timeout after ${this.timeoutMs}ms: ${method}`));
-      }, this.timeoutMs);
+        signal?.removeEventListener("abort", onAbort);
+        reject(new RpcError(-32603, `mcp timeout after ${limit}ms: ${method}`));
+      }, limit);
       // Do not hold the event loop open just to wait on a slow server.
       timer.unref?.();
-      this.pending.set(id, { resolve, reject, timer });
+      // Abandon this request when asked: reject now, forget the id, and tell the server
+      // to stop. Without this a tool call blocked the whole turn until its server
+      // answered, and Esc could not reach it.
+      const onAbort = () => {
+        if (!this.pending.delete(id)) return;
+        clearTimeout(timer);
+        this.notify("notifications/cancelled", { requestId: id, reason: "cancelled by the user" });
+        reject(new RpcError(CANCELLED, `mcp request cancelled: ${method}`));
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
+      this.pending.set(id, {
+        resolve: (v) => {
+          signal?.removeEventListener("abort", onAbort);
+          resolve(v);
+        },
+        reject: (e) => {
+          signal?.removeEventListener("abort", onAbort);
+          reject(e);
+        },
+        timer,
+      });
       this.write({ jsonrpc: "2.0", id, method, ...(params ? { params } : {}) });
     });
   }

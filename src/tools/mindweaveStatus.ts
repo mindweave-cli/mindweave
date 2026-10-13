@@ -38,7 +38,7 @@ const AGENT_CAN = [
   "standing rules for this project, and lifting them (governor)",
   "forbidding a path, a command or an MCP tool, and lifting those (governor)",
   "skills: create one, delete one (skill)",
-  "MCP servers: add, remove, disable, enable (mcp_server)",
+  "MCP servers: add, remove, disable, enable, status, reconnect (mcp_server)",
   "durable memories (save_memory)",
   "the workspace: add another folder to work across (workspace)",
 ];

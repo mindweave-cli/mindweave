@@ -21,7 +21,7 @@
  */
 import { META_PROTOCOL_VERSION } from "../protocol.js";
 import { encodeHeaderValue } from "./headerValue.js";
-import { DEFAULT_REQUEST_TIMEOUT_MS, RpcError, type Notification, type Transport } from "./types.js";
+import { CANCELLED, DEFAULT_REQUEST_TIMEOUT_MS, RpcError, type Notification, type Transport } from "./types.js";
 
 export { encodeHeaderValue };
 
@@ -187,13 +187,23 @@ export class HttpTransport implements Transport {
     if (header) this.options.onAuthChallenge?.(header);
   }
 
-  async request(method: string, params?: Record<string, unknown>, mirrored?: Record<string, string>): Promise<unknown> {
+  async request(
+    method: string,
+    params?: Record<string, unknown>,
+    mirrored?: Record<string, string>,
+    timeoutMs?: number,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
     if (this.disposed) throw new RpcError(-32603, "mcp transport is closed");
+    if (signal?.aborted) throw new RpcError(CANCELLED, `mcp request cancelled: ${method}`);
     const id = this.nextId++;
     const message = { jsonrpc: "2.0", id, method, ...(params ? { params } : {}) };
+    const limit = timeoutMs ?? this.timeoutMs;
 
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    const timer = setTimeout(() => controller.abort(), limit);
+    const onAbort = () => controller.abort();
+    signal?.addEventListener("abort", onAbort, { once: true });
     timer.unref?.();
 
     let response: Response;
@@ -218,10 +228,12 @@ export class HttpTransport implements Transport {
         body: JSON.stringify(message),
       });
     } catch (error) {
-      const reason = controller.signal.aborted ? `timeout after ${this.timeoutMs}ms` : String((error as Error)?.message ?? error);
+      if (signal?.aborted) throw new RpcError(CANCELLED, `mcp request cancelled: ${method}`);
+      const reason = controller.signal.aborted ? `timeout after ${limit}ms` : String((error as Error)?.message ?? error);
       throw new RpcError(-32603, `mcp request failed: ${method}: ${reason}`);
     } finally {
       clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
     }
 
     if (!response.ok) {

@@ -2,6 +2,83 @@
 
 Notable changes to Mindweave. Dates are release dates.
 
+## v3.2.8 (2026-10-13): MCP servers that stay connected, running a command in the background yourself, and selecting text across a scroll
+
+An agent that added an MCP server, then tried to use it, could spend a whole session being told the server was not
+connected while it was running fine. This release fixes that and redraws how MCP calls look. It also adds a key to
+move a running command to the background, a selection that keeps growing while you scroll, and removes a few
+frames that flashed the wrong picture for a moment.
+
+### MCP servers
+
+- **A tool call finds its server when it runs.** The list of tools a turn offers used to be tied to the connection
+  that existed when the turn began. Enabling, disabling or adding a server replaces that connection, so every call
+  after it failed with `not connected` for the rest of the turn, and the agent's own attempts to restart the server
+  made it certain. The call now looks up the live connection, brings a server that died or was still starting back
+  up, and a server added during the turn can be called in that turn.
+- **The agent can look and restart without asking you.** `mcp_server` has two new actions, `status` (every server
+  with its state and its last error) and `reconnect` (start one again without touching its configuration). Enabling
+  a server that is already running, or disabling one that is already off, now changes nothing and asks nothing, and
+  `enable` says whether the server actually connected and why not. It used to answer "tools available again" whatever
+  happened. The error for a server that is down now says why and names the way out.
+- **A slow tool is allowed to finish.** Every request had the 30 second limit meant for the protocol's own
+  bookkeeping, so a tool doing real work (analysing a binary, a long query) timed out. A tool call now has ten
+  minutes, set with `MINDWEAVE_MCP_TOOL_TIMEOUT_MS`.
+- **Esc stops a tool call that is waiting on a server.** Nothing handed the interrupt to the call, so the turn waited
+  until the server answered or the limit ran out. The call is now abandoned at once and the server is told to
+  cancel it. A cancelled call does not count as a crash.
+- **The repeated failure stop notices this loop.** A successful `enable` between two failing calls reset its count,
+  and each tool of the server counted as a different failure, so an agent could alternate between them nine times.
+  Failures of one server now count together, and a step made only of server changes neither resets nor adds to the
+  count.
+
+### How MCP calls look
+
+- **They fold into the work row, like commands and reads.** `Called 3 MCP tools, managed 1 MCP server`, with a mark
+  for each. A server change (add, enable, reconnect and the rest) is part of the same row, and a server enabled and
+  removed several times counts once.
+- **Every line has one shape,** a mark, the name and what happened, and the marks run down the left edge. A call
+  that worked shows how long it took. One that failed shows the server's own reason, read out of its error
+  message, instead of `Status: Connected` painted red: that line described the connection, not the call. A change you
+  declined shows as declined, not as done.
+- **Click a call to see what it asked and what came back,** with the answer laid out. A chat saved before this says
+  that its details were not kept.
+- **A server's prompts no longer fill the command menu.** They were listed under a bare `/` among the commands, and
+  a long name wrapped onto the next row. They show when you type after the slash (`/rea`), and a name wider than its
+  column is cut with an ellipsis.
+
+### Running a command in the background yourself
+
+- **`Ctrl+X` moves what the agent is waiting on to the background.** After a couple of seconds the command's own line
+  offers it. The command keeps running as a background shell, the agent carries on, is told you moved it and that it
+  is yours to stop, and is told when it ends. Every command running at that moment moves, and it works on a command
+  that would not be moved on its own, such as a `sleep`. Esc afterwards does not stop it.
+
+### Selecting text while you scroll
+
+- **A selection that starts in the conversation keeps growing.** Turn the wheel while you hold the button, or hold
+  the pointer past the top or bottom edge and the view scrolls on its own, faster the further out you pull. Letting go
+  copies everything it covered, including what scrolled out of sight, and the highlight stays. Selecting in the
+  input box works as before.
+- **It is anchored to the text, not to the screen,** so it stays put when something above it changes size, and a
+  drag across two replies and the message between them copies each line once. If a flick scrolls so fast that a row
+  was never drawn, it tells you that part was not copied. `Ctrl+C` copies the selection again.
+
+### Opening a row
+
+- **Opening the newest row moves the view to show what opened.** With the view at the bottom, the contents of the
+  last command appeared below the screen and had to be scrolled to. The view now moves just far enough, and folding
+  the row puts it back. Rows further up behave as before.
+- **A few frames flashed the wrong picture.** Opening a row drew it once with the view placed for the old height,
+  then again correctly, and typing `/` for the menu drew the chat at the wrong place for a frame. The first is no
+  longer shown, and with the view at the bottom the conversation is now lined up with the bottom by the layout
+  itself, so a menu, an extra input line or a new row cannot catch it out of place.
+
+### Also
+
+- Several of the new tests run real processes and timers. They were written to wait for a condition and not for a
+  fixed time, and the ones that check how long something takes use wide margins.
+
 ## v3.2.7 (2026-10-12): Edits show only what changed, macOS and Linux are supported, and three rows behave
 
 An edit used to fill a screen: the old text in red, then the new text in green, even when only two lines had been

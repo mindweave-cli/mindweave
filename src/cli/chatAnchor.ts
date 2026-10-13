@@ -131,3 +131,35 @@ export function reflowScroll(scrolled: number, oldMaxScroll: number, newMaxScrol
   const fraction = Math.min(1, scrolled / oldMaxScroll);
   return Math.min(newMaxScroll, Math.round(fraction * newMaxScroll));
 }
+
+/**
+ * Where the reader should sit after a row was OPENED (pure): wherever shows what opened.
+ *
+ * Opening a row used to hold the row where it was and let its contents appear below it,
+ * which for the newest row is below the bottom of the screen: the reader pressed to see
+ * something and had to scroll to find it. Now the view moves just far enough that the
+ * opened row is on screen, and no further.
+ *
+ *   - It fits, and part of it is below the fold: scroll down by what is hidden.
+ *   - Part of it is above the top: scroll back up by that much.
+ *   - It is taller than the screen: its first line goes to the top, which shows the
+ *     most of it, and the rest is read by scrolling.
+ *   - Already fully on screen: nothing moves.
+ *
+ * `nodeTop` and `nodeHeight` are the row's place INSIDE the transcript (not on the
+ * screen, which depends on the very scroll this is deciding), and `height` is the
+ * transcript's height with the row open.
+ */
+export function revealScroll(scrollUp: number, height: number, chatRows: number, nodeTop: number, nodeHeight: number): number {
+  const rows = Math.max(1, chatRows);
+  const maxScroll = Math.max(0, height - rows);
+  const s = Math.min(Math.max(0, scrollUp), maxScroll);
+  // The row's place in the viewport at this scroll: the viewport's first row is content row `shift`.
+  const top = nodeTop - (maxScroll - s);
+  const bottom = top + nodeHeight;
+  let move = 0;
+  if (nodeHeight >= rows) move = -top;
+  else if (top < 0) move = -top;
+  else if (bottom > rows) move = rows - bottom;
+  return Math.min(maxScroll, Math.max(0, s + move));
+}

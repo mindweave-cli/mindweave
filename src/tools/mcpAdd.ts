@@ -13,6 +13,7 @@
  * how every other governed action in the codebase fails.
  */
 import type { Tool, ToolContext, ToolResult } from "./types.js";
+import type { ConnectionStatus } from "../mcp/connection.js";
 import {
   addServerToConfig,
   configPathFor,
@@ -38,12 +39,18 @@ export const mcpServer: Tool = {
   // looking like a bad token rather than a bad config. Meanwhile the parent environment
   // is already inherited, so the variable the model was told to "reference" needed no
   // mention at all. The correct advice is close to the opposite of what was written.
-  keywords: ["mcp", "server", "integration", "connect", "add", "remove", "delete", "disable", "enable", "turn", "off"],
+  keywords: ["mcp", "server", "integration", "connect", "add", "remove", "delete", "disable", "enable", "turn", "off", "status", "reconnect", "restart", "not connected"],
   description:
-    "Manage this project's MCP servers: `action` add (the default), remove, disable or " +
-    "enable one. Disabling keeps the server configured and stops its tools being offered, " +
-    "which is what 'turn off the linear server for now' means; removing deletes it from " +
-    "the config. Both take just a `name`, and both ask the user first.\n" +
+    "Manage this project's MCP servers: `action` add (the default), remove, disable, " +
+    "enable, status or reconnect. Disabling keeps the server configured and stops its " +
+    "tools being offered, which is what 'turn off the linear server for now' means; " +
+    "removing deletes it from the config. Those take just a `name`, and ask the user first.\n" +
+    "IF AN MCP TOOL FAILS WITH 'not connected' or 'not running': do NOT disable, enable, " +
+    "remove or re-add the server, that restarts it and changes nothing. Call `status` (no " +
+    "name needed, no question asked) to see each server's state and its error, fix what " +
+    "that says (a bad path or variable in `env`, a missing runtime, a command that needs " +
+    "`cmd /c` on Windows), then `reconnect` to start it again with no question asked. " +
+    "After adding a server, prove it by calling one of its tools before saying it works.\n" +
     "Adding connects a new MCP server to this project so its tools become available to you. " +
     "Use it when the user asks to add an integration: 'add the github mcp server', " +
     "'connect to our postgres'. Give either a `command` (with `args`) for a local " +
@@ -70,14 +77,15 @@ export const mcpServer: Tool = {
   parameters: {
     type: "object",
     additionalProperties: false,
-    required: ["name"],
     properties: {
       action: {
         type: "string",
-        enum: ["add", "remove", "disable", "enable"],
+        enum: ["add", "remove", "disable", "enable", "status", "reconnect"],
         description:
           "Default 'add'. 'disable' keeps the server but stops offering its tools; 'enable' undoes that; " +
-          "'remove' deletes it from the config. Those three need only `name`.",
+          "'remove' deletes it from the config. Those three need only `name`. 'status' lists every " +
+          "server with its state and last error (`name` optional). 'reconnect' restarts one server " +
+          "without touching the config; use it, not disable and enable, when its tools say 'not connected'.",
       },
       name: {
         type: "string",
@@ -118,11 +126,13 @@ export const mcpServer: Tool = {
 
   async execute(args, ctx: ToolContext): Promise<ToolResult> {
     const action = typeof args.action === "string" ? args.action.trim() : "add";
+    if (action === "status") return serverStatus(args, ctx);
+    if (action === "reconnect") return reconnectServer(args, ctx);
     if (action === "remove" || action === "disable" || action === "enable") {
       return manageServer(action, args, ctx);
     }
     if (action !== "add") {
-      return { output: "Error: `action` must be add, remove, disable or enable.", isError: true, summary: "bad action" };
+      return { output: "Error: `action` must be add, remove, disable, enable, status or reconnect.", isError: true, summary: "bad action" };
     }
     const spec = specFromArgs(args);
     if (!spec.ok) return { output: `Error: ${spec.error}`, isError: true, summary: "bad server spec" };
@@ -178,7 +188,7 @@ export const mcpServer: Tool = {
 
     return {
       output: `${written.replaced ? "Replaced" : "Added"} '${spec.name}' in ${path} — ${outcome}.`,
-      summary: `added mcp server '${spec.name}'`,
+      summary: serverVerdict(status),
     };
   },
 };
@@ -254,6 +264,21 @@ async function manageServer(
       summary: `no server '${name}'`,
     };
   }
+  // Nothing to change: say so, and leave a healthy connection alone. Re-applying
+  // "enable" to a server that is already up used to tear its connection down and start
+  // another, and asked the user to approve doing it.
+  if (action !== "remove") {
+    const wantDisabled = action === "disable";
+    const status = ctx.mcp?.statuses().find((s) => s.name === config.name);
+    if (Boolean(config.disabled) === wantDisabled && (wantDisabled || status?.state === "connected")) {
+      return {
+        output: wantDisabled
+          ? `'${name}' is already disabled. Nothing changed.`
+          : `'${name}' is already enabled and connected with ${status?.toolCount ?? 0} tools. Nothing changed; call one of its tools.`,
+        summary: wantDisabled ? "already disabled" : "already enabled",
+      };
+    }
+  }
   if (!ctx.requestApproval) {
     return {
       output:
@@ -285,7 +310,7 @@ async function manageServer(
     }
     await ctx.mcp?.removeServer(name);
     return removed
-      ? { output: `Removed '${name}' from ${path}. Its tools are gone from this session.`, summary: `removed '${name}'` }
+      ? { output: `Removed '${name}' from ${path}. Its tools are gone from this session.`, summary: "removed" }
       : { output: `'${name}' was not in ${path}, so nothing was written.`, isError: true, summary: `'${name}' not in config` };
   }
 
@@ -297,12 +322,93 @@ async function manageServer(
   if (written instanceof Error) {
     return { output: `Error: couldn't write ${path}: ${written.message}`, isError: true, summary: "write failed" };
   }
-  await ctx.mcp?.addServer(next);
+  const status = await ctx.mcp?.addServer(next);
+  if (disabled) {
+    return { output: `Disabled '${name}'. It stays in ${path}; say the word and I can enable it again.`, summary: "disabled" };
+  }
+  // The result of the connect is the whole point of "enable". Saying "available again"
+  // whatever happened told the agent a server was up when it had not started, and with no
+  // reason to look anywhere else it retried the same thing nine times.
+  if (status && status.state !== "connected") {
+    return {
+      output:
+        `Enabled '${name}' in ${path}, but it did not connect: ${status.state}${status.error ? ` — ${status.error}` : ""}. ` +
+        `Fix the cause (see action "status"), then use action "reconnect". Enabling it again will not help.`,
+      isError: true,
+      summary: serverVerdict(status),
+    };
+  }
   return {
-    output: disabled
-      ? `Disabled '${name}'. It stays in ${path}; say the word and I can enable it again.`
-      : `Enabled '${name}'. Its tools are available again.`,
-    summary: `${disabled ? "disabled" : "enabled"} '${name}'`,
+    output: `Enabled '${name}'${status ? `, connected with ${status.toolCount} tool${status.toolCount === 1 ? "" : "s"}` : ""}. Its tools are available again.`,
+    summary: serverVerdict(status),
+  };
+}
+
+/**
+ * What the row says under an MCP server change (pure): whether the server came up, and how
+ * big it is. Until this the row repeated the action in lower case ("added mcp server
+ * 'rea'"), which said nothing about whether the thing worked.
+ */
+export function serverVerdict(status: ConnectionStatus | undefined | null): string {
+  if (!status) return "saved";
+  if (status.state === "connected") return `connected · ${status.toolCount} tool${status.toolCount === 1 ? "" : "s"}`;
+  return `not connected${status.error ? `: ${status.error}` : ` (${status.state})`}`.slice(0, 300);
+}
+
+/** One line per server: the agent's only view of why a server is down. */
+function describeStatus(s: ConnectionStatus, disabledInConfig: boolean): string {
+  const state = disabledInConfig ? "disabled" : s.state;
+  const parts = [`${s.name}: ${state}`];
+  if (state === "connected") parts.push(`${s.toolCount} tools${s.version ? `, protocol ${s.version}` : ""}`);
+  if (s.error) parts.push(`error: ${s.error}`);
+  if (s.attempts > 0 && state !== "connected") parts.push(`${s.attempts} attempt${s.attempts === 1 ? "" : "s"}`);
+  return parts.join(" · ");
+}
+
+/** Read-only, so no question: what every server is doing and why. */
+async function serverStatus(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
+  const name = typeof args.name === "string" ? args.name.trim() : "";
+  const all = ctx.mcp?.statuses() ?? [];
+  const shown = name ? all.filter((s) => s.name === name) : all;
+  if (shown.length === 0) {
+    return {
+      output: name ? `No MCP server named '${name}' is configured here.` : "No MCP servers are configured here.",
+      isError: Boolean(name),
+      summary: "no servers",
+    };
+  }
+  const lines = shown.map((s) => describeStatus(s, Boolean(ctx.mcp?.configFor(s.name)?.disabled)));
+  return { output: lines.join("\n"), summary: shown.map((s) => `${s.name} ${s.state}`).join(" · ") };
+}
+
+/**
+ * Start a server again without touching its config.
+ *
+ * No question, because it runs the command the user already has configured and writes
+ * nothing: it is what /mcp's reconnect does. It is also the restart the agent used to get
+ * only as disable-then-enable, which asked twice and rewrote the file.
+ */
+async function reconnectServer(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
+  const name = typeof args.name === "string" ? args.name.trim() : "";
+  if (!name) return { output: "Error: `name` is required — which server.", isError: true, summary: "no server name" };
+  const config = ctx.mcp?.configFor(name);
+  if (!config) {
+    return { output: `Error: no MCP server named '${name}' is configured here.`, isError: true, summary: `no server '${name}'` };
+  }
+  if (config.disabled) {
+    return { output: `'${name}' is disabled. Enable it first (action "enable").`, isError: true, summary: "disabled" };
+  }
+  const status = await ctx.mcp?.reconnect(name);
+  if (!status || status.state !== "connected") {
+    return {
+      output: `'${name}' did not come up: ${status?.state ?? "unknown"}${status?.error ? ` — ${status.error}` : ""}.`,
+      isError: true,
+      summary: serverVerdict(status),
+    };
+  }
+  return {
+    output: `Reconnected '${name}' with ${status.toolCount} tool${status.toolCount === 1 ? "" : "s"}. Call one of its tools to confirm.`,
+    summary: serverVerdict(status),
   };
 }
 

@@ -25,10 +25,28 @@ import { killToLineEnd, wordEnd, wordStart } from "../wordEdit.js";
 import { declareCaret } from "../caretPark.js";
 import { ACCENT } from "../theme.js";
 
+/** The widest the command-name column gets; a longer name is cut with an ellipsis instead of wrapping onto the next row. */
+const NAME_COLUMN_MAX = 18;
+
 /** One autocomplete entry. */
 export interface Completion {
   name: string; // includes the leading slash, e.g. "/skills"
   description: string;
+  /** Left out of the list a bare `/` opens and offered only once something is typed after it.
+   *  A server can offer dozens of long prompt names; they are reachable by typing, not by scrolling past. */
+  quiet?: boolean;
+}
+
+/** The completions a command menu offers for what is typed (pure). */
+export function commandMatches(completions: readonly Completion[], typed: string): Completion[] {
+  const t = typed.toLowerCase();
+  return completions.filter((c) => c.name.toLowerCase().startsWith(t) && !(c.quiet && t === "/"));
+}
+
+/** A name cut to `width` columns with an ellipsis, or padded to it (pure). */
+export function fitName(name: string, width: number): string {
+  if (name.length <= width) return name.padEnd(width);
+  return width <= 1 ? name.slice(0, width) : name.slice(0, width - 1) + "…";
 }
 
 // A paste collapses to a `[Pasted text …]` chip (the full content is restored when
@@ -381,7 +399,7 @@ export function PromptInput({
 
   function computeMenu(): { mode: "command" | "path"; items: Completion[]; start: number } | null {
     if (commandMode) {
-      const items = completions.filter((c) => c.name.toLowerCase().startsWith(value.toLowerCase()));
+      const items = commandMatches(completions, value);
       return items.length > 0 ? { mode: "command", items, start: 0 } : null;
     }
     if (at && pathItems.length > 0) {
@@ -891,7 +909,7 @@ function SuggestionMenu({
   // Window the list so `selected` is always visible (same scheme as Picker).
   const start = Math.min(Math.max(0, selected - (maxRows - 1)), Math.max(0, matches.length - maxRows));
   const shown = matches.slice(start, start + maxRows);
-  const nameWidth = Math.min(18, Math.max(...shown.map((m) => m.name.length), 1));
+  const nameWidth = Math.min(NAME_COLUMN_MAX, Math.max(...shown.map((m) => m.name.length), 1));
   const title = mode === "command" ? "Commands" : "Files";
   // The prefix ("› " / "  ") + the padded name, so the description column knows
   // exactly what's left. Without this Box the description had no width of its
@@ -932,7 +950,7 @@ function SuggestionMenu({
           <Box key={m.name} width={rowWidth} flexShrink={0}>
             <Text color={active ? ACCENT : undefined} bold={active}>
               {active ? "› " : "  "}
-              {m.name.padEnd(nameWidth)}
+              {fitName(m.name, nameWidth)}
             </Text>
             <Box width={descWidth}>
               <Text dimColor wrap="truncate-end">{"  " + m.description}</Text>

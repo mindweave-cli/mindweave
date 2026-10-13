@@ -81,8 +81,9 @@ import { parseScreenArg, screenChoices, screenNotice, startupMode, type ScreenMo
 import { applyScreenMode } from "./screenShell.js";
 import { saveScreenMode } from "./screenStore.js";
 import { FULL_TAIL_BLOCKS, needsMeasure, pruneHeights, seedHeights } from "./blockHeights.js";
-import { expandableAt, hitBlock, hitItem } from "./expandHits.js";
+import { expandableAt, hitBlock, hitItem, revealNode } from "./expandHits.js";
 import { shellNote } from "./shellNotes.js";
+import { pressBackground } from "./commandBackground.js";
 import { readFileSync, statSync } from "node:fs";
 import { compactUiDetail, rebuildFull, writtenFromDisk } from "../tools/rebuildDetail.js";
 import { shownText } from "../memory/compaction.js";
@@ -96,10 +97,14 @@ import { currentInstall, requestRestart, runUpdate } from "./updateRunner.js";
 import { enableMouse, readMouse, readWheel, stripMouse } from "./mouse.js";
 import { wheelLines } from "./wheelStep.js";
 import { applySelection, ctrlCShouldCopy, isEmpty, selectionText, type Selection } from "./selection.js";
+import { applyGrowSelection, edgeLines, focusFromPointer, isEmptyGrow, RowStore, type GrowSel, type View } from "./selectionGrow.js";
+import { blockSpans, registerBlockBox } from "./blockBoxes.js";
+import type { Screen } from "./framebuffer/screen.js";
+import { holdFrames, releaseFrames } from "./framebuffer/frameHold.js";
 import { latestScreen, repaintOverlay, setFrameOverlay } from "./framebuffer/overlay.js";
 import { requestFullRepaint } from "./framebuffer/writer.js";
 import { copyToClipboard } from "./clipboard.js";
-import { chatLayout, reflowScroll, growScroll } from "./chatAnchor.js";
+import { chatLayout, reflowScroll, growScroll, revealScroll } from "./chatAnchor.js";
 import { growFill, INLINE_LIVE_RESERVE, NO_FILL } from "./startupFill.js";
 import { setRowsBelowCaret } from "./exitCursor.js";
 import { caretCell } from "./caretPark.js";
@@ -293,6 +298,20 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
   // state: it is painted by the framebuffer overlay rather than by React, so changing it
   // must not cost a render (see the pointer effect).
   const selection = useRef<Selection | null>(null);
+  // The selection that FOLLOWS THE CONVERSATION, for a drag that begins in the chat (see
+  // selectionGrow.ts): it keeps growing while the view scrolls, and copies all of it. A drag
+  // that begins anywhere else (the input box, the banner) is the screen selection above.
+  const grow = useRef<GrowSel | null>(null);
+  // The rows that passed through the screen while it was alive, which is what gets copied.
+  const rowStore = useRef(new RowStore());
+  // Where the pointer is while the button is down, so scrolling can move the end of the
+  // selection even when the pointer itself does not move.
+  const pointer = useRef<{ x: number; y: number } | null>(null);
+  const edgeTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const stopEdge = useCallback(() => {
+    if (edgeTimer.current) clearInterval(edgeTimer.current);
+    edgeTimer.current = null;
+  }, []);
   /**
    * Drop the highlight, if there is one, and stop tinting frames.
    *
@@ -303,11 +322,15 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
    * then uninstall: the repaint is what takes the highlight off the screen.
    */
   const clearSelection = useCallback(() => {
-    if (!selection.current) return;
+    if (!selection.current && !grow.current) return;
     selection.current = null;
+    grow.current = null;
+    rowStore.current.clear();
+    pointer.current = null;
+    stopEdge();
     repaintOverlay();
     setFrameOverlay(null);
-  }, []);
+  }, [stopEdge]);
   // PromptInput installs the handler that turns a click into a caret position; only it
   // knows what its rows currently hold. Null until the input is on screen.
   const caretClick = useRef<((x: number, y: number) => void) | null>(null);
@@ -409,6 +432,12 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
   const [hoverId, setHoverId] = useState<number | null>(null);
   // Set when a row is opened or folded, read once by the height effect.
   const rowToggled = useRef(false);
+  // Which place was pressed, and where the view stood before it was opened and after the view
+  // moved to show it, so that folding the same row can put the view back where it was.
+  const toggledHit = useRef<number | null>(null);
+  // Whether the row pressed is the NEWEST one that can be opened, the only kind the view follows.
+  const toggledNewest = useRef(false);
+  const openedFrom = useRef<{ hit: number; before: number; after: number } | null>(null);
   const [footerHeight, setFooterHeight] = useState(0);
   // The chat viewport's REAL height. Yoga decides it now (flexGrow beside a
   // flexShrink:0 footer); this is read back purely so the scroll maths knows how
@@ -1152,6 +1181,12 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
   useInput(
     (input, key) => {
       if (!key.ctrl || input !== "c") return;
+      const g = grow.current;
+      if (g && !isEmptyGrow(g)) {
+        copyGrown(g);
+        clearSelection();
+        return;
+      }
       const sel = selection.current;
       if (ctrlCShouldCopy(sel)) {
         const screen = latestScreen();
@@ -1312,6 +1347,14 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
         if (target !== null) toggleRow(target);
       }
       else if (key.home && key.ctrl) { requestFullRepaint(); setScrollUp(maxScrollRef.current); }
+      // Move what the turn is waiting on to the background, without waiting for the agent
+      // to decide it. Silent when nothing is running (a stray press needs no comment); it
+      // speaks only when something WAS running and could not be moved.
+      else if (key.ctrl && _input === "x") {
+        if (pressBackground(session.current?.toolContext.foregroundCommands) === "stuck") {
+          note("That command could not be moved to the background.");
+        }
+      }
     },
     { isActive: ready && overlay === null },
   );
@@ -1418,15 +1461,40 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
       // reader's absolute position rather than leave `scrollUp` where it was.
       const prev = prevContentHeight.current;
       let next = growScroll(scrollUp, prev, height);
-      // A row was just opened or folded. The row the reader pressed stays where it is and
-      // the change happens below it: opening from the bottom would otherwise follow the
-      // new end of the output and carry the row's own first line off the top, and folding
-      // would slide the view up by what was taken away.
+      // A row was just opened or folded.
+      //
+      // OPENED, while pinned to the newest: the view moves just far enough to show what opened
+      // (see revealScroll). It used to hold the pressed row in place and let the contents appear
+      // below it, which for the newest row is below the screen: the reader had to scroll to see
+      // what they had asked for. A row opened with the view scrolled back is NOT touched.
+      // FOLDED: the view goes back to where it was before this row was opened, if nothing has
+      // moved it since; otherwise it slides up by what was taken away, so the row stays put.
       if (rowToggled.current && height !== prev) {
-        if (height > prev && scrollUp === 0) next = height - prev;
-        else if (height < prev) next = Math.max(0, scrollUp - (prev - height));
+        const hit = toggledHit.current;
+        if (height > prev) {
+          // Only for the NEWEST row that can be opened, with the reader pinned to the bottom: that
+          // is the one whose contents would be pushed below the screen. Every other row, even one
+          // that is on screen at the time, keeps the old rule (held in place, contents below it).
+          const node = hit !== null && scrollUp === 0 && toggledNewest.current ? revealNode(hit) : undefined;
+          if (hit !== null && node && contentRef.current) {
+            const n = measureElement(node);
+            const c = measureElement(contentRef.current);
+            next = revealScroll(scrollUp, height, chatRows, n.y - c.y, n.height);
+            openedFrom.current = { hit, before: scrollUp, after: next };
+          } else {
+            openedFrom.current = null;
+            if (scrollUp === 0) next = height - prev;
+          }
+        } else {
+          const from = openedFrom.current;
+          if (from && from.hit === hit && from.after === scrollUp) next = Math.min(from.before, Math.max(0, height - chatRows));
+          else next = Math.max(0, scrollUp - (prev - height));
+          openedFrom.current = null;
+        }
       }
       rowToggled.current = false;
+      // The view is now placed for the new height; the next frame is the right one.
+      releaseFrames();
       if (next !== scrollUp) setScrollUp(next);
     }
     prevContentHeight.current = height;
@@ -1541,13 +1609,87 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
    * chance to reflow the screen under a user who is only trying to highlight a word.
    * `repaintOverlay` re-tints the frame already on screen instead.
    */
+  // ── the selection that follows the conversation ──────────────────────────────────────────
+  /** The screen rows that show the conversation. */
+  const chatViewRows = useCallback((): View | null => {
+    if (!chatRef.current) return null;
+    const m = measureElement(chatRef.current);
+    return { top: frameTopRef.current + m.y, bottom: frameTopRef.current + m.y + m.height };
+  }, []);
+
+  /** Runs on every frame while a selection of this kind exists: keep the rows, then paint it. */
+  const growOverlay = useCallback(
+    (screen: Screen) => {
+      const g = grow.current;
+      const view = chatViewRows();
+      if (!g || !view) return;
+      const spans = blockSpans(frameTopRef.current);
+      if (g.dragging) {
+        // The pointer has not moved but the view has, so what is under it is a different
+        // row: the end of the selection is wherever the pointer is NOW.
+        const p = pointer.current;
+        if (p) {
+          const focus = focusFromPointer(spans, view, p.x, p.y, screen.width);
+          if (focus) g.focus = focus;
+        }
+        const chip = pillHit.current;
+        rowStore.current.capture(screen, spans, view, chip ? { y: chip.row, x0: chip.left, x1: chip.right + 1 } : null);
+      }
+      applyGrowSelection(screen, g, spans, view);
+    },
+    [chatViewRows],
+  );
+
+  /** Begin a selection that follows the conversation, if the press landed on it. */
+  const startGrow = useCallback(
+    (x: number, y: number): boolean => {
+      const view = chatViewRows();
+      const screen = latestScreen();
+      if (!view || !screen || y < view.top || y >= view.bottom) return false;
+      const focus = focusFromPointer(blockSpans(frameTopRef.current), view, x, y, screen.width);
+      if (!focus) return false;
+      grow.current = { anchor: focus, focus, dragging: true };
+      rowStore.current.clear();
+      pointer.current = { x, y };
+      setFrameOverlay(growOverlay);
+      repaintOverlay();
+      return true;
+    },
+    [chatViewRows, growOverlay],
+  );
+
+  /** While the pointer is held past an edge, keep scrolling, so the selection keeps growing. */
+  const keepScrolling = useCallback(() => {
+    if (edgeTimer.current) return;
+    edgeTimer.current = setInterval(() => {
+      const view = chatViewRows();
+      const p = pointer.current;
+      if (!grow.current?.dragging || !view || !p) return stopEdge();
+      const lines = edgeLines(p.y, view, latestScreen()?.height ?? process.stdout.rows ?? 24);
+      if (lines === 0) return stopEdge();
+      scrollBy(lines);
+    }, EDGE_SCROLL_MS);
+  }, [chatViewRows, scrollBy, stopEdge]);
+
+  /** Copy everything between the two ends, and say so if some of it could not be. */
+  function copyGrown(g: GrowSel) {
+    const s = stateRef.current;
+    const ids = [...s.committed, ...s.tail].map((b) => b.id);
+    const grown = rowStore.current.text(g, ids, (id) => blockHeights.current.get(id)?.height);
+    if (grown.text) copyToClipboard(grown.text);
+    if (!grown.complete) note("Part of what you selected scrolled past too fast to be copied. Select it again, scrolling more slowly.");
+  }
+
   // Mouse reporting itself is switched on and off by  — it belongs to
   // the shell, not to this component, because the inline shell must never have it on.
   // What is left here is the highlight, which has to come down when the app unmounts.
   useEffect(() => {
     if (!ready) return;
-    return () => setFrameOverlay(null);
-  }, [ready]);
+    return () => {
+      stopEdge();
+      setFrameOverlay(null);
+    };
+  }, [ready, stopEdge]);
 
   /**
    * Everything the pointer does, read through `useInput`.
@@ -1580,14 +1722,22 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
       // This is the same rule the input box already follows for keystrokes — one event
       // in, one render out — applied to the other thing that arrives in bursts.
       if (notches.length > 0) {
-        // Content moves out from under a selection when the view scrolls, so the
-        // highlight would be sitting on text that is no longer the text it copied.
-        clearSelection();
+        // Content moves out from under a SCREEN selection when the view scrolls, so the
+        // highlight would be sitting on text that is no longer the text it copied. One that
+        // follows the conversation stays, and grows if the button is still down.
+        if (!grow.current) clearSelection();
         // Signed notch count, then the distance for it. The same distance for every notch,
         // applied at once (wheelStep.ts): how far the view goes follows how far the wheel
         // was turned, and nothing else.
         const net = notches.reduce((n, dir) => n + (dir === "up" ? 1 : -1), 0);
-        const lines = wheelLines(net);
+        let lines = wheelLines(net);
+        // With a selection alive no row may be scrolled past unseen: a step is never more than
+        // the view is tall, or the rows in between could not be copied.
+        if (grow.current) {
+          const view = chatViewRows();
+          const room = view ? Math.max(1, view.bottom - view.top - 1) : 16;
+          lines = Math.max(-room, Math.min(room, lines));
+        }
         // The wheel is how anyone actually scrolls, so in the inline shell it is what
         // opens the reading view. Turning it UP is the gesture: the reader is going back
         // through the conversation and wants the prompt to stay where they can type into
@@ -1630,16 +1780,59 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
             setScrollUp(0);
             continue;
           }
+          // A press on the conversation starts a selection that follows it. Anywhere else (the
+          // input box, the banner) it is the screen selection, which is what edits the input.
+          if (startGrow(event.x, event.y)) {
+            selection.current = null;
+            continue;
+          }
+          grow.current = null;
+          rowStore.current.clear();
+          pointer.current = null;
+          stopEdge();
           selection.current = { anchor: { x: event.x, y: event.y }, focus: { x: event.x, y: event.y } };
           // Installed here rather than for the life of the session: see clearSelection.
           setFrameOverlay((screen) => applySelection(screen, selection.current));
           repaintOverlay();
         } else if (event.kind === "drag") {
+          if (grow.current?.dragging) {
+            pointer.current = { x: event.x, y: event.y };
+            pendingDrag = true;
+            keepScrolling();
+            continue;
+          }
           if (!selection.current) continue;
           selection.current = { anchor: selection.current.anchor, focus: { x: event.x, y: event.y } };
           pendingDrag = true;
         } else {
           pendingDrag = false;
+          const g = grow.current;
+          if (g) {
+            stopEdge();
+            pointer.current = null;
+            g.dragging = false;
+            const view = chatViewRows();
+            const screen = latestScreen();
+            if (view && screen) {
+              const focus = focusFromPointer(blockSpans(frameTopRef.current), view, event.x, event.y, screen.width);
+              if (focus) g.focus = focus;
+            }
+            if (isEmptyGrow(g)) {
+              // A click, not a drag: take the highlight down, then do what a click does.
+              clearSelection();
+              const hitId = expandableAt(event.y, frameTopRef.current, chatRef.current);
+              if (hitId !== null) {
+                toggleRow(hitId);
+                continue;
+              }
+              placeCaretAt(event.x, event.y);
+              continue;
+            }
+            // Copied on release, so selecting IS copying; the highlight stays as the receipt.
+            copyGrown(g);
+            repaintOverlay();
+            continue;
+          }
           const sel = selection.current;
           if (!sel) continue;
           if (isEmpty(sel)) {
@@ -1692,6 +1885,11 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
   /** Open or fold a row, keeping it where the reader pressed it. See the height effect. */
   function toggleRow(hit: number) {
     rowToggled.current = true;
+    toggledHit.current = hit;
+    toggledNewest.current = lastExpandable(stateRef.current) === hitBlock(hit);
+    // Opening or folding takes two renders, and the first is drawn with the view still placed
+    // for the old height. Keep that one off the screen; the effect below releases it.
+    holdFrames();
     // A hit on one command inside a commands row opens that command; anything else is a row.
     if (hitItem(hit) >= 0) dispatch({ type: "toggleItem", id: hitBlock(hit), index: hitItem(hit) });
     else dispatch({ type: "toggleExpand", id: hit });
@@ -3570,7 +3768,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
   const completions = [
     ...BASE_COMMANDS,
     ...skills.map((s) => ({ name: `/${s.name}`, description: s.description || "project skill" })),
-    ...mcpPrompts.map((p) => ({ name: promptCommand(p), description: p.description || `prompt from ${p.server}` })),
+    ...mcpPrompts.map((p) => ({ name: promptCommand(p), description: p.description || `prompt from ${p.server}`, quiet: true })),
   ];
 
   // While an overlay is open it renders in the menu slot below the input and owns the
@@ -3931,7 +4129,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
   // to `chatAnchor.ts` so the rule is unit-tested rather than eyeballed — see there
   // for why a short transcript now rests ON the input box instead of stranding
   // itself at the top of the screen, and why that cannot disturb a scrolled frame.
-  const { marginTop: chatOffset, restsOnFooter, maxScroll, scrolled } = chatLayout(contentHeight, chatRows, scrollUp);
+  const { marginTop: chatOffset, maxScroll, scrolled } = chatLayout(contentHeight, chatRows, scrollUp);
   // Published for the scroll handlers, which run between frames and cannot compute it.
   maxScrollRef.current = maxScroll;
   // The chip that says the view is not at the bottom. `scrolled` and not `scrollUp`:
@@ -4008,6 +4206,15 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
     // carried off by a resize they did not intend as navigation. Applied once the new
     // height has actually been measured — see the effect that consumes this.
     reflowFrom.current = { scrolled: scrollUp, maxScroll: Math.max(0, contentHeight - chatRows) };
+    // A re-wrap changes how many rows every block has, so the rows kept for a selection no
+    // longer line up with what is on screen. Dropped without a repaint (this is a render).
+    if (grow.current) {
+      grow.current = null;
+      rowStore.current.clear();
+      pointer.current = null;
+      stopEdge();
+      setFrameOverlay(null);
+    }
   }
   // Only a MEASURED prefix can be virtualized: a block whose height is unknown cannot
   // be replaced by a spacer, because there is no honest number to give the spacer.
@@ -4161,20 +4368,20 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
   // Yoga sizes against a pinned footer, with the transcript offset inside it. Kept as
   // two copies they would drift apart the first time either was touched, and the drift
   // would show as scrolling behaving differently in one shell than in the other.
+  // Pinned to the newest, the transcript is ALIGNED to the bottom of the viewport by the layout
+  // itself (flex-end) instead of being offset by a number. The number comes from measurements
+  // that lag a frame: when the footer grows (a menu opens, the input takes a second line) or a
+  // row lands, the first frame was drawn with the old numbers, so for a moment the view showed
+  // the wrong part of the conversation. Yoga decides alignment in the same pass that sizes the
+  // frame, so there is nothing stale to be wrong about. A short conversation rests on the
+  // footer by the same rule, which is what the spacer that used to be here did.
+  //
+  // Scrolled back, the offset has to be a number again (nothing but a distance from the top
+  // can hold a position while content is appended), and `growScroll` keeps it right.
+  const pinnedView = scrolled === 0;
   const chatView = (
-    <Box ref={chatRef} flexDirection="column" flexGrow={1} flexShrink={1} minHeight={1} overflow="hidden">
-      {/* A short conversation rests ON the footer instead of floating at the top
-          of the screen. This is a flex SPACER rather than a computed margin on
-          purpose: Yoga sizes it from the leftover space in the same pass that lays
-          the frame out, where a margin would have to be derived from `chatRows`,
-          which lags a frame and is unknown entirely on the first render. A render
-          probe rejected the margin version — it left a gap on a settled frame and
-          pushed the whole transcript past the clip edge on the first one.
-
-          It shrinks to nothing the moment the transcript overflows, so the
-          scrolling path below is untouched. */}
-      {restsOnFooter ? <Box flexGrow={1} flexShrink={1} /> : null}
-      <Box flexDirection="column" flexShrink={0} marginTop={chatOffset}>
+    <Box ref={chatRef} flexDirection="column" flexGrow={1} flexShrink={1} minHeight={1} overflow="hidden" justifyContent={pinnedView ? "flex-end" : "flex-start"}>
+      <Box flexDirection="column" flexShrink={0} marginTop={pinnedView ? 0 : chatOffset}>
         {/* The ref sits on a box with NO margin of its own, so the measured
             height is the content's alone and cannot drift as it scrolls. */}
         <Box ref={contentRef} flexDirection="column" flexShrink={0}>
@@ -4188,6 +4395,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
               <Box
                 key={b.id}
                 ref={(node: DOMElement | null) => {
+                  registerBlockBox(b.id, node);
                   if (node && needsMeasure(blockHeights.current.get(b.id), b)) toMeasure.current.set(b, node);
                 }}
                 flexShrink={0}
@@ -4208,6 +4416,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
               <Box
                 key={b.id}
                 ref={(node: DOMElement | null) => {
+                  registerBlockBox(b.id, node);
                   if (node && needsMeasure(blockHeights.current.get(b.id), b)) toMeasure.current.set(b, node);
                 }}
                 flexShrink={0}
@@ -4910,6 +5119,9 @@ function StatusLine({
     </Box>
   );
 }
+
+/** How often the view scrolls while a drag is held past the edge of the conversation. */
+const EDGE_SCROLL_MS = 45;
 
 /** The working line's render clock, in milliseconds. See StatusLine's tick. */
 const LIVE_TICK_MS = 16;

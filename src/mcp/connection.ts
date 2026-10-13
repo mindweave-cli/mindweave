@@ -42,7 +42,7 @@ import type { McpContentBlock } from "./catalog.js";
 import { authenticate, authHeaders, hasCredential, parseWwwAuthenticate, signOut, type AuthChallenge } from "./oauth/index.js";
 import { HttpTransport } from "./transport/http.js";
 import { StdioTransport } from "./transport/stdio.js";
-import { RpcError, type Transport } from "./transport/types.js";
+import { RpcError, toolTimeoutMs, type Transport } from "./transport/types.js";
 import { isPromptsChanged, isResourcesChanged, isToolsChanged, subscriptionsFor } from "./subscriptions.js";
 
 /** Consecutive failed connect attempts before we stop trying on our own. */
@@ -385,11 +385,17 @@ export class McpConnection {
    * say what was asked for. Returning the half-finished result instead, which is what
    * happened before this existed, told the model the tool had answered.
    */
-  private async callMultiRound(method: string, params: Record<string, unknown>, mirrored?: Record<string, string>): Promise<unknown> {
+  private async callMultiRound(
+    method: string,
+    params: Record<string, unknown>,
+    mirrored?: Record<string, string>,
+    timeoutMs?: number,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
     let requestState: string | undefined;
     for (let round = 0; round <= MAX_INPUT_ROUNDS; round++) {
       const body = requestState === undefined ? params : { ...params, requestState };
-      const result = await this.call(method, body, mirrored);
+      const result = await this.call(method, body, mirrored, timeoutMs, signal);
       const pending = readInputRequired(result);
       if (!pending) return result;
 
@@ -410,11 +416,52 @@ export class McpConnection {
     );
   }
 
-  private async call(method: string, params?: Record<string, unknown>, mirrored?: Record<string, string>): Promise<unknown> {
-    if (!this.transport || !this.negotiated) throw new RpcError(-32603, `mcp server '${this.config.name}' is not connected`);
+  private async call(
+    method: string,
+    params?: Record<string, unknown>,
+    mirrored?: Record<string, string>,
+    timeoutMs?: number,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
+    if (!this.transport || !this.negotiated) throw new RpcError(-32603, this.notRunningMessage());
     const meta = buildMeta(this.negotiated.dialect, this.negotiated.version, { name: "mindweave", version: appVersion() });
     const body = meta ? { ...(params ?? {}), _meta: meta } : params;
-    return this.transport.request(method, body, mirrored);
+    return this.transport.request(method, body, mirrored, timeoutMs, signal);
+  }
+
+  /**
+   * Why a call cannot go out, in words that say what to do.
+   *
+   * "is not connected" alone sent an agent into a loop of disabling and re-enabling a
+   * server: it said nothing about the state, the reason, or that the way out was a
+   * status check and a reconnect rather than a rewrite of the config.
+   */
+  notRunningMessage(): string {
+    const name = this.config.name;
+    if (this.state === "disabled") return `mcp server '${name}' is disabled. Enable it with mcp_server action "enable".`;
+    if (this.state === "needs-auth") return `mcp server '${name}' needs signing in. The user does that in /mcp (open the server, choose Sign in).`;
+    const why = this.lastError ? `: ${this.lastError}` : "";
+    return (
+      `mcp server '${name}' is not running (${this.state}${why}). ` +
+      `Use mcp_server action "status" to see why, and "reconnect" to start it again; do not disable, enable or remove it.`
+    );
+  }
+
+  /**
+   * Make this connection usable NOW, if it can be. Called by a tool call that finds the
+   * server down, so a server that died, or that was still starting, is brought back by
+   * the call that needs it instead of failing it.
+   *
+   * Shares an attempt already in flight (a second transport would leak a child process),
+   * cancels a pending automatic retry so it cannot race this one, and never touches a
+   * server that is waiting on the user (disabled, needs-auth): those are not outages.
+   */
+  async ensureConnected(): Promise<void> {
+    if (this.state === "connected" || this.state === "disabled" || this.state === "needs-auth") return;
+    if (this.connecting) return this.connecting;
+    this.clearRetry();
+    if (this.state === "failed") return this.reconnect();
+    return this.connect();
   }
 
   /** Fetch (or refresh) the tool catalog, honouring the server's own `ttlMs`. */
@@ -509,10 +556,10 @@ export class McpConnection {
    *  body but absent from the headers, so a tool with an annotation is simply uncallable
    *  without this. The annotations were validated when the catalog was parsed, which is
    *  why nothing here can fail. */
-  async callTool(name: string, args: Record<string, unknown>): Promise<unknown> {
+  async callTool(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
     const annotations = this.toolDefs.find((d) => d.name === name)?.paramHeaders;
     const mirrored = annotations?.length ? paramHeaders(annotations, args) : undefined;
-    return this.callMultiRound("tools/call", { name, arguments: args }, mirrored);
+    return this.callMultiRound("tools/call", { name, arguments: args }, mirrored, toolTimeoutMs(), signal);
   }
 
   /** Drain warnings about tools dropped from this server's catalog. One-shot. */
@@ -561,7 +608,13 @@ export class McpConnection {
     this.clearRetry();
     this.retryTimer = setTimeout(() => {
       this.retryTimer = null;
-      void this.attempt().then(() => {
+      // Through `connecting`, like every other attempt: a tool call that arrives while this
+      // one is running must join it rather than open a second transport.
+      const run = this.attempt().finally(() => {
+        if (this.connecting === run) this.connecting = null;
+      });
+      this.connecting = run;
+      void run.then(() => {
         if (this.state !== "connected") this.scheduleRetry();
       });
     }, delay);

@@ -34,6 +34,7 @@
  */
 import { Screen } from "./screen.js";
 import { applyFrameOverlay, hasFrameOverlay, publishScreen, setOverlayRepaint } from "./overlay.js";
+import { framesHeld, setHoldFlush } from "./frameHold.js";
 import { parseFrame } from "./parse.js";
 import { paint } from "./paint.js";
 import { caretCell, onCaretMoved, parkAt, HIDE } from "../caretPark.js";
@@ -478,6 +479,13 @@ export function framebufferStdout<T extends OutputStream>(real: T, onFrame?: (st
    * method, the prototype and `instanceof` all still resolve to the real stream, and
    * only `write` is ours. Nothing has to be enumerated, so nothing can be forgotten.
    */
+  /** The latest frame dropped by a hold, painted if nothing newer arrives (see frameHold.ts). */
+  let heldFrame: string | null = null;
+  setHoldFlush(() => {
+    const data = heldFrame;
+    heldFrame = null;
+    if (data !== null) fbWrite(data);
+  });
   const fbWrite = (data: string, callback?: (err?: Error | null) => void): boolean => {
       // Stood down. Everything Ink writes goes straight to the terminal, untouched.
       //
@@ -563,6 +571,16 @@ export function framebufferStdout<T extends OutputStream>(real: T, onFrame?: (st
       // writing in full, and so does an explicit request (a scroll — see requestFullRepaint).
       // All are answered the same way: by knowing nothing about the screen, so that this
       // frame draws all of it.
+      // A frame the caller asked to be kept off the screen (see frameHold.ts): remembered, not
+      // painted. Nothing about the screen model changes, so the next frame is diffed against
+      // what is really there and is the whole picture. Anything newer replaces it.
+      if (framesHeld()) {
+        heldFrame = data;
+        callback?.(null);
+        return true;
+      }
+      heldFrame = null;
+
       if (syncSize() || repaintRequested || Date.now() - lastFull >= repaintEvery) invalidate();
       repaintRequested = false;
 

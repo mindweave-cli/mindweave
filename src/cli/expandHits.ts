@@ -14,6 +14,24 @@
 import { measureElement, type DOMElement } from "ink";
 
 const nodes = new Map<number, DOMElement>();
+/** The WHOLE box of a row (its header and everything opened under it), for rows whose click
+ *  target is only their header. Used to find out what an opened row covers. */
+const boxes = new Map<number, DOMElement>();
+
+/** Called from a row's outermost box. `null` is the row going away. */
+export function registerRowBox(id: number, node: DOMElement | null): void {
+  if (node) boxes.set(id, node);
+  else boxes.delete(id);
+}
+
+/**
+ * The box to bring into view after `hit` was opened, or undefined when it is not on screen.
+ * One command inside a row is its own box; a row is its whole box where it has one (a
+ * commands row's click target is only its header, which says nothing of the list under it).
+ */
+export function revealNode(hit: number): DOMElement | undefined {
+  return hit < 0 ? nodes.get(hit) : boxes.get(hit) ?? nodes.get(hit);
+}
 
 /**
  * One command inside a commands row is its own place to click, next to the row's header.

@@ -57,7 +57,9 @@ export function formatHelp(sections: readonly HelpSection[]): string {
       "  ↑                 take back a message you queued while it was working\n" +
       "  Click             a line that ends in ▸ opens it, and a second click folds it\n" +
       "  Ctrl+O            opens or folds the newest one, if your terminal sends no mouse\n" +
-      "  PageUp / wheel    scroll back through the conversation; Ctrl+End comes back to the end",
+      "  PageUp / wheel    scroll back through the conversation; Ctrl+End comes back to the end\n" +
+      "  Drag              selects text, and releasing copies it. Keep going past the top or bottom\n" +
+      "                    edge, or turn the wheel while you hold, and the selection keeps growing",
     // The one thing on screen that is NOT what it looks like: a single line standing for many
     // calls. It is folded on purpose, and nothing on the line itself says how to open it.
     "About the lines that fold\n" +
@@ -68,6 +70,11 @@ export function formatHelp(sections: readonly HelpSection[]): string {
       "  that was read (lines 410–551, or the whole file). Click a command to see what it\n" +
       "  printed. When it tests your app, each step is a line too (Tested 4 steps), and a\n" +
       "  step that failed says why. A long output, a file written whole or an edit works the same way.",
+    "About a command that takes long\n" +
+      "  After a couple of seconds the command's own line offers ctrl+X. Press it and the\n" +
+      "  command the agent is waiting on keeps running as a background shell, and the agent\n" +
+      "  carries on (every command running at that moment moves). It is told you did it, and\n" +
+      "  is told when the command ends. The agent can still do the same on its own.",
     // Sub-agents are the one part of the machinery that visibly does something on
     // screen without explaining itself: a rail of tool calls appears under a worker
     // that is not the agent you were talking to. What it costs you and what it hands

@@ -463,13 +463,14 @@ test("a snapshot keeps offering what it advertised, even after the server dies",
 
     // Live lookup correctly reports nothing…
     assert.equal(mgr.asTool("mcp__fake__echo"), undefined);
-    // …but the turn that already advertised it can still dispatch, and gets a real
-    // error rather than "no such tool".
+    // …but the turn that already advertised it can still dispatch. The call finds the
+    // server down and brings it back, as Claude Code's does, instead of failing a call
+    // against a server that is one restart away from working.
     const tool = turn.asTool("mcp__fake__echo");
     assert.ok(tool, "the snapshot must not retract a tool mid-turn");
     const result = await tool!.execute({ text: "hi" }, {} as never);
-    assert.equal(result.isError, true);
-    assert.match(result.output, /failed/);
+    assert.notEqual(result.isError, true, `the call must revive the server: ${result.output}`);
+    assert.match(result.output, /hi/);
   } finally {
     await mgr.dispose();
   }
@@ -610,6 +611,143 @@ test("a deferred catalog is not billed to the compaction budget", async () => {
     assert.equal(mgr.estimatedTokens(), 0, "hidden tools cost nothing");
     mgr.searchCatalogTools("create issue");
     assert.equal(mgr.estimatedTokens(), 0, "and searching does not start sending them either");
+  } finally {
+    await mgr.dispose();
+  }
+});
+
+// ── The "not connected" loop (2026-10-12) ─────────────────────────────────────────────
+// An agent added a server, then every call it made said "not connected" while the server
+// was healthy. The turn's snapshot had bound each tool to the connection object that
+// existed when the turn began; the agent's own enable/disable/add replaced that object, so
+// the tools pointed at a closed connection for the rest of the turn, and "restarting" the
+// server only made it certain. Claude Code resolves the connection when the call runs.
+
+test("a tool offered before its server was REPLACED still works (the same turn)", async () => {
+  const mgr = new McpManager();
+  try {
+    const config = stdio("fake", serverScript());
+    await mgr.addServer(config);
+    const turn = mgr.snapshot();
+    const before = await turn.asTool("mcp__fake__echo")!.execute({ text: "one" }, {} as never);
+    assert.match(before.output, /echoed:one/);
+
+    // What enable / disable / re-add do: close the connection and build another.
+    await mgr.addServer({ ...config, disabled: true });
+    await mgr.addServer(config);
+    assertConnected(mgr, "fake");
+
+    const after = await turn.asTool("mcp__fake__echo")!.execute({ text: "two" }, {} as never);
+    assert.notEqual(after.isError, true, `the old snapshot must reach the new connection: ${after.output}`);
+    assert.match(after.output, /echoed:two/);
+  } finally {
+    await mgr.dispose();
+  }
+});
+
+test("a server added AFTER the turn's snapshot is callable in that turn", async () => {
+  const mgr = new McpManager();
+  try {
+    const turn = mgr.snapshot(); // nothing connected yet
+    assert.equal(turn.asTool("mcp__late__echo"), undefined);
+    await mgr.addServer(stdio("late", serverScript()));
+    const tool = turn.asTool("mcp__late__echo");
+    assert.ok(tool, "a tool that exists must not be 'no such tool' because the turn began first");
+    assert.match((await tool!.execute({ text: "hi" }, {} as never)).output, /echoed:hi/);
+  } finally {
+    await mgr.dispose();
+  }
+});
+
+test("a call to a server that was REMOVED says so instead of 'not connected'", async () => {
+  const mgr = new McpManager();
+  try {
+    await mgr.addServer(stdio("fake", serverScript()));
+    const tool = mgr.snapshot().asTool("mcp__fake__echo")!;
+    await mgr.removeServer("fake");
+    const r = await tool.execute({ text: "hi" }, {} as never);
+    assert.equal(r.isError, true);
+    assert.match(r.output, /not configured any more/);
+    assert.doesNotMatch(r.output, /is not connected/);
+  } finally {
+    await mgr.dispose();
+  }
+});
+
+test("a down server's error says why and names the way out (status, reconnect)", async () => {
+  const conn = new McpConnection({ type: "stdio", name: "rea", command: "definitely-not-a-real-binary-xyz", args: [] });
+  await conn.connect();
+  const message = conn.notRunningMessage();
+  assert.match(message, /'rea' is not running \(failed/);
+  assert.match(message, /status/);
+  assert.match(message, /reconnect/);
+  assert.match(message, /do not disable, enable or remove/);
+  await conn.close();
+});
+
+test("the manager's revision moves when a server comes, goes or is replaced", async () => {
+  const mgr = new McpManager();
+  try {
+    const r0 = mgr.revision();
+    await mgr.addServer(stdio("fake", serverScript()));
+    const r1 = mgr.revision();
+    assert.ok(r1 > r0, "adding a server must move it");
+    await mgr.removeServer("fake");
+    assert.ok(mgr.revision() > r1, "removing one must too");
+  } finally {
+    await mgr.dispose();
+  }
+});
+
+test("a tool call is not held to the 30 second protocol limit", async () => {
+  const { toolTimeoutMs, DEFAULT_REQUEST_TIMEOUT_MS } = await import("./transport/types.js");
+  assert.ok(toolTimeoutMs() > DEFAULT_REQUEST_TIMEOUT_MS * 5, "a slow tool (analysing a binary) must be allowed to run");
+  const saved = process.env.MINDWEAVE_MCP_TOOL_TIMEOUT_MS;
+  try {
+    process.env.MINDWEAVE_MCP_TOOL_TIMEOUT_MS = "45000";
+    assert.equal(toolTimeoutMs(), 45_000);
+    process.env.MINDWEAVE_MCP_TOOL_TIMEOUT_MS = "garbage";
+    assert.ok(toolTimeoutMs() > DEFAULT_REQUEST_TIMEOUT_MS);
+  } finally {
+    if (saved === undefined) delete process.env.MINDWEAVE_MCP_TOOL_TIMEOUT_MS;
+    else process.env.MINDWEAVE_MCP_TOOL_TIMEOUT_MS = saved;
+  }
+});
+
+test("Esc reaches a tool call that is waiting on a slow server", async () => {
+  // The turn awaits the tool, and a tool that ignored the abort signal left the whole
+  // session stuck (no way to stop it) until the server answered or the timeout ran out.
+  const script = `
+let buf = "";
+const send = (m) => process.stdout.write(JSON.stringify(m) + "\\n");
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (c) => {
+  buf += c; let nl;
+  while ((nl = buf.indexOf("\\n")) >= 0) {
+    const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
+    if (!line.trim()) continue;
+    const m = JSON.parse(line);
+    if (m.id === undefined) continue;
+    if (m.method === "server/discover") { send({ jsonrpc: "2.0", id: m.id, result: { protocolVersions: ["2026-07-28"], capabilities: {} } }); continue; }
+    if (m.method === "tools/list") { send({ jsonrpc: "2.0", id: m.id, result: { tools: [{ name: "slow" }] } }); continue; }
+    if (m.method === "tools/call") continue; // never answers
+    send({ jsonrpc: "2.0", id: m.id, error: { code: -32601, message: "Method not found" } });
+  }
+});`;
+  const mgr = new McpManager();
+  try {
+    await mgr.addServer(stdio("slowpoke", script));
+    assertConnected(mgr, "slowpoke");
+    const controller = new AbortController();
+    const started = Date.now();
+    const run = mgr.asTool("mcp__slowpoke__slow")!.execute({}, { abortSignal: controller.signal } as never);
+    setTimeout(() => controller.abort(), 150);
+    const result = await run;
+    assert.ok(Date.now() - started < 5_000, "Esc must not wait out the tool");
+    assert.equal(result.isError, true);
+    assert.match(result.output, /cancelled/);
+    // And the server is still usable afterwards: an abort is not a crash.
+    assert.equal(mgr.statuses()[0]!.state, "connected");
   } finally {
     await mgr.dispose();
   }

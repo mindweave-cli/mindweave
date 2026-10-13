@@ -650,30 +650,46 @@ async function runShell(
     }, PROGRESS_AFTER_MS);
     startProgress.unref?.();
 
+    // Hand the LIVE process to the background-shell manager and answer the call now. The
+    // two roads here, the clock and the person, differ only in what the model is told and
+    // in whether `neverBackground` applies. False means nothing moved (the command already
+    // settled, or there is no manager to take it) and the command stays in the foreground.
+    let unregisterForeground: () => void = () => {};
+    const moveToBackground = (by: "clock" | "user"): boolean => {
+      if (settled || !mgr) return false;
+      settled = true;
+      clearTimeout(timer);
+      clearTimeout(startProgress);
+      stopProgress();
+      detachAbort();
+      unregisterForeground();
+      // Somebody was waiting on this, so its completion is the point unless the caller
+      // said otherwise.
+      const notify = declaredNotify ?? "on_finish";
+      // The manager takes over the same file the child is already writing into, so
+      // nothing is copied and no output can be lost in the handover.
+      const info = mgr.adopt(child, { command, cwd: ctx.cwd, outputPath: outFile.path, cwdFile, tempFile, notify });
+      resolve(
+        backgroundedResult(
+          info.id,
+          command,
+          by === "user"
+            ? `The user moved this command to the background while it was running, as shell #${info.id}`
+            : `Still running after ${Math.round(timeoutMs / 1000)}s — moved to the background as shell #${info.id}`,
+          notify,
+          by === "user",
+        ),
+      );
+      return true;
+    };
+
     const timer = setTimeout(() => {
       if (settled) return;
       // Soft timeout: move the LIVE process to the background (preferred), so a long
       // test/build keeps running instead of being lost. With no manager (bare tests)
       // fall back to the old behavior — kill the tree.
       if (mgr && !neverBackground(command)) {
-        settled = true;
-        clearTimeout(startProgress);
-        stopProgress();
-        detachAbort();
-        // Auto-backgrounded after running too long inline. Somebody was waiting on this,
-        // so its completion is the point unless the caller said otherwise.
-        const notify = declaredNotify ?? "on_finish";
-        // The manager takes over the same file the child is already writing into, so
-        // nothing is copied and no output can be lost in the handover.
-        const info = mgr.adopt(child, { command, cwd: ctx.cwd, outputPath: outFile.path, cwdFile, tempFile, notify });
-        resolve(
-          backgroundedResult(
-            info.id,
-            command,
-            `Still running after ${Math.round(timeoutMs / 1000)}s — moved to the background as shell #${info.id}`,
-            notify,
-          ),
-        );
+        moveToBackground("clock");
       } else {
         timedOut = true;
         killTree(child.pid);
@@ -692,6 +708,7 @@ async function runShell(
       settled = true;
       clearTimeout(timer);
       clearTimeout(startProgress);
+      unregisterForeground();
       stopProgress();
       killTree(child.pid);
       void fs.rm(cwdFile, { force: true }).catch(() => {});
@@ -713,6 +730,17 @@ async function runShell(
     if (signal?.aborted) return void onAbort();
     signal?.addEventListener("abort", onAbort);
 
+    // From here until it settles, the person can move this command to the background.
+    // Their request overrides `neverBackground`: that rule stops the CLOCK from turning a
+    // pure wait into an orphan shell nobody asked for, and a person who asks is not that.
+    unregisterForeground =
+      ctx.foregroundCommands?.register({
+        id: call?.id ?? "",
+        command,
+        startedAt,
+        promote: () => moveToBackground("user"),
+      }) ?? unregisterForeground;
+
     const finish = async (rawExit: number | null, signal: string | null) => {
       // Windows hands a negative exit code back unsigned: `exit -1` arrives as
       // 4294967295, which says nothing to anyone reading it.
@@ -721,6 +749,7 @@ async function runShell(
       settled = true;
       clearTimeout(timer);
       clearTimeout(startProgress);
+      unregisterForeground();
       stopProgress();
       detachAbort();
       await descriptorClosed;
@@ -758,6 +787,7 @@ async function runShell(
       settled = true;
       clearTimeout(timer);
       clearTimeout(startProgress);
+      unregisterForeground();
       stopProgress();
       detachAbort();
       void fs.rm(cwdFile, { force: true }).catch(() => {});
@@ -831,9 +861,18 @@ function settledResult(
  * it would be notified either way made it promise a report that never came, which is
  * the prompt asserting a capability that does not exist.
  */
-function backgroundedResult(id: number, command: string, lead: string, notify: NotifyPolicy): ToolResult {
+function backgroundedResult(id: number, command: string, lead: string, notify: NotifyPolicy, byUser = false): ToolResult {
   const tail =
-    notify === "never"
+    byUser && notify === "on_finish"
+      ? // The person chose this, so it is not a verdict on the command and the turn is not
+        // necessarily over: they want to stop waiting, not to stop working.
+        `They did it so the work could go on without waiting for this. You will be notified AUTOMATICALLY the ` +
+        `moment it finishes, so do NOT poll it. Carry on with anything that does not depend on its result; if ` +
+        `nothing does, say in ONE short line that it is running and that you'll report back when it's done, ` +
+        `then STOP (end your turn). Do not kill it or start it again: it is theirs to stop. Use ` +
+        `shells({id: ${id}}) only if you have a specific reason to inspect partial output, and kill_shell(${id}) ` +
+        `only if they ask.`
+      : notify === "never"
       ? `Nothing further will be reported about it. Say in ONE short line that it's running, then STOP ` +
         `(end your turn). Use shells({id: ${id}}) to inspect it and kill_shell(${id}) to stop it.`
       : notify === "on_failure"

@@ -171,3 +171,46 @@ test("requests after close are refused, not silently dropped", async () => {
   await t.close();
   await assert.rejects(() => t.request("tools/list"), /closed/);
 });
+
+test("a per-request limit overrides the transport default", async () => {
+  // Tool calls get a long limit while the protocol's own requests keep the short one.
+  const t = new StdioTransport({ command: process.execPath, args: ["-e", "process.stdin.resume();"], timeoutMs: 60_000 });
+  try {
+    await assert.rejects(() => t.request("tools/call", undefined, undefined, 120), /timeout after 120ms/);
+  } finally {
+    await t.close();
+  }
+});
+
+test("aborting a request rejects it at once and tells the server to stop", async () => {
+  // Esc has to reach a tool call that is minutes into slow work. The server here never
+  // answers, so the only way out is the abort.
+  const t = new StdioTransport({
+    command: process.execPath,
+    args: ["-e", "process.stdin.on('data', (d) => process.stderr.write(d)); process.stdin.resume();"],
+    timeoutMs: 60_000,
+  });
+  try {
+    const controller = new AbortController();
+    const started = Date.now();
+    const pending = t.request("tools/call", { name: "slow" }, undefined, 60_000, controller.signal);
+    setTimeout(() => controller.abort(), 100);
+    await assert.rejects(() => pending, (e: Error & { code?: number }) => e.code === -32800 && /cancelled/.test(e.message));
+    assert.ok(Date.now() - started < 3_000, "it must not wait for the server or the timeout");
+    // The server was told which request to drop.
+    for (let i = 0; i < 50 && !/notifications\/cancelled/.test(t.stderr()); i++) await new Promise((r) => setTimeout(r, 40));
+    assert.match(t.stderr(), /notifications\/cancelled/);
+    assert.match(t.stderr(), /"requestId":1/);
+  } finally {
+    await t.close();
+  }
+});
+
+test("a request whose signal is already aborted never goes out", async () => {
+  const t = new StdioTransport({ command: process.execPath, args: ["-e", "process.stdin.resume();"], timeoutMs: 5_000 });
+  try {
+    await assert.rejects(() => t.request("tools/call", undefined, undefined, undefined, AbortSignal.abort()), /cancelled/);
+  } finally {
+    await t.close();
+  }
+});

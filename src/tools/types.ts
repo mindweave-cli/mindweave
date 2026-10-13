@@ -182,6 +182,8 @@ export interface ReadRecord {
 /** One item on the session task list (see todo_write). */
 /** What a running tool can report back before it finishes. */
 export interface ToolCallChannel {
+  /** This call's id, so a tool can tell the UI which row something belongs to. */
+  id?: string;
   /**
    * Output so far, for a call that has not finished.
    *
@@ -386,6 +388,12 @@ export interface ToolContext {
    * back to killing on timeout).
    */
   backgroundShells?: import("./backgroundShells.js").BackgroundShells;
+  /**
+   * Commands running right now with the turn waiting on them, and the person's way to move
+   * them to the background (ctrl+X). Client-side like `backgroundShells`; absent in bare
+   * test contexts, where nothing can be moved.
+   */
+  foregroundCommands?: import("./foregroundCommands.js").ForegroundCommands;
   /**
    * The per-turn undo net. Mutating tools hand a file's original bytes here before
    * changing it; the engine seals them into a checkpoint at turn end and `/undo`

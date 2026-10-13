@@ -152,6 +152,28 @@ export function isBackgroundPollStep(
 }
 
 /**
+ * What a failing call is counted AS (pure): an MCP tool counts as its SERVER.
+ *
+ * A model reaching for `open_binary`, then `binary_session`, then `list_adb_devices` on a
+ * server that is down is making the same mistake three times, and keying on the tool
+ * name made each a "different" failure, so the streak restarted every step.
+ */
+function failureKey(name: string): string {
+  const m = /^(mcp__.+?)__/.exec(name);
+  return m ? m[1]! : name;
+}
+
+/**
+ * A step made only of server-management calls (pure). Such a step neither is progress
+ * nor is a new kind of failure: it is the model fiddling with the thing that keeps
+ * failing. Letting it reset the repeat-failure streak is how an agent alternated
+ * "enable server" and "call its tool" nine times without the breaker ever tripping.
+ */
+export function isServerManagementStep(names: readonly string[]): boolean {
+  return names.length > 0 && names.every((n) => n === "mcp_server");
+}
+
+/**
  * Repeat-failure breaker (pure). A weaker model can get stuck firing the SAME thing
  * over and over when it keeps failing — an edit that errors "file not found" six times,
  * or ten near-identical PowerShell commands that all die with the same error — because
@@ -171,7 +193,7 @@ export function stepFailureSignature(
   // Any non-error result means the step made some progress — not a pure-failure step.
   if (!results.every((r) => r.isError)) return null;
   return results
-    .map((r) => `${r.name}:${normalizeErrorSignature(r.output)}`)
+    .map((r) => `${failureKey(r.name)}:${normalizeErrorSignature(r.output)}`)
     .sort()
     .join("|");
 }

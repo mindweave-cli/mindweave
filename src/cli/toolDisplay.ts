@@ -91,6 +91,18 @@ const COMMANDS = new Set(["run_command", "shells", "kill_shell"]);
  */
 const TEST_STEPS = new Set(["ui"]);
 
+/**
+ * A call to a tool an MCP server offers (`mcp__rea__open_binary`). They fold into the work
+ * row with commands and reads, as "Called 3 MCP tools", for the same reason those do: most
+ * answer something nobody needs to read, and a burst of them was a wall of rows.
+ */
+export function isMcpCall(name: string): boolean {
+  return name.startsWith("mcp__");
+}
+
+/** What a folded MCP call is named on its line. The tool is the point, the server says whose. */
+export const MCP_CALL_NAME = "MCP tool";
+
 /** Whether a call is the agent working in the shell. */
 export function isCommandTool(name: string): boolean {
   return COMMANDS.has(name);
@@ -158,7 +170,7 @@ export function neverShown(name: string): boolean {
 
 /** Whether a tool call should fold into the discovery group rather than its own row. */
 export function isGroupable(name: string): boolean {
-  return GROUPABLE.has(name) || COMMANDS.has(name) || TEST_STEPS.has(name);
+  return GROUPABLE.has(name) || COMMANDS.has(name) || TEST_STEPS.has(name) || isMcpCall(name) || name === "mcp_server";
 }
 
 /**
@@ -266,8 +278,16 @@ export function toolDisplay(name: string, args: Record<string, unknown>): ToolDi
   // per-server, see src/mcp/manager.ts) — parse it back into "MCPServer(server)"
   // the way the tool header for everything else reads.
   if (name.startsWith("mcp__")) {
-    const [, server] = name.split("__");
-    return { name: "MCPServer", arg: server || undefined, kind };
+    const [, server, ...rest] = name.split("__");
+    const tool = rest.join("__");
+    return { name: MCP_CALL_NAME, arg: server && tool ? `${server} · ${tool}` : server || undefined, kind };
+  }
+  // Changing a server's setup: the ACTION leads the argument ("MCP(add rea)", "MCP(reconnect
+  // rea)"), so the row says what was done before it says whether it worked.
+  if (name === "mcp_server") {
+    const action = typeof args.action === "string" && args.action.trim() ? args.action.trim() : "add";
+    const server = typeof args.name === "string" ? args.name.trim() : "";
+    return { name: "MCP", arg: server ? `${action} ${server}` : action, kind };
   }
 
   // Every REGISTERED tool has an entry above (enforced by test), so reaching the

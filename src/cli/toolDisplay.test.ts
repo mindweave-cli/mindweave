@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { toolKind, toolDisplay, dotColorFor, ERROR_COLOR, OK_COLOR, UNKNOWN_TOOL, narrationShown, noteReads } from "./toolDisplay.js";
+import { toolKind, toolDisplay, isGroupable, isMcpCall, dotColorFor, ERROR_COLOR, OK_COLOR, UNKNOWN_TOOL, narrationShown, noteReads } from "./toolDisplay.js";
 import { TOOLS } from "../tools/registry.js";
 import { toPathList } from "../tools/pathList.js";
 
@@ -35,10 +35,10 @@ test("a row's dot is red when it failed, green when work went through, and plain
   assert.equal(dotColorFor(undefined, "ok"), undefined);
 });
 
-test("mcp__server__tool parses back into MCPServer(server) for the header", () => {
+test("mcp__server__tool parses back into a server and a tool for the header", () => {
   const d = toolDisplay("mcp__sqlite-local__execute_query", {});
-  assert.equal(d.name, "MCPServer");
-  assert.equal(d.arg, "sqlite-local");
+  assert.equal(d.name, "MCP tool");
+  assert.equal(d.arg, "sqlite-local · execute_query");
   assert.equal(d.kind, "mcp");
 });
 
@@ -92,8 +92,8 @@ test("a tool the model invented renders under a plain name, not title-cased snak
 test("an MCP server's tool is never mistaken for an invented one", () => {
   // mcp__ names are generated per-server, so they can't be in the static map.
   const d = toolDisplay("mcp__sqlite-local__execute_query", {});
-  assert.equal(d.name, "MCPServer");
-  assert.equal(d.arg, "sqlite-local");
+  assert.equal(d.name, "MCP tool");
+  assert.equal(d.arg, "sqlite-local · execute_query");
 });
 
 test("a multi-file read names the files and says how many it covers", () => {
@@ -204,4 +204,22 @@ test("a first read of a file is visible; reading it again in the same turn is no
   noteReads(first, read);
   assert.equal(narrationShown([{ name: "read_file", args: { path: "src\\main.js", offset: 200 } }], read), false);
   assert.equal(narrationShown([{ name: "read_file", args: { paths: ["src/main.js", "src/other.js"] } }], read), true);
+});
+
+test("an MCP tool call and a server change fold into the same work row", () => {
+  assert.equal(isMcpCall("mcp__rea__open_binary"), true);
+  assert.equal(isGroupable("mcp__rea__open_binary"), true, "a burst of tool calls must not be a wall of rows");
+  assert.equal(isGroupable("mcp_server"), true, "a server change joins the same MCP row as the tool calls");
+  assert.equal(isMcpCall("mcp_server"), false);
+});
+
+test("a tool whose own name holds a double underscore keeps all of it", () => {
+  assert.equal(toolDisplay("mcp__rea__list__adb_devices", {}).arg, "rea · list__adb_devices");
+});
+
+test("a server change leads with the action", () => {
+  assert.deepEqual(
+    [toolDisplay("mcp_server", { name: "rea" }), toolDisplay("mcp_server", { action: "reconnect", name: "rea" }), toolDisplay("mcp_server", { action: "status" })].map((d) => `${d.name}(${d.arg})`),
+    ["MCP(add rea)", "MCP(reconnect rea)", "MCP(status)"],
+  );
 });

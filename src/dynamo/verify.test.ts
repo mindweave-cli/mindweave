@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isFileMutation, mutationNeedsVerification, looksLikeVerification, isVerification, reScopeCheck, isBackgroundPollStep, stepFailureSignature, normalizeErrorSignature, repeatFailureStep, repeatFailureNudge, failedActionLabel, firstErrorLine, narrationFault, narrationNudge, nearestTools, unknownToolError, replyFault, replyRewrite, REPLY_LINES, NARRATION_SENTENCES} from "./verify.js";
+import { isFileMutation, mutationNeedsVerification, looksLikeVerification, isVerification, reScopeCheck, isBackgroundPollStep, stepFailureSignature, isServerManagementStep, normalizeErrorSignature, repeatFailureStep, repeatFailureNudge, failedActionLabel, firstErrorLine, narrationFault, narrationNudge, nearestTools, unknownToolError, replyFault, replyRewrite, REPLY_LINES, NARRATION_SENTENCES} from "./verify.js";
 
 test("file mutations are the edit/write tools", () => {
   assert.ok(isFileMutation("edit"));
@@ -414,4 +414,20 @@ test("the rewrite instruction names the fault, not just 'be shorter'", () => {
   const length = replyRewrite(replyFault(Array.from({ length: 9 }, () => "Line.").join("\n"), true)!);
   assert.match(length, /9 lines/);
   assert.match(length, new RegExp(`${REPLY_LINES} lines or fewer`));
+});
+
+test("stepFailureSignature: different tools of ONE failing MCP server are the same failure", () => {
+  // open_binary, then binary_session, then list_adb_devices, each told the server is not
+  // running: one mistake three times, not three different failures.
+  const sig = (name: string) => stepFailureSignature([{ name, output: "Error: mcp server 'rea' is not running", isError: true }]);
+  assert.equal(sig("mcp__rea__open_binary"), sig("mcp__rea__binary_session"));
+  assert.notEqual(sig("mcp__rea__open_binary"), sig("mcp__other__open_binary"), "another server is another failure");
+  assert.notEqual(sig("run_command"), sig("edit"), "built-in tools still count by name");
+});
+
+test("isServerManagementStep: only a step made of mcp_server calls", () => {
+  assert.equal(isServerManagementStep(["mcp_server"]), true);
+  assert.equal(isServerManagementStep(["mcp_server", "mcp_server"]), true);
+  assert.equal(isServerManagementStep(["mcp_server", "run_command"]), false);
+  assert.equal(isServerManagementStep([]), false);
 });

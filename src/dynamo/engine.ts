@@ -20,7 +20,7 @@ import type { ChatMessage, ImagePart, ModelRequest, StopReason, StreamResult, Us
 import { summarizeTask, taskLimitReason, type TaskLimits } from "./pricing.js";
 import { limitGateReason, noteUsage, refreshUsageLimits, takeLimitWarnings } from "./usageLimits.js";
 import { addTurn, emptySpend } from "./spend.js";
-import { mutationNeedsVerification, isVerification, reScopeCheck, isBackgroundPollStep, stepFailureSignature, repeatFailureStep, repeatFailureNudge, failedActionLabel, firstErrorLine, sameFileEditCounts, overusedSingleEdits, batchEditNudge, narrationFault, narrationNudge, unknownToolError, replyFault, replyRewrite, VERIFY_NUDGE } from "./verify.js";
+import { isServerManagementStep, mutationNeedsVerification, isVerification, reScopeCheck, isBackgroundPollStep, stepFailureSignature, repeatFailureStep, repeatFailureNudge, failedActionLabel, firstErrorLine, sameFileEditCounts, overusedSingleEdits, batchEditNudge, narrationFault, narrationNudge, unknownToolError, replyFault, replyRewrite, VERIFY_NUDGE } from "./verify.js";
 import { guardOptions, GUARD_NO_ONE_TO_ASK, GUARD_REFUSAL, GUARD_REFUSAL_INPUT, guardRefusalWith, guardQuestion, guardDetail, interpretGuardChoice } from "./guard.js";
 import { readFreeText } from "../tools/approval.js";
 import { withoutInvisible } from "../tools/invisible.js";
@@ -1221,6 +1221,7 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
   // it had. It also pins the exact `tools` bytes across the turn's steps, which is what
   // keeps the provider's cached prefix intact while the tool loop runs.
   let mcpTurn = session.toolContext.mcp?.snapshot(readOnlyTurn);
+  let mcpRevision = session.toolContext.mcp?.revision?.() ?? 0;
   // Recomputed PER STEP, not once per turn: a large catalog is held behind
   // `find_mcp_tools`, and a tool the model just searched for has to be callable on the
   // very next step or the search was a lie. When nothing is deferred (the common case)
@@ -1233,10 +1234,15 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
     // The last turn of a sub-agent out of steps: it may speak, and nothing else.
     if (session.toolContext.noTools) return [];
     const ro = (session.toolContext.planMode ?? false) || session.toolContext.readOnlyTools === true;
-    if (ro !== readOnlyTurn) {
+    const mcpNow = session.toolContext.mcp?.revision?.() ?? 0;
+    if (ro !== readOnlyTurn || mcpNow !== mcpRevision) {
       // The MCP catalog is re-snapshotted too, or approving a plan would grant the
       // built-in editing tools while leaving every MCP action hidden until next turn.
+      // The same when a server came up, went down or changed its tools DURING the turn
+      // (the model just added one, or restarted one): the view is taken again at the
+      // start of the next step, never between advertising a tool and dispatching it.
       readOnlyTurn = ro;
+      mcpRevision = mcpNow;
       mcpTurn = session.toolContext.mcp?.snapshot(ro);
     }
     return [
@@ -2019,6 +2025,7 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
           : null;
         try {
           result = await tool.execute(parseArgs(call.arguments), session.toolContext, {
+            id: call.id,
             progress: (text) => options.onEvent?.({ type: "tool", phase: "progress", id: call.id, text }),
           });
         } finally {
@@ -2349,7 +2356,9 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
     const failSig = stepFailureSignature(
       results.map((r) => ({ name: r.call.name, output: r.output, isError: !!r.isError })),
     );
-    if (failSig) {
+    if (isServerManagementStep(results.map((r) => r.call.name))) {
+      // Leaves the streak exactly as it was: neither progress nor a new failure.
+    } else if (failSig) {
       if (failSig === lastFailSig) {
         repeatFailStreak++;
       } else {
