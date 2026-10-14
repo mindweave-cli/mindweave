@@ -77,6 +77,14 @@ function escapeHarnessMarkers(own: RegExp): RegExp {
   return new RegExp(`${own.source}|<(/?\\s*(?:${names}))(?=[\\s>/])`, "gi");
 }
 
+/**
+ * Text with the harness's own tags defanged (pure), for content that is not wrapped in a tag of its own
+ * but must not be able to pass for something Mindweave said: the output of a command.
+ */
+export function defangHarnessMarkers(text: string): string {
+  return text.replace(new RegExp(`<(/?\s*(?:${HARNESS_TAGS.join("|")}))(?=[\s>/])`, "gi"), "&lt;$1");
+}
+
 /** Keep a quoted attribute from breaking the tag it sits on. */
 function escapeAttr(value: string): string {
   return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");

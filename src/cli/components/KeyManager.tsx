@@ -14,8 +14,10 @@
  */
 import { Box, Text, useInput } from "ink";
 import TextInput from "ink-text-input";
-import { useState } from "react";
+import { useLayoutEffect, useState } from "react";
+import { matchesWords, wordsOf } from "../commandArgs.js";
 import { stripMouse } from "../mouse.js";
+import { setPickerSearchActive, setPickerSearchText } from "../pickerSearch.js";
 import {
   ACTION_ACTIVATE,
   ACTION_BACK,
@@ -101,6 +103,9 @@ export function KeyManager({
     return { kind: "providers" };
   });
   const [sel, setSel] = useState(0);
+  // The words typed to find a provider. They are drawn in the input box (see pickerSearch.ts),
+  // and only the provider list is a search: the screens under it are not.
+  const [query, setQuery] = useState("");
   const [value, setValue] = useState("");
   const [shown, setShown] = useState<string | null>(null);
 
@@ -110,9 +115,28 @@ export function KeyManager({
   // already are — that is what makes adding a second, or a fifth, obvious.
   const canAdd = mode.kind === "keys" ? nextSlot(mode.provider) !== null : false;
 
+  // The providers that match what was typed, by name, by how many keys they hold, or by id.
+  const found = (() => {
+    const words = wordsOf(query);
+    return words.length === 0 ? providers : providers.filter((p) => matchesWords(words, p.label, countLabel(p.count), p.id));
+  })();
+
+  const searching = mode.kind === "providers";
+  useLayoutEffect(() => {
+    setPickerSearchActive(searching);
+    setPickerSearchText(searching ? query : "");
+  }, [searching, query]);
+  useLayoutEffect(
+    () => () => {
+      setPickerSearchText("");
+      setPickerSearchActive(true);
+    },
+    [],
+  );
+
   const count =
     mode.kind === "providers"
-      ? providers.length
+      ? found.length
       : mode.kind === "keys"
         ? keys.length + (canAdd ? 1 : 0)
         : mode.kind === "actions"
@@ -129,14 +153,43 @@ export function KeyManager({
   }
 
   useInput(
-    (input, key) => {
+    (raw, key) => {
+      // Wheel reports arrive as typed text once reporting is on; they are not keystrokes.
+      const input = stripMouse(raw);
+      if (input === "" && raw !== "") return;
+      // On the provider list, Esc takes the search away first and only then goes back, and
+      // Backspace edits it. With nothing typed both do what they always did.
+      if (mode.kind === "providers" && query) {
+        if (key.escape) {
+          setQuery("");
+          setSel(0);
+          return;
+        }
+        if (key.backspace || key.delete) {
+          setQuery((q) => q.slice(0, -1));
+          setSel(0);
+          return;
+        }
+      }
       if (key.escape) return back();
       // Backspace and Delete step back exactly as Escape does. Deleting what you just chose
       // is the instinctive way out, and while a list is showing there is nothing else those
       // keys could mean; in the entry field they belong to the key being typed, and while a
       // list is empty stepping back is the only thing left to do.
       if ((key.backspace || key.delete) && mode.kind !== "enter") return back();
-      if (mode.kind === "enter" || count === 0) return;
+      if (mode.kind === "enter") return;
+      // Typing on the provider list is a search. A single digit with nothing typed yet is
+      // still the shortcut for that row, as it was; once there are words, digits are part of them.
+      if (mode.kind === "providers" && !key.upArrow && !key.downArrow && !key.return) {
+        const n = Number.parseInt(input, 10);
+        if (!query && Number.isInteger(n) && n >= 1 && n <= Math.min(9, count)) return commit(n - 1);
+        if (input && !key.ctrl && !key.meta && !key.tab && !/[\u0000-\u001f]/.test(input)) {
+          setQuery((q) => q + input);
+          setSel(0);
+          return;
+        }
+      }
+      if (count === 0) return;
       if (key.upArrow) setSel((s) => (s - 1 + count) % count);
       else if (key.downArrow) setSel((s) => (s + 1) % count);
       else if (key.return) commit(sel);
@@ -152,9 +205,10 @@ export function KeyManager({
   function commit(index: number) {
     setShown(null);
     if (mode.kind === "providers") {
-      const provider = providers[index];
+      const provider = found[index];
       if (!provider) return;
       setSel(0);
+      setQuery("");
       // A provider with no keys goes straight to the field: there is no list to show, and
       // one more press to reach the only thing you could have wanted is a press wasted.
       const slot = nextSlot(provider);
@@ -270,22 +324,28 @@ export function KeyManager({
     );
   }
 
-  const start = windowStart(sel, providers.length, win);
+  const start = windowStart(sel, found.length, win);
   return (
     <Panel
       title="Keys"
-      counter={position(sel, providers.length, win)}
-      rows={Math.min(win, providers.length - start)}
+      counter={position(sel, found.length, win)}
+      rows={Math.min(win, found.length - start)}
       maxRows={maxRows}
       width={width}
-      hint="↑/↓ · Enter to choose · Esc or ⌫  close"
+      hint={
+        query
+          ? found.length === 0
+            ? "nothing matches · ⌫ edit · Esc clears the search"
+            : "↑/↓ · Enter to choose · ⌫ edit · Esc clears the search"
+          : "type to search · ↑/↓ · Enter to choose · Esc or ⌫  close"
+      }
     >
-      {providers.slice(start, start + win).map((p, i) => (
+      {found.slice(start, start + win).map((p, i) => (
         <Row
           key={p.id}
           on={start + i === sel}
           n={start + i + 1}
-          numWidth={String(providers.length).length}
+          numWidth={String(found.length).length}
           left={p.label}
           right={countLabel(p.count)}
           rightColor={p.count > 0 ? GOOD : undefined}

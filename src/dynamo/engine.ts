@@ -1022,8 +1022,10 @@ export function backgroundEventNote({
         ? "the user stopping their own app"
         : "most likely the user closing their own app";
     return (
-      `[Background shell #${info.id} (\`${info.command}\`) ${status}. It had already started up, so ` +
-      `this is ${who}, not a failure.]\n` +
+      `[Background shell #${info.id} (\`${info.command}\`) ${status}. ` +
+      // "Started up" is only said when it is known: an app stopped inside the startup grace was never
+      // seen to come up, and this note must not claim it did.
+      (info.ready ? `It had already started up, so this is ${who}, not a failure.]\n` : `This is ${who}, not a failure.]\n`) +
       `This is background information only. Do NOT mention it unless it is relevant, do NOT restart ` +
       `it, and do NOT change any files because of it. If the user later asks about this app, you now ` +
       `know it is stopped.`
@@ -1305,7 +1307,7 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
   // current file content regardless.
   if (session.taskJustCompleted && !isContinuation(lastUserText(session))) {
     const swept = microcompact(session.transcript, KEEP_LAST_N_BOUNDARY, new Set(), true);
-    if (swept.cleared > 0 || swept.recapsCleared > 0) {
+    if (swept.cleared > 0 || swept.recapsCleared > 0 || swept.localCommandsCleared > 0) {
       session.transcript = keepClearedOriginals(session, swept.entries);
       // Silent by design — closing out a finished task is background housekeeping, not
       // something the user should watch scroll by.
@@ -2496,7 +2498,9 @@ function turnOpener(session: Session): Entry | undefined {
 function lastUserText(session: Session): string {
   for (let i = session.transcript.length - 1; i >= 0; i--) {
     const e = session.transcript[i]!;
-    if (e.role === "user") {
+    // A command the person ran with `!` is not what they asked for: the words that say what the turn
+    // is for are the last thing they TYPED (it decides, among other things, whether this continues the task).
+    if (e.role === "user" && !e.localCommand) {
       const oneLine = e.content.replace(/\s+/g, " ").trim();
       return oneLine.length > 60 ? oneLine.slice(0, 57) + "…" : oneLine;
     }

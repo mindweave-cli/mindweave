@@ -17,9 +17,9 @@
  */
 
 /** Lines one notch of the wheel moves. */
-export const LINES_PER_NOTCH = 4;
+export const LINES_PER_NOTCH = 5;
 /** The most one input chunk moves, in lines (four notches). */
-export const MAX_LINES_PER_CHUNK = 16;
+export const MAX_LINES_PER_CHUNK = 20;
 
 /**
  * The signed distance for a chunk carrying `net` notches (up positive).

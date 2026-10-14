@@ -8,16 +8,33 @@
  * existed says the same thing.
  */
 import type { WorkItem } from "./transcript.js";
-import { MCP_CALL_NAME } from "./toolDisplay.js";
+import { MCP_CALL_NAME, VIEWED_NAME } from "./toolDisplay.js";
 
 /** Whether this call read a file (or a symbol of one), rather than ran something. */
 export function isRead(it: WorkItem): boolean {
   return it.kind === "read";
 }
 
+/** Whether this call opened a picture for the agent to look at. */
+export function isView(it: WorkItem): boolean {
+  return it.name === VIEWED_NAME;
+}
+
 /** Whether this call was a step of a UI test: a look at the app, a click, something typed. */
 export function isStep(it: WorkItem): boolean {
-  return it.kind === "screenshot";
+  return it.kind === "screenshot" && !isView(it);
+}
+
+/**
+ * What a viewed picture's line says at its right (pure): its format, size and dimensions.
+ * A chat saved before that was kept said `viewed name.webp (image)`, which is cut down to
+ * what is in the brackets rather than repeating the name the line already starts with.
+ */
+export function viewSummary(it: WorkItem): string {
+  const said = (it.summary ?? "").trim();
+  if (it.status === "error") return said ? `✗ ${said}` : "✗";
+  const old = /^viewed .+ \((.+)\)$/.exec(said);
+  return old ? old[1]! : said || "✓";
 }
 
 /** Whether this call was a tool an MCP server offers (not a change to a server's setup). */
@@ -42,9 +59,9 @@ export function stepCount(items: WorkItem[]): number {
   return items.filter(isStep).reduce((n, it) => n + Math.max(1, it.covers ?? 1), 0);
 }
 
-/** Which of the three kinds of work a call is. */
-function workKind(it: WorkItem): "run" | "read" | "step" | "tool" | "setup" {
-  return isRead(it) ? "read" : isStep(it) ? "step" : isMcp(it) ? "tool" : isServerChange(it) ? "setup" : "run";
+/** Which kind of work a call is. */
+function workKind(it: WorkItem): "run" | "read" | "view" | "step" | "tool" | "setup" {
+  return isRead(it) ? "read" : isView(it) ? "view" : isStep(it) ? "step" : isMcp(it) ? "tool" : isServerChange(it) ? "setup" : "run";
 }
 
 /** The files one read call took, by name: a list call names each, any other names one. */
@@ -73,13 +90,16 @@ export function fileCount(items: WorkItem[]): number {
  * commands", not "Running 3 commands" above a mark that shows two of them finished.
  */
 export function workHeader(items: WorkItem[], live: boolean | undefined): { text: string; working: boolean } {
-  const order: ("run" | "read" | "step" | "tool" | "setup")[] = [];
+  const order: ("run" | "read" | "view" | "step" | "tool" | "setup")[] = [];
   for (const it of items) {
     const k = workKind(it);
     if (!order.includes(k)) order.push(k);
   }
   const parts = order.map((k, i) => {
     const mine = items.filter((it) => workKind(it) === k);
+    // Commands the person ran themselves are said to be theirs. A row never mixes the two (see the
+    // transcript), so this is all of them or none.
+    const yours = k === "run" && mine.length > 0 && mine.every((it) => it.byUser);
     const going = !live ? [] : mine.filter((it) => it.status === "running");
     // Server changes are counted by SERVER: enabling, removing and adding "rea" is one server
     // being worked on, not three of them.
@@ -88,12 +108,12 @@ export function workHeader(items: WorkItem[], live: boolean | undefined): { text
     const n = size(mine);
     const nGoing = size(going);
     const noun =
-      k === "read" ? (n === 1 ? "file" : "files") : k === "step" ? (n === 1 ? "step" : "steps") : k === "tool" ? (n === 1 ? "MCP tool" : "MCP tools") : k === "setup" ? (n === 1 ? "MCP server" : "MCP servers") : n === 1 ? "command" : "commands";
+      k === "read" ? (n === 1 ? "file" : "files") : k === "view" ? (n === 1 ? "image" : "images") : k === "step" ? (n === 1 ? "step" : "steps") : k === "tool" ? (n === 1 ? "MCP tool" : "MCP tools") : k === "setup" ? (n === 1 ? "MCP server" : "MCP servers") : n === 1 ? "command" : "commands";
     const count = going.length > 0 && nGoing < n ? `${nGoing} of ${n}` : `${n}`;
     const verb =
       going.length > 0
-        ? k === "read" ? "Reading" : k === "step" ? "Testing" : k === "tool" ? "Calling" : k === "setup" ? "Managing" : "Running"
-        : k === "read" ? "Read" : k === "step" ? "Tested" : k === "tool" ? "Called" : k === "setup" ? "Managed" : "Ran";
+        ? k === "read" ? "Reading" : k === "view" ? "Viewing" : k === "step" ? "Testing" : k === "tool" ? "Calling" : k === "setup" ? "Managing" : "Running"
+        : k === "read" ? "Read" : k === "view" ? "Viewed" : k === "step" ? "Tested" : k === "tool" ? "Called" : k === "setup" ? "Managed" : yours ? "You ran" : "Ran";
     const text = `${verb} ${count} ${noun}`;
     return i === 0 ? text : text.charAt(0).toLowerCase() + text.slice(1);
   });

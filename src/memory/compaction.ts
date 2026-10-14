@@ -26,6 +26,7 @@
 import type { Entry } from "./types.js";
 import { fullPathsOf } from "./types.js";
 import { estimateImagesTokens } from "./images.js";
+import { clearedLocalCommand } from "./localCommand.js";
 
 // ~3.5 chars/token, deliberately tokenizer-free: triggers need a cheap, stable,
 // slightly-conservative proxy, not an exact count (better to compact a touch
@@ -258,6 +259,8 @@ export function microcompact(
   inputsCleared: number;
   imagesCleared: number;
   attachmentsCleared: number;
+  /** Old output of commands the person ran themselves with `!`, taken out of the model's copy. */
+  localCommandsCleared: number;
 } {
   const toolIdx = entries.flatMap((e, i) => (e.role === "tool" ? [i] : []));
   let clearable = new Set(keepLastN > 0 ? toolIdx.slice(0, -keepLastN) : toolIdx);
@@ -381,6 +384,7 @@ export function microcompact(
   let inputsCleared = 0;
   let imagesCleared = 0;
   let attachmentsCleared = 0;
+  let localCommandsCleared = 0;
   const clearedIds: string[] = [];
   const out = entries.map((e, i) => {
     // 1) Old tool-result bodies → stub (with first line kept for navigation).
@@ -439,6 +443,16 @@ export function microcompact(
     //    dropping the picture the model was in the middle of looking at. The comment
     //    here claimed the two windows already matched. They did not.
     if (i < imageBoundary && e.role === "user") {
+      // 6) The output of an old command the person ran with `!`. It is as dead weight as any old
+      //    command's output, and the agent cannot fetch it again (it did not run it), so what is left
+      //    says who ran it, what it was and how it ended, and that the person can run it again.
+      if (e.localCommand) {
+        const gone = clearedLocalCommand(e, estimateTokens);
+        if (gone) {
+          localCommandsCleared++;
+          return gone;
+        }
+      }
       // 5) Old attached files. A file attached with @ or a drop became part of the user
       //    message, and nothing cleared it: a 250 KB attachment (about 70K tokens) rode in
       //    every request for the rest of the session, while the same file read through
@@ -457,10 +471,10 @@ export function microcompact(
     return e;
   });
 
-  if (cleared === 0 && recapsCleared === 0 && inputsCleared === 0 && imagesCleared === 0 && attachmentsCleared === 0) {
-    return { entries: [...entries], cleared: 0, clearedIds: [], recapsCleared: 0, inputsCleared: 0, imagesCleared: 0, attachmentsCleared: 0 };
+  if (cleared === 0 && recapsCleared === 0 && inputsCleared === 0 && imagesCleared === 0 && attachmentsCleared === 0 && localCommandsCleared === 0) {
+    return { entries: [...entries], cleared: 0, clearedIds: [], recapsCleared: 0, inputsCleared: 0, imagesCleared: 0, attachmentsCleared: 0, localCommandsCleared: 0 };
   }
-  return { entries: out, cleared, clearedIds, recapsCleared, inputsCleared, imagesCleared, attachmentsCleared };
+  return { entries: out, cleared, clearedIds, recapsCleared, inputsCleared, imagesCleared, attachmentsCleared, localCommandsCleared };
 }
 
 /** What replaces an old attachment's body (see clearAttachmentBodies). */

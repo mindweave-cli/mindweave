@@ -110,6 +110,23 @@ const IDLE_REPAINT_MS = 400;
  * that flips screen modes, which has no access to it.
  */
 let enabled = true;
+
+/**
+ * Whether the screen has been handed back for good.
+ *
+ * Set by the exit path once the alternate screen has been left. Everything written after
+ * that point would land in the user's own terminal, not in the buffer this app drew in:
+ * Ink's exit hook runs AFTER ours and flushes a pending frame and renders a last one, and
+ * each of those was written into the shell, leaving the whole conversation, the input box
+ * and an open menu printed over the scrollback, with the shell's prompt on top of them.
+ * Once closed, nothing more reaches the terminal through this stream.
+ */
+let closed = false;
+
+/** Stop (or, for tests, resume) writing to the terminal. See `closed`. */
+export function setFramebufferClosed(on: boolean): void {
+  closed = on;
+}
 /**
  * Set to force the NEXT frame to repaint every cell, not just the diff.
  *
@@ -204,6 +221,14 @@ function caretTail(): string {
 }
 
 export function framebufferStdout<T extends OutputStream>(real: T, onFrame?: (stats: FrameStats) => void): T {
+  /** Every write to the real stream goes through here, so closing it stops all of them. */
+  const send = (data: string, callback?: (err?: Error | null) => void): boolean => {
+    if (closed) {
+      callback?.(null);
+      return true;
+    }
+    return real.write(data, callback);
+  };
   // The grid currently on the terminal, and the one being built for this frame. Two
   // long-lived buffers, swapped — never reallocated per frame, which is the whole
   // reason the cell data is in typed arrays.
@@ -370,7 +395,7 @@ export function framebufferStdout<T extends OutputStream>(real: T, onFrame?: (st
     lastCursor = caretTail();
     lastShown = lastCursor;
     const painted = escape === "" ? lastCursor : SYNC_START + escape + lastCursor + SYNC_END;
-    if (painted !== "") real.write(painted);
+    if (painted !== "") send(painted);
   }
 
   /**
@@ -419,7 +444,7 @@ export function framebufferStdout<T extends OutputStream>(real: T, onFrame?: (st
     lastCursor = caretTail();
     lastShown = lastCursor;
     const painted = escape === "" ? lastCursor : SYNC_START + escape + lastCursor + SYNC_END;
-    if (painted !== "") real.write(painted);
+    if (painted !== "") send(painted);
   }
   setOverlayRepaint(refreshOverlay);
 
@@ -450,7 +475,7 @@ export function framebufferStdout<T extends OutputStream>(real: T, onFrame?: (st
       if (parked === lastShown) return;
       lastShown = parked;
       lastCursor = parked;
-      real.write(parked);
+      send(parked);
     });
   });
 
@@ -511,7 +536,7 @@ export function framebufferStdout<T extends OutputStream>(real: T, onFrame?: (st
         // not produce it a second time, so `onReenable` paints from what is kept here.
         // Only writes that carry cells — a bare control sequence is not a frame.
         if (data.replace(ANY_ESCAPE, "").trim() !== "") lastFrameData = data;
-        return real.write(data, callback);
+        return send(data, callback);
       }
 
       // A write that is NOTHING BUT AN ERASE. Swallowed, and this is the whole reason a
@@ -546,7 +571,7 @@ export function framebufferStdout<T extends OutputStream>(real: T, onFrame?: (st
       // Forward verbatim — this is how the alternate screen is entered, the cursor
       // hidden, and frames wrapped in synchronized-update markers, none of which we may
       // swallow.
-      if (bare === "") return real.write(data, callback);
+      if (bare === "") return send(data, callback);
 
       // Escapes plus nothing but CONTROL characters — in practice a stray newline.
       //
@@ -646,7 +671,7 @@ export function framebufferStdout<T extends OutputStream>(real: T, onFrame?: (st
         callback?.(null);
         return true;
       }
-      return real.write(out, callback);
+      return send(out, callback);
   };
 
   return new Proxy(real, {

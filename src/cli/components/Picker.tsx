@@ -12,11 +12,12 @@
  * `active` so exactly one input owner is live at a time (the prompt is disabled
  * while a picker is open).
  */
-import { useMemo, useState } from "react";
+import { useLayoutEffect, useMemo, useState } from "react";
 import { Box, Text, useInput } from "ink";
 import { clipRows } from "../wrap.js";
 import { matchesWords, wordsOf } from "../commandArgs.js";
 import { stripMouse } from "../mouse.js";
+import { setPickerSearchText } from "../pickerSearch.js";
 import { ACCENT } from "../theme.js";
 
 export interface PickerItem {
@@ -68,6 +69,12 @@ interface PickerProps {
   maxRows?: number;
   /** Text the filter starts with, e.g. what `/model <words>` matched several of. */
   initialFilter?: string;
+  /**
+   * The words typed here are shown in the INPUT box (the caller gives it a placeholder of its
+   * own), not on the hint row, so a long list is searched in the place the eye already is.
+   * Esc then clears the search first and only closes the picker once there is none.
+   */
+  searchBox?: boolean;
 }
 
 const MAX_VISIBLE = 10;
@@ -104,6 +111,7 @@ export function Picker({
   rightAlignDescription = false,
   maxRows = MAX_VISIBLE,
   initialFilter = "",
+  searchBox = false,
 }: PickerProps) {
   // Same window size as the command menu (App clamps maxRows to a safe ceiling), so the
   // picker box and the command box are the SAME fixed height.
@@ -120,6 +128,19 @@ export function Picker({
   );
   const count = matching.length;
 
+  // What is typed here is drawn by the input box when this picker is a search (see
+  // pickerSearch.ts). Set before the frame is painted so the box never shows the old words.
+  useLayoutEffect(() => {
+    if (searchBox) setPickerSearchText(filter);
+  }, [searchBox, filter]);
+  // And put away with the picker, so the next one starts from nothing.
+  useLayoutEffect(
+    () => () => {
+      if (searchBox) setPickerSearchText("");
+    },
+    [searchBox],
+  );
+
   useInput(
     (raw, key) => {
       // With wheel reporting on, a scroll arrives as bytes like `[<65;43;30M` that Ink
@@ -132,8 +153,14 @@ export function Picker({
       else if (key.return) {
         const picked = matching[sel];
         if (picked !== undefined) onSelect(picked);
-      } else if (key.escape) onCancel();
-      else if (key.backspace || key.delete) {
+      } else if (key.escape) {
+        // A search is left in two steps: the first Esc takes the words away and shows the whole
+        // list, the second closes. Anything else closes at once, as it always did.
+        if (searchBox && filter) {
+          setFilter("");
+          setSel(0);
+        } else onCancel();
+      } else if (key.backspace || key.delete) {
         // Backspace edits the filter while there is one. With none, it closes: the input
         // line above is empty, so a delete is the natural "take it back" — the same
         // gesture that removes the `/` and closes the command menu.
@@ -258,7 +285,16 @@ export function Picker({
         {/* Backspace goes back as well as Escape, and saying so is the only way that is
             discoverable: the instinct on a screen you opened by mistake is to delete your
             way out of it, and a hint that names only Escape reads as if nothing else works. */}
-        {filter ? (
+        {searchBox ? (
+          // The words are in the input box; this row only says what the keys do.
+          <Text dimColor>
+            {filter
+              ? count === 0
+                ? "nothing matches · ⌫ edit · Esc clears the search"
+                : "↑/↓ move · Enter select · ⌫ edit · Esc clears the search"
+              : "type to search · ↑/↓ move · Enter select · Esc back"}
+          </Text>
+        ) : filter ? (
           // The filter lives on the hint row, which always exists, so typing never changes
           // the box's height.
           <Box width={rowWidth}>

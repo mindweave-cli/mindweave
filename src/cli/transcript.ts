@@ -58,6 +58,8 @@ export interface WorkItem {
   kind?: ToolKind;
   /** How many files one read call took (`read_file` takes a list). */
   covers?: number;
+  /** The person ran this themselves, with `!`: the row says so, and it never shares a row with the agent's own calls. */
+  byUser?: boolean;
   /** The call's one-line result, when there is no block of output ("Backgrounded as shell #1"). */
   summary?: string;
   /** The same line, as a read leaves it ("read menu.ts lines 410-551"). */
@@ -176,6 +178,9 @@ export type Block =
    *  assistant block because Mindweave did not say it: it is a statement of what is
    *  about to happen, and it must not read as chat the user can skim past. */
   | { kind: "notice"; id: number; done: boolean; title: string; body: string }
+  /** The command list (`/help`): a long block of Mindweave's own text that is not part of the
+   *  conversation. Drawn apart from it, and a click takes it away completely. Never saved. */
+  | { kind: "help"; id: number; done: boolean; text: string }
   /** A compaction pass, with the before/after bars. See cli/compaction.ts for why this
    *  one piece of context machinery is shown when the rest stays invisible. */
   | { kind: "compaction"; id: number; done: boolean; report: CompactionReport };
@@ -205,7 +210,7 @@ export type Action =
   | { type: "token"; delta: string }
   /** `at`: when the call really started. The row can reach the screen a beat later, and a
    *  running command counts its time from the start, not from when it was shown. */
-  | { type: "toolStart"; toolId: string; name: string; arg?: string; meta?: string; action?: ToolKind; group?: boolean; covers?: number; at?: number }
+  | { type: "toolStart"; toolId: string; name: string; arg?: string; meta?: string; action?: ToolKind; group?: boolean; covers?: number; at?: number; byUser?: boolean }
   /** Output from a call that has NOT finished, so a command running for minutes says
    *  what it is doing instead of sitting silent. Carries the latest tail rather than an
    *  increment: the row replaces what it shows, so a dropped update costs nothing and
@@ -249,6 +254,7 @@ export type Action =
   | { type: "note"; text: string } // dim meta line (committed directly)
   | { type: "context"; text: string } // a set-off context/compaction line
   | { type: "notice"; title: string; body: string } // titled facts on a rail
+  | { type: "help"; text: string } // the command list, set apart; a click removes it
   | { type: "compaction"; report: CompactionReport } // a compaction pass, with bars
   | { type: "say"; text: string } // an assistant markdown block, NOT recorded as the reply
   | { type: "toggleExpand"; id: number } // a click on a row: show all of it, or fold it back
@@ -304,7 +310,7 @@ export function lastExpandable(s: TranscriptState): number | null {
   for (const list of [s.tail, s.committed]) {
     for (let i = list.length - 1; i >= 0; i--) {
       const b = list[i]!;
-      if ((b.kind === "tool" && b.full) || b.kind === "work" || b.kind === "subagent") return b.id;
+      if ((b.kind === "tool" && b.full) || b.kind === "work" || b.kind === "subagent" || b.kind === "help") return b.id;
     }
   }
   return null;
@@ -514,21 +520,27 @@ export function reduce(s: TranscriptState, a: Action): TranscriptState {
           status: "running",
           startedAt: a.at ?? Date.now(),
           ...(a.covers ? { covers: a.covers } : {}),
+          ...(a.byUser ? { byUser: true } : {}),
         };
-        const open = sealed.tail.find((b) => b.kind === "work" && !b.closed);
+        // A command the person ran and a call the agent made are never in one row: "You ran" would
+        // be a claim about calls that are not theirs. Whichever is open when the other kind arrives
+        // is closed first.
+        const found = sealed.tail.find((b) => b.kind === "work" && !b.closed);
+        const open = found && found.kind === "work" && found.items.every((it) => !!it.byUser === !!a.byUser) ? found : undefined;
+        const base = found && !open ? closeToolGroup(sealed) : sealed;
         if (open && open.kind === "work") {
           return {
             ...sealed,
             toolMap: { ...sealed.toolMap, [a.toolId]: open.id },
-            tail: sealed.tail.map((b) => (b.id === open.id && b.kind === "work" ? { ...b, items: [...b.items, item], done: false } : b)),
+            tail: sealed.tail.map((b) => (b.id === open.id && b.kind === "work" ? { ...b, items: [...b.items, item], done: false, live: true } : b)),
           };
         }
-        const gid = sealed.seq + 1;
+        const gid = base.seq + 1;
         return {
-          ...sealed,
+          ...base,
           seq: gid,
-          toolMap: { ...sealed.toolMap, [a.toolId]: gid },
-          tail: sealed.tail.concat({ kind: "work", id: gid, done: false, live: true, items: [item] }),
+          toolMap: { ...base.toolMap, [a.toolId]: gid },
+          tail: base.tail.concat({ kind: "work", id: gid, done: false, live: true, items: [item] }),
         };
       }
 
@@ -625,6 +637,12 @@ export function reduce(s: TranscriptState, a: Action): TranscriptState {
       return drain({ ...sealed, seq: id, tail: sealed.tail.concat({ kind: "error", id, done: true, text: a.text }) });
     }
     case "toggleExpand": {
+      // The command list is not opened or folded: a click takes it away, and the conversation
+      // is as it was before it was asked for.
+      const isHelp = (b: Block): boolean => b.kind === "help" && b.id === a.id;
+      if (s.committed.some(isHelp) || s.tail.some(isHelp)) {
+        return { ...s, committed: s.committed.filter((b) => !isHelp(b)), tail: s.tail.filter((b) => !isHelp(b)) };
+      }
       // Committed rows too: every block is re-rendered each frame, and the row being
       // clicked is nearly always one that finished a while ago.
       const flip = (b: Block): Block =>
@@ -693,6 +711,11 @@ export function reduce(s: TranscriptState, a: Action): TranscriptState {
       const c = closeToolGroup(s);
       const id = c.seq + 1;
       return drain({ ...c, seq: id, tail: c.tail.concat({ kind: "notice", id, done: true, title: a.title, body: a.body }) });
+    }
+    case "help": {
+      const c = closeToolGroup(s);
+      const id = c.seq + 1;
+      return drain({ ...c, seq: id, tail: c.tail.concat({ kind: "help", id, done: true, text: a.text }) });
     }
     case "compaction": {
       const c = closeToolGroup(s);

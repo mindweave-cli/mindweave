@@ -17,7 +17,8 @@
  * that it is being told rather than shown. A tool never asks which provider is running.
  */
 import { promises as fs } from "node:fs";
-import { basename } from "node:path";
+import { extname } from "node:path";
+import { humanSize } from "../mcp/resultStore.js";
 import type { Tool, ToolResult } from "./types.js";
 import { describeImage, isImage, isRejection, IMAGE_EXTS } from "../memory/images.js";
 import { guardedPathReason } from "./guard.js";
@@ -83,11 +84,22 @@ export const viewImage: Tool = {
 
     const shown = relativize(ctx, path);
     const size = ref.width && ref.height ? `${ref.width}x${ref.height}` : "image";
+    // What the row says about the picture (display only, never sent to the model): the whole
+    // path, the format, how big it is on screen when that could be read, and how big the file is.
+    const format = extname(path).slice(1).toLowerCase();
+    const dimensions = ref.width && ref.height ? `${ref.width}×${ref.height}` : "";
+    const fileSize = humanSize(stat.size);
     return {
       output:
         `Opened ${shown} (${size}). The image follows this result — look at it and say ` +
         `what you see.`,
-      summary: `viewed ${basename(path)} (${size})`,
+      summary: [format, dimensions, fileSize].filter(Boolean).join(" · "),
+      detail: [
+        `File        ${path.replace(/\\/g, "/")}`,
+        ...(format ? [`Format      ${format}`] : []),
+        ...(dimensions ? [`Dimensions  ${dimensions}`] : []),
+        `Size        ${fileSize}`,
+      ].join("\n"),
       images: [ref],
       // The picture is the slow part, and it happens AFTER this returns.
       awaitsModel: true,

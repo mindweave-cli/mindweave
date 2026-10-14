@@ -20,7 +20,7 @@ import type { Tool, ToolResult } from "./types.js";
 import type { SearchResult } from "../drivers/types.js";
 import { activeDriver } from "../drivers/registry.js";
 import { frameExternal } from "./untrusted.js";
-import { outputDetail } from "./detail.js";
+import { FULL_DETAIL_MAX, SEARCH_PREVIEW_SOURCES, capLines, collapseBlanks, outputDetail, stripAnsi } from "./detail.js";
 import { fail, failQuietly } from "./results.js";
 
 /** Sources listed per answer. Enough to judge the answer, short enough to read. */
@@ -85,6 +85,7 @@ const webSearchTool: Tool = {
         output: formatSearch(query, result),
         summary: `searched "${query}" (${result.sources.length} source${result.sources.length === 1 ? "" : "s"})`,
         detail: formatSearchDetail(result, driver.label, elapsedMs),
+        detailFull: formatSearchDetailFull(result, driver.label, elapsedMs),
         web: {
           kind: "search",
           query,
@@ -135,25 +136,48 @@ export function formatSearch(query: string, result: SearchResult): string {
 }
 
 /**
- * The UI-only detail block: a numbered source list, never sent to the model
- * (that's `formatSearch`'s job, with its own framing/injection defense) — this
- * is purely what the transcript row shows under the search. Empty when there
- * are no sources, so a bare-answer result shows just its summary line.
+ * The line above the sources: which service answered, how long it took, how many pages it
+ * found. Each part is left out when unknown rather than guessed. A search row is one of the
+ * few places where the cost of the call is not otherwise visible, and an invented number
+ * would be worse than no number.
+ */
+function searchSummaryLine(count: number, engine?: string, elapsedMs?: number): string {
+  const parts: string[] = [];
+  if (engine) parts.push(engine);
+  if (elapsedMs !== undefined) parts.push(formatElapsed(elapsedMs));
+  parts.push(`${count} source${count === 1 ? "" : "s"}`);
+  return parts.join(" · ");
+}
+
+/** A page title on one line: a title is the open web's text and may carry line breaks. */
+function oneLine(title: string): string {
+  return title.replace(/\s+/g, " ").trim();
+}
+
+/**
+ * The UI-only detail block: the summary line and the first few sources, never sent to the
+ * model (that's `formatSearchDetail`'s sibling `formatSearch`, with its own framing and
+ * injection defense). This is purely what the transcript row shows under the search. Empty
+ * when there are no sources, so a bare-answer result shows just its summary line.
  */
 export function formatSearchDetail(result: SearchResult, engine?: string, elapsedMs?: number): string {
   if (result.sources.length === 0) return "";
-  const shown = result.sources.slice(0, MAX_SOURCES);
-  const lines: string[] = [];
-  // Which service answered and how long it took. Both are omitted rather than guessed
-  // when unknown — a search row is one of the few places where the cost of the call is
-  // not otherwise visible, and an invented number would be worse than no number.
-  if (engine) lines.push(`Engine: ${engine}`);
-  if (elapsedMs !== undefined) lines.push(`Query time: ${formatElapsed(elapsedMs)}`);
-  lines.push(`Found ${result.sources.length} source${result.sources.length === 1 ? "" : "s"}`);
-  for (const [i, source] of shown.entries()) lines.push(`${i + 1}. ${source.title}`);
-  const hidden = result.sources.length - shown.length;
-  if (hidden > 0) lines.push(`(+${hidden} more)`);
+  const lines = [searchSummaryLine(result.sources.length, engine, elapsedMs)];
+  for (const [i, source] of result.sources.slice(0, SEARCH_PREVIEW_SOURCES).entries()) lines.push(`${i + 1}. ${oneLine(source.title)}`);
   return outputDetail(lines.join("\n"));
+}
+
+/**
+ * The same block with every source, for the row to open on a click like a command's output.
+ * Equal to the closed block when there is nothing more to show, so such a row stays plain.
+ */
+export function formatSearchDetailFull(result: SearchResult, engine?: string, elapsedMs?: number): string {
+  if (result.sources.length === 0) return "";
+  const lines = [searchSummaryLine(result.sources.length, engine, elapsedMs)];
+  // Numbers padded to one width so the titles start in the same column past nine.
+  const width = String(result.sources.length).length;
+  for (const [i, source] of result.sources.entries()) lines.push(`${String(i + 1).padStart(width)}. ${oneLine(source.title)}`);
+  return capLines(collapseBlanks(stripAnsi(lines.join("\n")).split("\n")), FULL_DETAIL_MAX);
 }
 
 /** A wait, at the precision it is worth reading: `310ms`, `1.4s`. */

@@ -22,6 +22,9 @@ export function capLines(lines: string[], max: number): string {
  *  shows when a row is expanded. Still bounded, so one giant write can't flood it. */
 export const FULL_DETAIL_MAX = 5000;
 
+/** Sources a web search's closed row lists; the rest open with a click. */
+export const SEARCH_PREVIEW_SOURCES = 5;
+
 /** The line a cut leaves in place of what it hid: `… (3 more lines)` from `capLines`, or
  *  `… 57 earlier lines hidden` from `capEnds`. It says something is missing; it is not content. */
 const CUT_MARKER = /^\s*\u2026 (\(\d+ more lines?\)|[\d,]+ earlier lines? hidden)$/;

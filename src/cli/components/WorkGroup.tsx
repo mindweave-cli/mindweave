@@ -28,7 +28,7 @@ import { COMMAND_OFFER_AFTER_MS, offerBackground } from "../commandBackground.js
 import { registerExpandable, registerRowBox, itemHit } from "../expandHits.js";
 import { BAD, GOOD, USER_BG, USER_FG } from "../theme.js";
 import { visibleWidth, wrapAnsi } from "../wrap.js";
-import { FOLD_SEP, foldControls, plainLine, compactLine, isMcp, isRead, isServerChange, isStep, keepIndent, mcpReason, mcpVerdict, readRows, serverReason, serverVerdict, wasDeclined, stepLabel, stepReason, workHeader } from "../workLines.js";
+import { FOLD_SEP, foldControls, plainLine, compactLine, isMcp, isRead, isServerChange, isStep, isView, keepIndent, mcpReason, mcpVerdict, readRows, serverReason, serverVerdict, viewSummary, wasDeclined, stepLabel, stepReason, workHeader } from "../workLines.js";
 import type { WorkItem } from "../transcript.js";
 
 const DOT = "●";
@@ -64,6 +64,12 @@ export function openedLines(it: WorkItem): string[] {
   if (isStep(it)) {
     const lines = source ? source.split(String.fromCharCode(10)).map(plainLine).filter((l) => !MORE_MARKER.test(l)) : [];
     return lines.length > 0 ? foldControls(lines).map((l) => (l.includes("\t") ? l : l.trim())) : [it.summary?.trim() || "(nothing more to show)"];
+  }
+  // A picture opens on what was looked at: where it is and what it is. A chat saved before
+  // that was kept still has the path and the one line it said.
+  if (isView(it)) {
+    if (source) return source.split("\n").map(plainLine);
+    return [`File        ${it.arg ?? ""}`, ...(it.status === "error" ? [viewSummary(it)] : [])];
   }
   // A chat saved before an MCP call kept what it asked and what came back used to keep a status
   // block instead ("Status: Connected [Latency: 5ms]..."), which says nothing about the call.
@@ -101,11 +107,20 @@ interface Row {
   range?: string;
 }
 
+/**
+ * A path cut to fit from the FRONT (pure): the end is the file, which is what anyone is
+ * looking for, so it is the beginning that gives way (`…rojects/Cutio/src/app.ts`).
+ */
+export function fitPath(path: string, room: number): string {
+  const width = Math.max(4, room);
+  return path.length <= width ? path : `…${path.slice(-(width - 1))}`;
+}
+
 function listRows(items: WorkItem[], room: number): Row[] {
   return items.flatMap((it, index): Row[] =>
     isRead(it)
-      ? readRows(it).map((r, j) => ({ key: `${it.toolId}.${j}`, index, item: it, label: r.label, range: r.range }))
-      : [{ key: it.toolId, index, item: it, label: isStep(it) ? stepLabel(it) : isMcp(it) || isServerChange(it) ? (it.arg ?? it.name) : commandName(it, room) }],
+      ? readRows(it).map((r, j) => ({ key: `${it.toolId}.${j}`, index, item: it, label: fitPath(r.label, room), range: r.range }))
+      : [{ key: it.toolId, index, item: it, label: isView(it) ? fitPath(it.arg ?? it.name, room) : isStep(it) ? stepLabel(it) : isMcp(it) || isServerChange(it) ? (it.arg ?? it.name) : commandName(it, room) }],
   );
 }
 
@@ -273,7 +288,9 @@ function WorkList({ id, items, columns, live, hoveredItem }: { id: number; items
           ? row.range ?? ""
           : running
             ? ""
-            : step
+            : isView(it)
+              ? viewSummary(it)
+              : step
               ? it.status === "error" ? "✗" : "✓"
               : mcp
                 ? mcpVerdict(it)

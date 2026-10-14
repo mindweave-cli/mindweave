@@ -8,7 +8,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chatLayout } from "./chatAnchor.js";
+import { chatLayout, viewportScroll } from "./chatAnchor.js";
 
 /** Exactly what App computed before this module existed. The scrolled regime must
  *  still agree with it, line for line.
@@ -112,4 +112,21 @@ test("the two regimes cannot overlap", () => {
 test("a negative or absurd scrollUp cannot push content off the top", () => {
   assert.equal(chatLayout(100, 20, -5).marginTop, -80);
   assert.equal(chatLayout(4, 20, -5).marginTop, 0);
+});
+
+test("a footer that grows moves the scroll by the rows the chat gave up", () => {
+  assert.equal(viewportScroll(10, 15, 12), 13);
+});
+
+test("a footer that shrinks gives the rows back", () => {
+  assert.equal(viewportScroll(13, 12, 15), 10);
+});
+
+test("pinned to the newest is left alone, and so is a viewport that did not change", () => {
+  assert.equal(viewportScroll(0, 15, 12), 0);
+  assert.equal(viewportScroll(10, 15, 15), 10);
+});
+
+test("the scroll never goes negative", () => {
+  assert.equal(viewportScroll(2, 12, 20), 0);
 });

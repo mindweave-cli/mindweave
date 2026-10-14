@@ -16,7 +16,7 @@ import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { render, Box, Text } from "ink";
-import { chatLayout } from "./chatAnchor.js";
+import { chatLayout, viewportScroll } from "./chatAnchor.js";
 import { BlockView } from "./components/BlockView.js";
 
 /** A stdout Ink will happily write frames into. */
@@ -258,4 +258,73 @@ test("App's own footer really starts with that spacer", () => {
   assert.ok(footer.length > 0, "the footer container moved or was renamed");
   const firstChild = footer.slice(0, footer.indexOf("<StatusLine"));
   assert.match(firstChild, /<Text> <\/Text>/, "the blank row above the footer is gone");
+});
+
+// ── the footer changes height while the reader is scrolled back ──────────────
+
+/**
+ * The first chat row on screen (as the number in "msgN"), for a frame whose footer has
+ * `footerRows` rows and whose scroll arithmetic believes the viewport is `arithmeticRows`
+ * tall with the reader `scrollUp` lines back. Yoga sizes the viewport from the footer; the
+ * arithmetic comes from the last measurement, so the two can disagree for a frame.
+ */
+function firstVisible(lines: number, footerRows: number, arithmeticRows: number, scrollUp: number): number {
+  const stdout = new FakeStdout();
+  const stdin = new EventEmitter() as unknown as NodeJS.ReadStream;
+  (stdin as unknown as { isTTY: boolean }).isTTY = false;
+  (stdin as unknown as { setRawMode: () => void }).setRawMode = () => {};
+  const { marginTop } = chatLayout(lines, arithmeticRows, scrollUp);
+  const instance = render(
+    <Box flexDirection="column" height={20} overflow="hidden">
+      <Box flexShrink={0}>
+        <Text>BANNER</Text>
+      </Box>
+      <Box flexDirection="column" flexGrow={1} flexShrink={1} minHeight={1} overflow="hidden">
+        <Box flexDirection="column" flexShrink={0} marginTop={marginTop}>
+          {Array.from({ length: lines }, (_, i) => (
+            <Box key={i} flexShrink={0}>
+              <Text>{`msg${i}`}</Text>
+            </Box>
+          ))}
+        </Box>
+      </Box>
+      <Box flexDirection="column" flexShrink={0}>
+        {Array.from({ length: footerRows }, (_, i) => (
+          <Box key={i} flexShrink={0}>
+            <Text>{`FOOT${i}`}</Text>
+          </Box>
+        ))}
+      </Box>
+    </Box>,
+    { stdout: stdout as unknown as NodeJS.WriteStream, stdin, patchConsole: false, interactive: true, debug: true },
+  );
+  const last = stdout.frames[stdout.frames.length - 1] ?? "";
+  instance.unmount();
+  const rows = last.replace(ANSI, "").split("\n");
+  const first = rows.find((r) => /^msg\d+/.test(r));
+  return first ? Number(first.slice(3)) : -1;
+}
+
+test("a footer that grows while the reader is scrolled back does not move the text", () => {
+  const lines = 60;
+  // 20 rows, a 1-row banner and a 4-row footer: a 15-row viewport, the reader 10 lines back.
+  const before = firstVisible(lines, 4, 15, 10);
+  // The footer takes 3 more rows. The frame drawn at once still uses the old arithmetic.
+  const during = firstVisible(lines, 7, 15, 10);
+  // The next frame has the measured height (12). Without the adjustment the scroll is unchanged.
+  const afterOld = firstVisible(lines, 7, 12, 10);
+  const afterNew = firstVisible(lines, 7, 12, viewportScroll(10, 15, 12));
+
+  assert.equal(before, during, "the first frame keeps the top of the window where it was");
+  assert.notEqual(afterOld, during, "unadjusted, the next frame moves the window (the jump)");
+  assert.equal(afterNew, during, "adjusted, the next frame shows the same rows as the first");
+});
+
+test("a footer that shrinks while the reader is scrolled back does not move the text either", () => {
+  const lines = 60;
+  const before = firstVisible(lines, 7, 12, 13);
+  const during = firstVisible(lines, 4, 12, 13);
+  const after = firstVisible(lines, 4, 15, viewportScroll(13, 12, 15));
+  assert.equal(before, during);
+  assert.equal(after, during);
 });

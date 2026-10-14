@@ -305,6 +305,24 @@ function BranchLines({
         }
         const style = errored ? { color: BAD } : diff ? diffStyle(line) : undefined;
         const dim = !errored && style === undefined;
+        // An opened numbered list (a search's sources): a title that does not fit carries on
+        // UNDER ITS TEXT, not under its number, so the numbers stay a column of their own.
+        const hang = wrap && !diff ? /^(\s*\d+\.\s)(.*)$/.exec(line) : null;
+        if (hang) {
+          return (
+            <Box key={i} flexDirection="row" width={columns}>
+              <Text dimColor={!hot}>{i === 0 ? `  ${BRANCH} ` : "    "}</Text>
+              <Box width={content}>
+                <Box flexShrink={0}>
+                  <Text {...style} dimColor={dim}>{hang[1]}</Text>
+                </Box>
+                <Box flexGrow={1} flexShrink={1}>
+                  <Text {...style} dimColor={dim} wrap="wrap">{hang[2]}</Text>
+                </Box>
+              </Box>
+            </Box>
+          );
+        }
         // Padded to the full content width so the tint is a continuous band rather than
         // stopping wherever the code happens to end, which reads as a ragged smear.
         // An opened diff carries a long line onto more rows by hand, so each one can keep the

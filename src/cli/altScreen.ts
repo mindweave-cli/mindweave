@@ -22,6 +22,7 @@
 import * as nodeFs from "node:fs";
 import { SHOW_CURSOR, TERMINAL_RESTORE } from "./terminalRestore.js";
 import { caretToOutputEnd } from "./exitCursor.js";
+import { setFramebufferClosed } from "./framebuffer/writer.js";
 
 const ENTER = "\x1b[?1049h";
 const HIDE_CURSOR = "\x1b[?25l";
@@ -130,6 +131,9 @@ export function enterAltScreen(options: { buffer?: boolean } = {}): void {
  *  unconditionally rather than being left to a component that may never unmount. */
 export function exitAltScreen(): void {
   if (!guarded && !active) return;
+  // The full-screen shell is the one that owns a buffer of its own; once it is left, anything
+  // still drawn would land in the user's terminal (see setFramebufferClosed).
+  const leftOwnScreen = active;
   guarded = false;
   active = false;
   // writeSync, NOT process.stdout.write, because every caller of this is on its way out.
@@ -150,4 +154,5 @@ export function exitAltScreen(): void {
   } catch {
     // A closed or redirected stdout. Nothing to restore and nothing to report.
   }
+  if (leftOwnScreen) setFramebufferClosed(true);
 }

@@ -160,13 +160,85 @@ export function applyGrowSelection(screen: Screen, sel: GrowSel | null, spans: r
   if (!sel || isEmptyGrow(sel)) return;
   const top = Math.max(0, view.top);
   const bottom = Math.min(screen.height, view.bottom);
+  // The two-column strip on the left holds the dot or the ">" and nothing else, so it is never
+  // highlighted: not the marker, not the blank cells beside it, and not the same strip on the rows
+  // under it or on the empty rows between messages. Only a strip that really is that (a marker and a
+  // space, or two blanks) is left out, so text that starts at column 0 stays selectable.
   for (let y = top; y < bottom; y++) {
     const key = keyAtRow(spans, y);
     if (!key) continue;
     const cov = coverage(sel, key, screen.width);
-    if (cov) tint(screen, y, cov.from, cov.to);
+    if (!cov) continue;
+    let from = cov.from;
+    if (from < 2) {
+      const c0 = screen.chars[screen.index(0, y)]!;
+      const c1 = screen.chars[screen.index(1, y)]!;
+      if (((c0 === 0x25cf || c0 === 0x3e) && c1 === 32) || (blankCell(c0) && blankCell(c1))) from = 2;
+    }
+    // A stretch with nothing written in it is not highlighted: empty space has nothing to select.
+    let written = false;
+    for (let x = from; x < cov.to && !written; x++) written = !blankCell(screen.chars[screen.index(x, y)]!);
+    if (written) tint(screen, y, from, cov.to);
   }
 }
+
+/** The last click on the conversation, and how many in a row it was. */
+export interface ClickRecord {
+  at: number;
+  x: number;
+  y: number;
+  count: number;
+}
+
+/**
+ * Which click in a row this one is (pure).
+ *
+ * A click counts as the next one only when it comes soon enough after the last and lands on the
+ * same place (the same row, within a couple of columns). Too late, or somewhere else, and it is a
+ * first click again, so a stray second click never selects anything by accident. A fourth click
+ * starts over rather than counting on.
+ */
+export function nextClick(prev: ClickRecord | null, now: number, x: number, y: number, windowMs: number): ClickRecord {
+  const again = !!prev && now - prev.at <= windowMs && prev.y === y && Math.abs(prev.x - x) <= 2 && prev.count < 3;
+  return { at: now, x, y, count: again ? prev!.count + 1 : 1 };
+}
+
+/** Whether a cell holds nothing to select: a space, or a cell that was never written. */
+function blankCell(ch: number): boolean {
+  return ch === 32 || ch === 0;
+}
+
+/**
+ * The word under a click, as the columns it covers, both ends included (pure): the unbroken
+ * run of characters on the row around column `x`. Null when `x` is on a blank, where there is
+ * nothing to select.
+ */
+export function wordBounds(cells: ArrayLike<number>, x: number): { from: number; to: number } | null {
+  if (x < 0 || x >= cells.length || blankCell(cells[x]!)) return null;
+  let from = x;
+  while (from > 0 && !blankCell(cells[from - 1]!)) from--;
+  let to = x;
+  while (to < cells.length - 1 && !blankCell(cells[to + 1]!)) to++;
+  return { from, to };
+}
+
+/**
+ * The whole line, as the columns from its first character to its last (pure). Null when the
+ * row is blank.
+ */
+export function lineBounds(cells: ArrayLike<number>): { from: number; to: number } | null {
+  let from = 0;
+  while (from < cells.length && blankCell(cells[from]!)) from++;
+  if (from >= cells.length) return null;
+  let to = cells.length - 1;
+  while (to > from && blankCell(cells[to]!)) to--;
+  return { from, to };
+}
+
+/** The marker a block starts with in the gutter: the agent's dot, or the ">" of your own message, and its space. */
+const GUTTER_MARK = /^[●>] /;
+/** The two columns of gutter the rest of a block's rows are indented by. */
+const GUTTER_INDENT = /^ {1,2}/;
 
 /** One captured row's characters, one entry per column. */
 type RowCells = Uint32Array;
@@ -252,6 +324,9 @@ export class RowStore {
       }
       const first = id === start.id ? start.off : 0;
       const last = id === end.id ? Math.min(end.off, height - 1) : height - 1;
+      // Whether this block's marker (the dot or the ">") was taken off its first row, so the rows
+      // that carry on under it lose the gutter they were indented by.
+      let markerGone = false;
       for (let off = first; off <= last; off++) {
         const cells = inner?.get(off);
         if (!cells) {
@@ -260,7 +335,18 @@ export class RowStore {
         }
         const cov = coverage(sel, { id, off }, cells.length);
         if (!cov) continue;
-        out.push(cellsText(cells, cov.from, cov.to));
+        let line = cellsText(cells, cov.from, cov.to);
+        // The marker in the gutter belongs to the screen, not to the text. It goes only when the
+        // selection takes in the start of the row: a word picked from the middle has no marker.
+        if (cov.from === 0) {
+          if (off === 0 && GUTTER_MARK.test(line)) {
+            line = line.replace(GUTTER_MARK, "");
+            markerGone = true;
+          } else if (markerGone) {
+            line = line.replace(GUTTER_INDENT, "");
+          }
+        }
+        out.push(line);
       }
     }
     return { text: out.join("\n"), complete };

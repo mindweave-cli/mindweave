@@ -142,10 +142,12 @@ export function commandTurnedAway(args: Record<string, unknown>, ctx: ToolContex
     const dup = findRunningDuplicate(ctx.backgroundShells.running(), command);
     if (dup) {
       return {
-        output:
-          `\`${clip(command)}\` is already running in the background as shell #${dup.id}, so I'm not ` +
-          `starting a second copy — a second one would collide with it. It's already up; if you want a ` +
-          `fresh start, call kill_shell(${dup.id}) first, then relaunch.`,
+        output: ctx.userInitiated
+          ? `\`${clip(command)}\` is already running in the background as shell #${dup.id}, so a second copy was not ` +
+            `started: it would collide with the first. Stop shell #${dup.id} (/shells) to start it fresh.`
+          : `\`${clip(command)}\` is already running in the background as shell #${dup.id}, so I'm not ` +
+            `starting a second copy — a second one would collide with it. It's already up; if you want a ` +
+            `fresh start, call kill_shell(${dup.id}) first, then relaunch.`,
         isError: true,
         summary: `already running as shell #${dup.id}`,
       };
@@ -157,7 +159,8 @@ export function commandTurnedAway(args: Record<string, unknown>, ctx: ToolContex
     // up and were closed WITHOUT a kill_shell (`findRecentUserClose`), so the agent's own
     // kill-then-relaunch is untouched and a server that failed to start can still be
     // retried. The cooldown lets a restart the user asks for later through.
-    const closed = findRecentUserClose(ctx.backgroundShells.list(), command, Date.now());
+    // Not for the person's own command: closing an app and starting it again is a restart, theirs to make.
+    const closed = ctx.userInitiated ? undefined : findRecentUserClose(ctx.backgroundShells.list(), command, Date.now());
     if (closed) {
       const secs = closed.finishedAt ? Math.round((Date.now() - closed.finishedAt) / 1000) : 0;
       return {

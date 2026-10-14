@@ -2,6 +2,54 @@
 
 Notable changes to Mindweave. Dates are release dates.
 
+## v3.3.0 (2026-10-14): running your own commands with `!`, search in the pickers, and a cleaner selection
+
+Typing `!` at the start of the prompt now runs what follows in the project's shell, as you. The agent is woken
+by the result and carries on from it, exactly as if it had run the command itself. The model, provider and key
+lists can be searched by typing, clicking selects a word or a line, and a handful of screens that drew the wrong
+thing for a moment are fixed.
+
+### Running your own commands
+
+- **`! command` runs it now.** `! gh auth login`, `! npm start`, anything. It runs in the same shell the agent
+  uses, with no question asked, and the row reads `You ran 1 command` and opens like one of the agent's, with the
+  command, its output and how it ended. The box turns amber while the line starts with `!`.
+- **The agent is told, and answers.** When the command ends the agent is woken, reads what it printed, and carries
+  on. It can ask you to run something (a sign-in, a password prompt) and go on from what comes back. The entry is
+  marked as yours, so it never says it ran the command and never runs it again, and what the command printed is
+  marked as data, not instructions.
+- **Apps and servers start in the background.** `npm start`, `vite`, `electron .` and the like give the prompt back
+  at once. The agent says it sees the app running, and gets a quiet note if you stop it, so it neither assumes it
+  is still up nor starts it again. A slower command can be moved to the background with ctrl+X, and the agent is
+  woken when it finishes.
+- **Esc stops your command,** and only that. It leaves an app you started alone, and the agent's rule against
+  reopening an app you closed does not apply to you.
+- **Typed while the agent works, it waits its turn,** like a slash command. Old output of your commands is cleared
+  from the model's context like any other old output, and they never count as something you asked for (rewind and
+  the session title skip them).
+
+### Search and selection
+
+- **The model, provider and `/key` provider lists can be searched** by typing in the chat box. Esc clears the
+  search first, then closes the list.
+- **Two clicks select a word and three select the line,** instantly. The wheel moves five lines a notch.
+- **The dot, the `>` and the strip beside them are never highlighted or copied,** and empty space has nothing to
+  select: a drag that starts there highlights nothing and copies nothing.
+
+### Screens
+
+- **The WebSearch row** shows one line (engine, time, number of sources) and the first five titles; opened, it lists
+  every source.
+- **Rows show full paths** in the terminal, and `Viewed` folds into the work row.
+- **`/help` is a box you can remove** by clicking it.
+
+### Fixes
+
+- The model list no longer draws an empty box for a moment while it loads.
+- The footer no longer flashes when you have scrolled back and it grows.
+- Ctrl+C no longer leaves the fullscreen frame in the terminal.
+- The note about a stopped app no longer says it "had already started up" when it was stopped before it came up.
+
 ## v3.2.8 (2026-10-13): MCP servers that stay connected, running a command in the background yourself, and selecting text across a scroll
 
 An agent that added an MCP server, then tried to use it, could spend a whole session being told the server was not
@@ -309,7 +357,7 @@ It has not been run on a real Mac yet.
   title bar is listed by its process name.
 - **Stopping every process with a name asks first.** `Stop-Process -Name`, `taskkill /IM`, `pkill`, `killall`
   and the like stop every such program on the machine, a desktop app or an editor included. Stopping one by its
-  number is unchanged.
+  number is unchanged. (Reversed in 3.2.4: stopping a program by name asks in no mode.)
 
 ### Also
 

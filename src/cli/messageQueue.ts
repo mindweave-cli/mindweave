@@ -37,6 +37,8 @@
  * which is which are on each function.
  */
 
+import { isUserCommandText } from "../memory/localCommand.js";
+
 /** Rows of queue the footer will show before collapsing the rest into a count. */
 export const MAX_VISIBLE_QUEUED = 3;
 
@@ -65,9 +67,13 @@ export interface Queued {
   priority: Priority;
 }
 
-/** Whether this text runs as a command rather than being said to the model. */
+/**
+ * Whether this text runs as a command rather than being said to the model: a slash command, or a
+ * shell command the person typed after `!`. Both are things to DO, so both wait for the turn to be
+ * over and go on their own (see `takeSteerable` and `drain`).
+ */
 export function isCommand(text: string): boolean {
-  return text.trimStart().startsWith("/");
+  return text.trimStart().startsWith("/") || isUserCommandText(text);
 }
 
 /**

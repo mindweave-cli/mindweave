@@ -48,6 +48,7 @@ export function formatHelp(sections: readonly HelpSection[]): string {
     // no autocomplete entry for either, and nothing else mentions them.
     "Also\n" +
       "  @path             attach a file to your message (Tab completes the path)\n" +
+      "  !command          run a command yourself, now: ! git status. The agent reads it on its next turn\n" +
       "  Esc               stop what's running\n" +
       "  Esc Esc           on an empty box, rewind to an earlier message\n" +
       // The input stays live while a turn runs and the placeholder says so, so

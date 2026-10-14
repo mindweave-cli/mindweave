@@ -15,7 +15,7 @@
  * what the model was shown, which can already have had its middle cut, and that cut is
  * kept as it was rather than papered over.
  */
-import { FULL_DETAIL_MAX, multiEditDetail, oneLineSteps, sessionDetailFull, shellOutput, uiOpenedText, withScope, writeDetail } from "./detail.js";
+import { FULL_DETAIL_MAX, SEARCH_PREVIEW_SOURCES, multiEditDetail, oneLineSteps, sessionDetailFull, shellOutput, uiOpenedText, withScope, writeDetail } from "./detail.js";
 import { pageLine } from "./ui.js";
 
 /** The rows of `detail` that come before the body: the scope line of a diff. */
@@ -147,4 +147,49 @@ export function compactUiDetail(detail: string | undefined, isError: boolean | u
   const kept = sessionDetailFull("", whole);
   if (!kept) return undefined;
   return { detail: [...steps, ...said, pageLine(counts, off, total)].join("\n"), detailFull: kept };
+}
+
+/**
+ * A web search's row as it was saved BEFORE it became a short row that opens on a click (pure).
+ *
+ * The saved block is `Engine: X`, `Query time: Y`, `Found N sources`, then up to eight numbered
+ * titles and a `(+M more)` line. It comes back as the row a new search draws: one summary line
+ * and the first few titles, with every title that was kept behind a click. The titles past the
+ * eighth were never saved, and the opened list says so instead of implying it shows them all.
+ *
+ * Undefined when this is not that block (a search that failed, or a row already in the new
+ * form), so such a row is left exactly as it was.
+ */
+export function compactSearchDetail(detail: string | undefined): { detail: string; detailFull?: string } | undefined {
+  if (!detail) return undefined;
+  const lines = detail.split("\n");
+  const grab = (re: RegExp): RegExpExecArray | undefined => {
+    for (const l of lines) {
+      const m = re.exec(l);
+      if (m) return m;
+    }
+    return undefined;
+  };
+  const found = grab(/^Found (\d+) sources?$/);
+  if (!found) return undefined;
+  const total = Number(found[1]);
+  const titles: string[] = [];
+  for (const l of lines) {
+    const m = /^\d+\. (.*)$/.exec(l);
+    if (m) titles.push(m[1]!);
+  }
+  const summary = [grab(/^Engine: (.+)$/)?.[1], grab(/^Query time: (.+)$/)?.[1], `${total} source${total === 1 ? "" : "s"}`]
+    .filter(Boolean)
+    .join(" · ");
+  const row = (t: string, i: number) => `${i + 1}. ${t}`;
+  const shown = [summary, ...titles.slice(0, SEARCH_PREVIEW_SOURCES).map(row)];
+  const lost = total - titles.length;
+  // Numbers padded to one width so the titles start in the same column past nine.
+  const digits = String(titles.length).length;
+  const whole = [
+    summary,
+    ...titles.map((t, i) => `${String(i + 1).padStart(digits)}. ${t}`),
+    ...(lost > 0 ? [`(${lost} more ${lost === 1 ? "source was" : "sources were"} not kept in this chat)`] : []),
+  ];
+  return { detail: shown.join("\n"), ...(whole.length > shown.length ? { detailFull: whole.join("\n") } : {}) };
 }

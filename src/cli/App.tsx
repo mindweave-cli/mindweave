@@ -85,7 +85,9 @@ import { expandableAt, hitBlock, hitItem, revealNode } from "./expandHits.js";
 import { shellNote } from "./shellNotes.js";
 import { pressBackground } from "./commandBackground.js";
 import { readFileSync, statSync } from "node:fs";
-import { compactUiDetail, rebuildFull, writtenFromDisk } from "../tools/rebuildDetail.js";
+import { compactSearchDetail, compactUiDetail, rebuildFull, writtenFromDisk } from "../tools/rebuildDetail.js";
+import { isUserShell, runUserCommand } from "../tools/userCommand.js";
+import { isUserCommandText, parseUserCommand } from "../memory/localCommand.js";
 import { shownText } from "../memory/compaction.js";
 import { BASE_COMMANDS } from "./commands.js";
 import { attachmentBudget, dismissMarathon } from "../core/turnRunner.js";
@@ -97,14 +99,14 @@ import { currentInstall, requestRestart, runUpdate } from "./updateRunner.js";
 import { enableMouse, readMouse, readWheel, stripMouse } from "./mouse.js";
 import { wheelLines } from "./wheelStep.js";
 import { applySelection, ctrlCShouldCopy, isEmpty, selectionText, type Selection } from "./selection.js";
-import { applyGrowSelection, edgeLines, focusFromPointer, isEmptyGrow, RowStore, type GrowSel, type View } from "./selectionGrow.js";
+import { applyGrowSelection, edgeLines, focusFromPointer, isEmptyGrow, lineBounds, nextClick, RowStore, rowOfKey, wordBounds, type ClickRecord, type GrowSel, type View } from "./selectionGrow.js";
 import { blockSpans, registerBlockBox } from "./blockBoxes.js";
 import type { Screen } from "./framebuffer/screen.js";
 import { holdFrames, releaseFrames } from "./framebuffer/frameHold.js";
 import { latestScreen, repaintOverlay, setFrameOverlay } from "./framebuffer/overlay.js";
 import { requestFullRepaint } from "./framebuffer/writer.js";
 import { copyToClipboard } from "./clipboard.js";
-import { chatLayout, reflowScroll, growScroll, revealScroll } from "./chatAnchor.js";
+import { chatLayout, reflowScroll, growScroll, revealScroll, viewportScroll } from "./chatAnchor.js";
 import { growFill, INLINE_LIVE_RESERVE, NO_FILL } from "./startupFill.js";
 import { setRowsBelowCaret } from "./exitCursor.js";
 import { caretCell } from "./caretPark.js";
@@ -312,6 +314,11 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
     if (edgeTimer.current) clearInterval(edgeTimer.current);
     edgeTimer.current = null;
   }, []);
+  /** A press that may be the third click of a row, waiting for its release to say which it was. */
+  const pendingThird = useRef<{ x: number; y: number } | null>(null);
+  const dropPendingThird = useCallback(() => {
+    pendingThird.current = null;
+  }, []);
   /**
    * Drop the highlight, if there is one, and stop tinting frames.
    *
@@ -328,9 +335,10 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
     rowStore.current.clear();
     pointer.current = null;
     stopEdge();
+    dropPendingThird();
     repaintOverlay();
     setFrameOverlay(null);
-  }, [stopEdge]);
+  }, [stopEdge, dropPendingThird]);
   // PromptInput installs the handler that turns a click into a caret position; only it
   // knows what its rows currently hold. Null until the input is on screen.
   const caretClick = useRef<((x: number, y: number) => void) | null>(null);
@@ -444,6 +452,9 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
   // much of the content is on screen.
   const chatRef = useRef<DOMElement | null>(null);
   const [chatHeight, setChatHeight] = useState(0);
+  /** The chat viewport's height and the width it had when last measured, so a change of the
+   *  footer's height can move the scroll with it. See viewportScroll. */
+  const chatRowsSeen = useRef<{ rows: number; width: number } | null>(null);
   // Bumped by PromptInput when its suggestion menu changes size. Its only job is
   // to re-render App so the footer measurement below re-runs: the menu is
   // PromptInput's own state, so App is not re-rendered by it and would otherwise
@@ -492,6 +503,17 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
   }, []);
   // Aborts the in-flight turn when the user presses Esc (created fresh per turn).
   const abortRef = useRef<AbortController | null>(null);
+  /** A command the person typed after `!` is running (not an agent turn). Esc stops just that. */
+  const userCommandRunning = useRef(false);
+  /** The turn in progress is the person's own `!` command, not the agent working. */
+  const userTurn = useRef(false);
+  /**
+   * A command the person ran with `!` has just ended and the agent has not answered it yet. The agent
+   * is woken for it the way it is when a command of its own finishes: given the result, it carries on
+   * (that is the point: it can ask the person to run something and go on from what comes back).
+   * Cleared when any turn starts, since that turn reads the result anyway.
+   */
+  const wakeAfterUserCommand = useRef(false);
   // Which provider's key we still need, or null once we have it. Not a bare
   // boolean: with more than one provider, the key we must ask for depends on the
   // model the user is about to run, and switching models can make a different key
@@ -776,6 +798,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
     // Each call's name and arguments by id, so a result from a session saved before the uncut
     // text was kept can have it put back together (see rebuildDetail.ts).
     const callsById = new Map<string, { name: string; args: Record<string, unknown> }>();
+    let userRows = 0; // commands the person ran with `!`, to give each replayed row its own id
     for (const e of transcript) {
       if (e.role === "user") {
         if (!e.synthetic) readThisTurn.clear();
@@ -784,6 +807,23 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
         // the user never typed — seen live as "> That was 3 sentences between tool
         // calls…" sitting in their own chat history.
         if (!e.synthetic) dispatch({ type: "user", text: collapsePastes(stripAttachments(e.content)) });
+        // A command the person ran with `!` comes back as the row it was: what they ran, how it ended,
+        // and the output behind the click. The screen's record is kept whole even when the model's copy
+        // of the output was cleared to save context.
+        else if (e.localCommand) {
+          const rec = e.localCommand;
+          const toolId = `user-replay-${userRows++}`;
+          dispatch({ type: "toolStart", toolId, name: "Run", arg: rec.command, action: "run", group: true, byUser: true });
+          dispatch({
+            type: "toolEnd",
+            toolId,
+            ok: rec.ok,
+            summary: rec.summary,
+            detail: rec.detail,
+            detailKind: "shell",
+            ...(rec.detailFull ? { detailFull: rec.detailFull } : {}),
+          });
+        }
       } else if (e.role === "summary") {
         dispatch({ type: "note", text: "— resumed; earlier context summarized —" });
       } else if (e.role === "assistant") {
@@ -805,7 +845,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
           // Replaying it as one puts a `● SpawnSubagent(...)` in a resumed transcript
           // that was not in the live one.
           if (call.name === "spawn_subagent" || neverShown(call.name)) continue;
-          const d = toolDisplay(call.name, parseToolArgs(call.arguments));
+          const d = toolDisplay(call.name, parseToolArgs(call.arguments), session.current?.cwd ?? process.cwd());
           dispatch({
             type: "toolStart",
             toolId: call.id,
@@ -830,6 +870,11 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
             // A UI test saved before it became a short row comes back as the short row.
             if (call?.name === "ui" && !e.detailFull) {
               const compact = compactUiDetail(e.detail, e.isError);
+              if (compact) return { detail: compact.detail, ...(compact.detailFull ? { detailFull: compact.detailFull } : {}) };
+            }
+            // A web search saved before it became a short row that opens on a click comes back as one.
+            if ((call?.name === "web_search" || call?.name === "web") && !e.detailFull) {
+              const compact = compactSearchDetail(e.detail);
               if (compact) return { detail: compact.detail, ...(compact.detailFull ? { detailFull: compact.detailFull } : {}) };
             }
             let full = e.detailFull ?? rebuildFull(call?.name, call?.args, e);
@@ -1087,9 +1132,14 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
       needsKey,
       reacting: reactingRef.current,
       modalOpen,
-      pending: mgr?.pendingCount() ?? 0,
+      // A command the person ran counts as one event worth waking for, unless something they typed
+      // is already queued: that message's turn reads the command's result too.
+      pending: (mgr?.pendingCount() ?? 0) + (wakeAfterUserCommand.current && queueRef.current.length === 0 ? 1 : 0),
     });
-    if (wake) void reactToBackground();
+    if (wake) {
+      wakeAfterUserCommand.current = false;
+      void reactToBackground();
+    }
   }, [bgTick, busy, ready, needsKey, modalOpen]);
 
   // When the turn ends, send what's queued — CONSECUTIVE plain messages together, as
@@ -1143,6 +1193,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
 
   // Start/stop a turn's timer (drives the persistent status line).
   function startTurn() {
+    wakeAfterUserCommand.current = false;
     turnStart.current = Date.now();
     waitedMs.current = 0;
     waitSince.current = null;
@@ -1151,6 +1202,21 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
     setTaskUsage(null); // clear the previous task's summary while this one runs
     interrupting.current = false;
     abortRef.current = new AbortController();
+    setBusy(true);
+  }
+
+  /**
+   * The start of a `!` command's time on screen. Like `startTurn` for what the box needs (busy, a way
+   * to stop it, anything typed meanwhile queued) and nothing of the agent's: the task's usage and
+   * its "Worked for" receipt belong to the last time the agent worked, and are left as they were.
+   */
+  function startUserTurn() {
+    turnStart.current = Date.now();
+    waitedMs.current = 0;
+    waitSince.current = null;
+    interrupting.current = false;
+    abortRef.current = new AbortController();
+    userTurn.current = true;
     setBusy(true);
   }
 
@@ -1206,6 +1272,8 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
     (_input, key) => {
       if (key.escape) {
         abortRef.current?.abort();
+        // The person's own `!` command: Esc stops just that (no turn was cut off, no shells below).
+        if (userCommandRunning.current) return;
         // From here until the next turn starts, anything typed is for the NEXT turn.
         interrupting.current = true;
         // Anything still waiting to be asked is answered as declined. A queued approval
@@ -1215,7 +1283,8 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
         // Esc means STOP — including anything running in the background (a starting app,
         // a dev server). Aborting the turn alone left those alive, so the app still opened.
         const mgr = session.current?.toolContext.backgroundShells;
-        for (const sh of mgr?.running() ?? []) mgr?.kill(sh.id, "user");
+        // Not an app the person started themselves with `!`: that one is theirs, and stops from its own window or /shells.
+        for (const sh of mgr?.running() ?? []) if (!isUserShell(mgr, sh.id)) mgr?.kill(sh.id, "user");
         // And the app it was testing, with its live view and any hidden browser.
         if (session.current) void stopUi(session.current.toolContext);
         flush.current = true; // drain the rest of the queue immediately
@@ -1553,6 +1622,15 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
   useEffect(() => {
     if (!chatRef.current) return;
     const { height } = measureElement(chatRef.current);
+    // The footer grew or shrank. The frame already drawn kept the top of the window where it
+    // was; the numbers for the next one hold the bottom. Moving the scroll by the same
+    // amount in this update makes both show the same rows (see viewportScroll). A change of
+    // WIDTH is the reflow's to handle, not this.
+    const prev = chatRowsSeen.current;
+    if (prev !== null && prev.width === width && prev.rows !== height) {
+      setScrollUp((s) => viewportScroll(s, prev.rows, height));
+    }
+    chatRowsSeen.current = { rows: height, width };
     setChatHeight((h) => (h === height ? h : height));
   });
 
@@ -1676,8 +1754,68 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
     const s = stateRef.current;
     const ids = [...s.committed, ...s.tail].map((b) => b.id);
     const grown = rowStore.current.text(g, ids, (id) => blockHeights.current.get(id)?.height);
-    if (grown.text) copyToClipboard(grown.text);
+    // Only real text: a drag over empty space gathers nothing but line breaks, and copies nothing.
+    if (grown.text.trim()) copyToClipboard(grown.text);
     if (!grown.complete) note("Part of what you selected scrolled past too fast to be copied. Select it again, scrolling more slowly.");
+  }
+
+  /**
+   * The third click: the selected word becomes the whole line, in one step. The word stayed
+   * highlighted until now (the press did not take it down), so there is no moment with nothing
+   * selected between the two. What is copied is the line.
+   */
+  function selectLineOfWord(): void {
+    const g = grow.current;
+    const view = chatViewRows();
+    const screen = latestScreen();
+    if (!g || !view || !screen) return;
+    const spans = blockSpans(frameTopRef.current);
+    const y = rowOfKey(spans, { id: g.anchor.id, off: g.anchor.off });
+    const line = y === null ? null : lineBounds(Array.from({ length: screen.width }, (_, cx) => screen.chars[screen.index(cx, y)]!));
+    if (line) {
+      g.anchor = { ...g.anchor, x: line.from };
+      g.focus = { ...g.focus, x: line.to };
+    }
+    rowStore.current.clear();
+    const chip = pillHit.current;
+    rowStore.current.capture(screen, spans, view, chip ? { y: chip.row, x0: chip.left, x1: chip.right + 1 } : null);
+    repaintOverlay();
+    copyGrown(g);
+  }
+
+  /** The last click on the conversation, to tell clicks in a row from separate ones. */
+  const lastClick = useRef<ClickRecord | null>(null);
+
+  /**
+   * Clicking text selects it, and copies it, as a drag does. One click does nothing, so a stray
+   * click never takes anything; two clicks in a row, each soon after the last, take the word under
+   * the pointer; three take the whole line. A click that comes too late starts the count again.
+   * Returns false when nothing was taken (a first click, or a blank), so the click can do what it
+   * did before.
+   */
+  function selectClicked(x: number, y: number): boolean {
+    const click = nextClick(lastClick.current, Date.now(), x, y, DOUBLE_CLICK_MS);
+    // Three is the most there is: the next click begins again.
+    lastClick.current = click.count >= 3 ? null : click;
+    if (click.count < 2) return false;
+    const view = chatViewRows();
+    const screen = latestScreen();
+    if (!view || !screen || y < view.top || y >= view.bottom) return false;
+    const spans = blockSpans(frameTopRef.current);
+    const at = focusFromPointer(spans, view, x, y, screen.width);
+    if (!at) return false;
+    const cells = Array.from({ length: screen.width }, (_, cx) => screen.chars[screen.index(cx, y)]!);
+    const range = click.count >= 3 ? lineBounds(cells) : wordBounds(cells, x);
+    if (!range) return false;
+    const g: GrowSel = { anchor: { id: at.id, off: at.off, x: range.from }, focus: { id: at.id, off: at.off, x: range.to }, dragging: false };
+    grow.current = g;
+    rowStore.current.clear();
+    const chip = pillHit.current;
+    rowStore.current.capture(screen, spans, view, chip ? { y: chip.row, x0: chip.left, x1: chip.right + 1 } : null);
+    setFrameOverlay(growOverlay);
+    repaintOverlay();
+    copyGrown(g);
+    return true;
   }
 
   // Mouse reporting itself is switched on and off by  — it belongs to
@@ -1780,6 +1918,24 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
             setScrollUp(0);
             continue;
           }
+          // The press that may be the THIRD click: a word is selected from the second, and this
+          // lands where it did, soon enough. The word is left up (a new selection would take
+          // it down) and the release decides: a click grows it to the line, a drag starts over.
+          const before = lastClick.current;
+          const word = grow.current;
+          if (
+            before &&
+            before.count === 2 &&
+            Date.now() - before.at <= DOUBLE_CLICK_MS &&
+            before.y === event.y &&
+            Math.abs(before.x - event.x) <= 2 &&
+            word &&
+            !word.dragging &&
+            !isEmptyGrow(word)
+          ) {
+            pendingThird.current = { x: event.x, y: event.y };
+            continue;
+          }
           // A press on the conversation starts a selection that follows it. Anywhere else (the
           // input box, the banner) it is the screen selection, which is what edits the input.
           if (startGrow(event.x, event.y)) {
@@ -1795,6 +1951,14 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
           setFrameOverlay((screen) => applySelection(screen, selection.current));
           repaintOverlay();
         } else if (event.kind === "drag") {
+          // The press that might have been a third click was the start of a drag: begin the
+          // selection it was always going to be, from where it was pressed.
+          if (pendingThird.current) {
+            const at = pendingThird.current;
+            pendingThird.current = null;
+            lastClick.current = null;
+            if (startGrow(at.x, at.y)) selection.current = null;
+          }
           if (grow.current?.dragging) {
             pointer.current = { x: event.x, y: event.y };
             pendingDrag = true;
@@ -1806,6 +1970,20 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
           pendingDrag = true;
         } else {
           pendingDrag = false;
+          // The release of a press that kept the word up: a third click in time takes the line;
+          // anything else is an ordinary first click.
+          if (pendingThird.current) {
+            pendingThird.current = null;
+            const click = nextClick(lastClick.current, Date.now(), event.x, event.y, DOUBLE_CLICK_MS);
+            if (click.count === 3) {
+              lastClick.current = null;
+              selectLineOfWord();
+            } else {
+              lastClick.current = click;
+              clearSelection();
+            }
+            continue;
+          }
           const g = grow.current;
           if (g) {
             stopEdge();
@@ -1822,9 +2000,12 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
               clearSelection();
               const hitId = expandableAt(event.y, frameTopRef.current, chatRef.current);
               if (hitId !== null) {
+                lastClick.current = null;
                 toggleRow(hitId);
                 continue;
               }
+              // Plain text: two clicks in a row take the word, three take the line.
+              if (selectClicked(event.x, event.y)) continue;
               placeCaretAt(event.x, event.y);
               continue;
             }
@@ -1897,7 +2078,9 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
 
   function endTurn() {
     releaseLiveGates();
-    if (turnStart.current != null) setLastMs(Date.now() - turnStart.current);
+    // A `!` command is not the agent working: no "Worked for" receipt for it.
+    if (turnStart.current != null && !userTurn.current) setLastMs(Date.now() - turnStart.current);
+    userTurn.current = false;
     // Settle every tool row this turn produced into its past-tense verb. The single
     // funnel for a turn ending (normal completion, error, interrupt), so no row is
     // left reading "Reading" once nothing is being read.
@@ -2320,7 +2503,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
             // The spawn call itself is rendered by its sub-agent block, not a raw row;
             // loading a tool is never shown at all (see mcpSearch.ts).
             if (e.name === "spawn_subagent" || neverShown(e.name)) return;
-            const d = toolDisplay(e.name, e.args);
+            const d = toolDisplay(e.name, e.args, session.current?.cwd ?? process.cwd());
             if (e.agent) {
               // A sub-agent's own tool call — fold it into that worker's nested rail.
               enqueueReveal({ type: "subToolStart", agentId: e.agent, toolId: e.id, name: d.name, arg: d.arg, action: d.kind });
@@ -2422,6 +2605,51 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
       await saveSession(s);
       streamDone.current = true;
       if (!pumpTimer.current) pump(); // ensure we drain to endTurn even if idle now
+    }
+  }
+
+  /**
+   * A command the person typed after `!`: run it now, in the project's shell, as THEIRS.
+   *
+   * It is drawn as a row of its own, `You ran 1 command`, that opens on the command and its output
+   * exactly as a command the agent ran does. It goes through the same pipeline as a turn only as far
+   * as the screen is concerned: the box is busy while it runs (so Esc stops it, and anything typed
+   * meanwhile is queued), and the row is revealed in order. No turn starts and the model is not
+   * called: the agent reads the command and its output on its next turn, from the entry
+   * `runUserCommand` adds to the conversation.
+   */
+  async function runShellForUser(s: Session, command: string) {
+    startUserTurn();
+    userCommandRunning.current = true;
+    resetPacer();
+    lastRevealAt.current = 0;
+    streamDone.current = false;
+    flush.current = false;
+    const toolId = `user-${crypto.randomUUID()}`;
+    enqueueReveal({ type: "toolStart", toolId, name: "Run", arg: command, action: "run", group: true, at: Date.now(), byUser: true });
+    try {
+      const { result } = await runUserCommand(s, command, {
+        signal: abortRef.current?.signal,
+        onProgress: (text) => enqueueReveal({ type: "toolProgress", toolId, text }),
+      });
+      enqueueReveal({
+        type: "toolEnd",
+        toolId,
+        ok: !result.isError,
+        summary: result.summary,
+        detail: result.detail,
+        detailKind: result.detailKind,
+        detailFull: result.detailFull,
+      });
+    } catch (error) {
+      enqueueReveal({ type: "toolEnd", toolId, ok: false, summary: `could not run: ${errText(error)}` });
+    } finally {
+      userCommandRunning.current = false;
+      // The agent answers it, unless the person stopped it themselves with Esc (they ended it on purpose).
+      if (!abortRef.current?.signal.aborted) wakeAfterUserCommand.current = true;
+      await saveSession(s);
+      streamDone.current = true;
+      if (!pumpTimer.current) pump(); // drain to endTurn even if the row is already shown
     }
   }
 
@@ -2867,7 +3095,11 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
     if (name === "/help") {
       const skills = s.governance.skills ?? [];
       const mcpPrompts = s.toolContext.mcp?.promptCatalog() ?? [];
-      say(
+      // In the full-screen shell the list is set apart from the conversation (a click takes it
+      // away) instead of said into it: a list this long, drawn like the agent's own words, was
+      // hard to tell from what the agent said. The inline shell prints into the terminal's own
+      // scrollback, where nothing can be taken back, so it keeps saying it.
+      const helpText =
         formatHelp([
           { title: "Commands", commands: BASE_COMMANDS },
           {
@@ -2881,8 +3113,9 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
               description: p.description || `prompt from ${p.server}`,
             })),
           },
-        ]),
-      );
+        ]);
+      if (shell === "inline") say(helpText);
+      else dispatch({ type: "help", text: helpText });
       return;
     }
 
@@ -3616,6 +3849,20 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
     const trimmed = value.trim();
     if (trimmed.length === 0 || busy || !ready) return;
 
+    // `!` runs what follows in the project's shell, as the person's own command: no question, no
+    // turn, nothing said to the model. See runShellForUser.
+    if (isUserCommandText(trimmed)) {
+      const s = session.current;
+      if (!s) return;
+      const command = parseUserCommand(trimmed);
+      if (!command) {
+        note("Type the command after the !, for example: ! git status");
+        return;
+      }
+      await runShellForUser(s, command);
+      return;
+    }
+
     if (trimmed.startsWith("/")) {
       // Submitting clears the input, which closes the command list; the surface the command
       // opens can only arrive after the work it does first (reading sessions, refreshing
@@ -3939,6 +4186,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
           items={items}
           width={width}
           maxRows={maxRows}
+          searchBox={providerSearch}
           initialIndex={Math.max(0, providers.findIndex((p) => p.id === active))}
           onSelect={onOverlaySelect}
           onCancel={onOverlayCancel}
@@ -3975,6 +4223,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
           maxRows={maxRows}
           initialIndex={Math.max(0, models.findIndex((m) => m.id === id))}
           initialFilter={overlay.filter}
+          searchBox={modelSearch}
           onSelect={onOverlaySelect}
           onCancel={onOverlayCancel}
         />
@@ -4123,6 +4372,22 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
   // surface — the pickers, the key manager, and the approval prompt — is content-only and
   // renders inside the input's one menu box below the input line. There is no separate
   // "boxed" overlay any more; the box is always the same, only its contents change.
+  // A list of models is searched, not scrolled (OpenRouter's catalogue is nearly three hundred),
+  // and the words are typed in the input box, which becomes the search field for as long as the
+  // list is open (see pickerSearch.ts). The same for every provider, so typing never lands on
+  // the picker's own bottom line while the chat box sits empty.
+  const modelSearchLabel =
+    overlay?.kind === "model"
+      ? (overlay.providerId ? allProviders().find((p) => p.id === overlay.providerId)?.label : undefined) ??
+        providerOf(session.current?.modelConfig.model ?? DEFAULT_MODEL_CONFIG.model).label
+      : undefined;
+  const modelSearch = modelSearchLabel !== undefined;
+  // The provider list is searched the same way.
+  const providerSearch = overlay?.kind === "provider";
+  // The keys manager opens on its provider list, which is searched the same way, unless it was
+  // reached by picking a provider that has no key (it opens on that provider's key field).
+  const keysSearch = keysOpen && !pendingSwitch.current;
+  const searchPlaceholder = modelSearch ? `Search ${modelSearchLabel} models…` : providerSearch || keysSearch ? "Search providers…" : undefined;
   const overlayView = buildOverlayView(maxMenuItems);
   const runningShells = session.current?.toolContext.backgroundShells?.running() ?? [];
   // Where the transcript sits in the viewport, and how far it can travel. Extracted
@@ -4280,7 +4545,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
         {/* Persistent status line: spinner + timer while working,
             "● Cooked for 1m 23s · N tokens" once finished. */}
         <Box flexShrink={0}>
-          <StatusLine busy={busy} startedAt={turnStart.current} lastMs={lastMs} usage={taskUsage} received={liveTokens} advance={advanceTokens} waiting={overlay?.kind === "approval"} waited={() => waitedMs.current + (waitSince.current != null ? Date.now() - waitSince.current : 0)} />
+          <StatusLine busy={busy} userCommand={busy && userTurn.current} startedAt={turnStart.current} lastMs={lastMs} usage={taskUsage} received={liveTokens} advance={advanceTokens} waiting={overlay?.kind === "approval"} waited={() => waitedMs.current + (waitSince.current != null ? Date.now() - waitSince.current : 0)} />
         </Box>
 
         {/* Messages queued while busy — sent in order when the turn ends. */}
@@ -4327,6 +4592,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
               placeCursor={shell === "inline"}
               onQueuePop={popQueue}
               overlay={overlayView}
+              {...(searchPlaceholder ? { searchPlaceholder } : {})}
               fill={fill}
             />
           ) : (
@@ -5020,6 +5286,7 @@ function timeAgo(ms: number): string {
  */
 function StatusLine({
   busy,
+  userCommand,
   startedAt,
   lastMs,
   usage,
@@ -5030,6 +5297,8 @@ function StatusLine({
 }: {
   /** A question is open and the agent is waiting for the person: the clock stands still and says so. */
   waiting: boolean;
+  /** What is running is the person's own `!` command: the line says so, with no verb of the agent's. */
+  userCommand: boolean;
   /** Milliseconds of this turn spent waiting for an answer, including the wait in progress. */
   waited: () => number;
   busy: boolean;
@@ -5080,7 +5349,13 @@ function StatusLine({
     // did. Output is
     // also the only thing that grows continuously while a turn runs, so it animates cleanly.
     const got = received();
-    label = (
+    label = userCommand ? (
+      <Text>
+        {" "}
+        Running your command…{"  "}
+        <Text dimColor>{"< "}{fmtElapsed(secs)}{" >"}</Text>
+      </Text>
+    ) : (
       <Text>
         {" "}
         {waiting ? "Waiting for your answer" : workingVerb(startedAt, Date.now() - startedAt - waited())}…{"  "}
@@ -5121,6 +5396,8 @@ function StatusLine({
 }
 
 /** How often the view scrolls while a drag is held past the edge of the conversation. */
+/** The longest wait between two clicks for them to count as a double (or triple) click. */
+const DOUBLE_CLICK_MS = 500;
 const EDGE_SCROLL_MS = 45;
 
 /** The working line's render clock, in milliseconds. See StatusLine's tick. */

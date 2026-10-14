@@ -134,6 +134,15 @@ test("the box stays on screen from the command list through to what the command 
     // box that survives the transition but changes height moves the input and the chat above
     // it, which is what made the flick noticeable in the first place.
     assert.equal(rows(last()), withList, "and holds the size the command list had");
+    // A held box with nothing in it is a frame of an empty box, which reads as a glitch.
+    // It keeps showing what it was showing until the surface takes its place.
+    assert.ok(last().includes("/provider"), "and is not drawn empty while it waits");
+    assert.ok(!last().includes("Loading"), "and says nothing about loading when the wait is short");
+    // A surface that takes a while (a model list from a server that does not answer) would
+    // otherwise look like an Enter that did nothing.
+    await new Promise((r) => setTimeout(r, 800));
+    assert.ok(last().includes("Loading"), "and says it is loading once the wait is long");
+    assert.equal(rows(last()), withList, "without changing the box's size");
 
     // The surface arrives and takes the same box.
     opening = false;

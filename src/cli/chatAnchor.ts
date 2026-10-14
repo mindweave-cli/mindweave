@@ -103,6 +103,23 @@ export function growScroll(scrollUp: number, prevHeight: number, height: number)
 }
 
 /**
+ * Where the reader should sit after the VIEWPORT changed height: the footer grew (a menu
+ * opened, the input took another line) or shrank, and the chat gave up or got back rows.
+ *
+ * The first frame after such a change is laid out with the old viewport height still in
+ * the scroll arithmetic, so it holds the TOP of the window where it was and clips the
+ * bottom. The measured height arrives a frame later, and the arithmetic (which holds the
+ * newest line a fixed distance from the bottom) then moved the window by the whole
+ * difference: the reader saw the text jump and settle. Moving `scrollUp` by the same
+ * amount in the same update leaves both frames showing the same rows. Pinned to the newest
+ * is left alone: that view is aligned to the bottom by the layout and has nothing to hold.
+ */
+export function viewportScroll(scrollUp: number, prevRows: number, rows: number): number {
+  if (scrollUp <= 0 || prevRows === rows) return scrollUp;
+  return Math.max(0, scrollUp + (prevRows - rows));
+}
+
+/**
  * Where the reader should sit after the transcript re-wraps at a new width.
  *
  * `scrollUp` counts LINES back from the newest, and a line is not a stable unit

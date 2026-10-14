@@ -6,9 +6,13 @@
  * test)`. Pure, display-only (never sent to a model), and deterministic from the
  * tool name + parsed args.
  */
+import { isAbsolute, resolve } from "node:path";
 import { toPathList } from "../tools/pathList.js";
 import { formatDuration } from "../tools/detail.js";
 import { BAD, GOOD } from "./theme.js";
+
+/** What a picture the agent looked at is called on its line. */
+export const VIEWED_NAME = "Viewed";
 
 /** Raw tool name → the bold display name shown in the row. */
 const DISPLAY_NAME: Record<string, string> = {
@@ -26,7 +30,7 @@ const DISPLAY_NAME: Record<string, string> = {
   web_search: "WebSearch",
   screenshot: "WindowCapture",
   ui: "App",
-  view_image: "Viewed",
+  view_image: VIEWED_NAME,
   use_skill: "Skill",
   skill: "Skill",
   todo_write: "Todo",
@@ -170,7 +174,7 @@ export function neverShown(name: string): boolean {
 
 /** Whether a tool call should fold into the discovery group rather than its own row. */
 export function isGroupable(name: string): boolean {
-  return GROUPABLE.has(name) || COMMANDS.has(name) || TEST_STEPS.has(name) || isMcpCall(name) || name === "mcp_server";
+  return GROUPABLE.has(name) || COMMANDS.has(name) || TEST_STEPS.has(name) || isMcpCall(name) || name === "mcp_server" || name === "view_image";
 }
 
 /**
@@ -271,7 +275,7 @@ export interface ToolDisplay {
 }
 
 /** Build the `Name(arg)` display parts for a tool call. */
-export function toolDisplay(name: string, args: Record<string, unknown>): ToolDisplay {
+export function toolDisplay(name: string, args: Record<string, unknown>, cwd?: string): ToolDisplay {
   const kind = toolKind(name);
 
   // mcp__<server>__<tool> has no static DISPLAY_NAME entry (the name is generated
@@ -378,9 +382,9 @@ export function toolDisplay(name: string, args: Record<string, unknown>): ToolDi
   const path = many.length === 1 ? (many[0] ?? "") : "";
   const detail =
     many.length > 1
-      ? many.map(base).join(", ")
+      ? many.map((p) => fullPath(p, cwd)).join(", ")
       : path
-        ? base(path)
+        ? fullPath(path, cwd)
         : str(args.symbol) || str(args.name) || str(args.query) || str(args.label);
   return {
     name: display,
@@ -399,6 +403,18 @@ function str(v: unknown): string {
 function base(p: string): string {
   const parts = p.split(/[\\/]/).filter(Boolean);
   return parts.length > 0 ? parts[parts.length - 1]! : p;
+}
+
+/**
+ * A path as the row names it. The terminal passes the project folder and gets the whole path,
+ * forward slashes, so it can be found and copied (`C:/Projects/Cutio/src/app.ts`); a relative
+ * path is resolved against that folder. A caller without one (the desktop app draws its own
+ * rows) keeps the short form, the file's name.
+ */
+function fullPath(p: string, cwd?: string): string {
+  if (!cwd) return base(p);
+  const abs = isAbsolute(p) ? p : resolve(cwd, p);
+  return abs.replace(/\\/g, "/");
 }
 
 function clip(s: string, max: number): string {

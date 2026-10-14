@@ -505,6 +505,12 @@ export interface ToolContext {
    */
   abortSignal?: AbortSignal;
   /**
+   * The call is the PERSON's own, a command they typed after `!`, not the agent's. The rules written
+   * to stop the agent repeating itself (do not reopen an app the user just closed) do not apply to
+   * the person, who may restart their own app whenever they like. Never set from a model's arguments.
+   */
+  userInitiated?: boolean;
+  /**
    * Where the app the agent is testing streams to while it tests (see `ui`). A front end
    * that can show moving pictures sets it; one that cannot leaves it unset and nothing is
    * streamed. Display only: frames never reach the model, which gets its one picture per

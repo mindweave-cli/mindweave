@@ -21,9 +21,11 @@ import { cleanInputText } from "../inputText.js";
 import { latestScreen } from "../framebuffer/overlay.js";
 import { feedPasteChunk, initPasteState, type PasteState } from "../pasteAssembler.js";
 import { stripMouse } from "../mouse.js";
+import { usePickerSearchActive, usePickerSearchText } from "../pickerSearch.js";
 import { killToLineEnd, wordEnd, wordStart } from "../wordEdit.js";
 import { declareCaret } from "../caretPark.js";
-import { ACCENT } from "../theme.js";
+import { isUserCommandText } from "../../memory/localCommand.js";
+import { ACCENT, WARN } from "../theme.js";
 
 /** The widest the command-name column gets; a longer name is cut with an ellipsis instead of wrapping onto the next row. */
 const NAME_COLUMN_MAX = 18;
@@ -73,6 +75,9 @@ const PASTE_COALESCE_MS = 30;
 const PASTE_CHUNK_MIN = 40;
 // The longest single line still read as typing followed by Enter when it arrives in one chunk.
 const TYPED_THEN_ENTER_MAX = 2000;
+/** How long a held box (see `opening`) waits before it says it is loading. Long enough that
+ *  the usual instant open never shows it. */
+const SLOW_OPEN_MS = 700;
 
 /**
  * The whole input buffer in one state object. Ink runs React in LegacyRoot mode, so
@@ -304,6 +309,12 @@ interface PromptInputProps {
   /** A surface for this box is being opened: hold the frame so it never leaves the screen
    *  between the command list closing and what it opened taking its place. */
   opening?: boolean;
+  /**
+   * The open surface is a search (a long list, such as a router's models): this box becomes the
+   * search field. It shows what the picker says is typed (see pickerSearch.ts), this ghost text
+   * while that is empty, and a border of its own colour, so it reads as a different field.
+   */
+  searchPlaceholder?: string;
   /** Text to put in the box, cursor at the end: a message handed back to be edited (a
    *  rewind). Applied once per new object, so the same text given twice still lands. */
   fill?: { text: string };
@@ -337,6 +348,7 @@ export function PromptInput({
   maxInputRows = DEFAULT_MAX_INPUT_ROWS,
   overlay,
   opening = false,
+  searchPlaceholder,
   fill,
 }: PromptInputProps) {
   const [state, rawDispatch] = useReducer(reduce, INITIAL);
@@ -794,6 +806,31 @@ export function PromptInput({
   // own, so the rows are no longer holding anything up, and keeping them would leave a
   // band of blank above the prompt for the rest of the session.
   const boxRows = overlay || menu || opening ? menuBoxRows + 1 : 0;
+  // What the command list was showing when the command was submitted. Submitting clears
+  // the input, which closes the list, so a box held open for a surface that is still on its
+  // way would otherwise be an empty one for as long as the work takes. It keeps showing the
+  // list instead, and only its contents change when the surface arrives.
+  const lastMenu = useRef<{ menu: NonNullable<typeof menu>; sel: number } | null>(null);
+  if (menu) lastMenu.current = { menu, sel };
+  else if (!opening) lastMenu.current = null;
+  // A command that waits on something slow (a model list from a server that is not
+  // answering) would look like an Enter that did nothing. Past this, the held list says so.
+  const [slowOpen, setSlowOpen] = useState(false);
+  useEffect(() => {
+    if (!opening) {
+      setSlowOpen(false);
+      return;
+    }
+    const t = setTimeout(() => setSlowOpen(true), SLOW_OPEN_MS);
+    return () => clearTimeout(t);
+  }, [opening]);
+  // The box is the search field while the open surface is a search: it shows the picker's words.
+  const searchText = usePickerSearchText();
+  const searchActive = usePickerSearchActive();
+  const searching = !!overlay && searchPlaceholder !== undefined && searchActive;
+  // A line that starts with `!` is a command for the shell, not a message: the box says so by taking
+  // another colour (amber, which neither the ordinary box nor a search uses) for as long as it does.
+  const shellMode = !overlay && isUserCommandText(value);
   const holdRef = useRef(0);
   const heldAt = useRef(settleKey);
   if (heldAt.current !== settleKey) {
@@ -821,10 +858,23 @@ export function PromptInput({
             <SuggestionMenu matches={menu.items} selected={sel} width={width} mode={menu.mode} maxRows={maxMenuRows} bare={menuAbove} />
           ) : (
             // `opening`: a command that opens a surface here was submitted, and the surface
-            // is a moment away. The frame is held open with an empty body so the transition
-            // from the command list to what it opens is a change of CONTENT inside one box
-            // that never leaves the screen.
-            <Box flexDirection="column" height={menuBoxRows - 2} />
+            // is a moment away. The frame is held open, still showing the list it came from,
+            // so the transition from the command list to what it opens is a change of
+            // CONTENT inside one box that never leaves the screen.
+            <Box flexDirection="column" height={menuBoxRows - 2}>
+              {slowOpen ? (
+                <Text dimColor>Loading…</Text>
+              ) : lastMenu.current ? (
+                <SuggestionMenu
+                  matches={lastMenu.current.menu.items}
+                  selected={lastMenu.current.sel}
+                  width={width}
+                  mode={lastMenu.current.menu.mode}
+                  maxRows={maxMenuRows}
+                  bare={menuAbove}
+                />
+              ) : null}
+            </Box>
           )}
       </Box>
     ) : null;
@@ -839,14 +889,15 @@ export function PromptInput({
         width={width}
         flexShrink={0}
         borderStyle="single"
-        borderColor="gray"
+        borderColor={searching ? ACCENT : shellMode ? WARN : "gray"}
         paddingX={1}
       >
         <Field
-          value={value}
-          cursor={cursor}
-          active={!disabled && !overlay}
-          placeholder={overlay ? "" : placeholder}
+          markColor={shellMode ? WARN : ACCENT}
+          value={searching ? searchText : value}
+          cursor={searching ? searchText.length : cursor}
+          active={searching || (!disabled && !overlay)}
+          placeholder={searching ? searchPlaceholder! : overlay ? "" : placeholder}
           width={fieldWidth}
           maxRows={maxInputRows}
           placeCursor={placeCursor}
@@ -986,7 +1037,10 @@ function Field({
   width,
   maxRows,
   placeCursor,
+  markColor = ACCENT,
 }: {
+  /** The colour of the `>` in front of the text: another one while the line is a shell command. */
+  markColor?: string;
   value: string;
   cursor: number;
   active: boolean;
@@ -1101,7 +1155,7 @@ function Field({
         <Box key={i} flexShrink={0}>
           {/* The marker is only on the first row; continuations align under the text
               so a wrapped message reads as one paragraph, not a list. */}
-          <Text bold color={ACCENT}>{i === 0 && view.hiddenAbove === 0 ? "> " : "  "}</Text>
+          <Text bold color={markColor}>{i === 0 && view.hiddenAbove === 0 ? "> " : "  "}</Text>
           <Box
             width={width}
             overflow="hidden"

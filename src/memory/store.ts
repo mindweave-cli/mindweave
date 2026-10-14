@@ -108,7 +108,10 @@ function metaPath(projectCwd: string, id: string): string {
 }
 
 function firstUserText(transcript: Entry[]): string {
-  return transcript.find((e) => e.role === "user")?.content.trim() ?? "";
+  // The first thing the PERSON said: not an engine nudge, and not a command they ran with `!`
+  // (a session that opens with `! git status` is not named by the caveat the model reads).
+  const first = transcript.find((e) => e.role === "user" && !e.synthetic);
+  return first?.content.trim() ?? "";
 }
 
 /** The last thing the PERSON said. Engine-written nudges arrive as `user` messages so

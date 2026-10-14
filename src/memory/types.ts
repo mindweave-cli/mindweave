@@ -92,6 +92,12 @@ type EntryOf =
        * `/continue` with the explanation showing, as if the person had typed that too.
        */
       arrival?: "steered" | "interrupting";
+      /**
+       * Set when this message is a command the PERSON ran themselves with `!`, not something they
+       * said: `content` is what the model reads about it, this is what the screen draws. Always
+       * stored with `synthetic`, so nothing treats it as a request. See `localCommand.ts`.
+       */
+      localCommand?: import("./localCommand.js").LocalCommandRecord;
     }
   | {
       role: "assistant";

@@ -18,9 +18,12 @@ import {
   focusFromPointer,
   isEmptyGrow,
   keyAtRow,
+  lineBounds,
+  nextClick,
   normalizeGrow,
   rowOfKey,
   sortSpans,
+  wordBounds,
   type BlockSpan,
   type GrowSel,
   type View,
@@ -201,4 +204,124 @@ test("the highlight lands on the right screen rows, and an empty selection draws
   const t = screenOf(["row zero"]);
   applyGrowSelection(t, sel([1, 0, 3], [1, 0, 3]), [{ id: 1, top: 0, height: 1 }], { top: 0, bottom: 1 });
   assert.equal((t.attrs[t.index(3, 0)]! & ATTR.inverse) !== 0, false);
+});
+
+// Clicking on text: one click takes the word, two take the line.
+
+const cellsOf = (line: string): number[] => Array.from(line.padEnd(WIDTH)).map((ch) => ch.codePointAt(0)!);
+
+test("a click takes the whole word it is on, from any letter of it", () => {
+  const cells = cellsOf("open the file now");
+  assert.deepEqual(wordBounds(cells, 0), { from: 0, to: 3 });
+  assert.deepEqual(wordBounds(cells, 2), { from: 0, to: 3 });
+  assert.deepEqual(wordBounds(cells, 3), { from: 0, to: 3 });
+  assert.deepEqual(wordBounds(cells, 5), { from: 5, to: 7 });
+  assert.deepEqual(wordBounds(cells, 16), { from: 14, to: 16 });
+});
+
+test("a click on a space, or past the end of the text, takes nothing", () => {
+  const cells = cellsOf("open the file");
+  assert.equal(wordBounds(cells, 4), null);
+  assert.equal(wordBounds(cells, 15), null);
+  assert.equal(wordBounds(cells, -1), null);
+  assert.equal(wordBounds(cells, WIDTH), null);
+});
+
+test("a word runs through punctuation, so a path or an address is taken whole", () => {
+  assert.deepEqual(wordBounds(cellsOf("see src/cli/App.tsx now"), 9), { from: 4, to: 18 });
+});
+
+test("a word that reaches either edge of the row is taken to that edge", () => {
+  assert.deepEqual(wordBounds(cellsOf("x".repeat(WIDTH)), 7), { from: 0, to: WIDTH - 1 });
+});
+
+test("two clicks take the line, from its first character to its last, without the blanks round it", () => {
+  assert.deepEqual(lineBounds(cellsOf("   open the file")), { from: 3, to: 15 });
+  assert.deepEqual(lineBounds(cellsOf("a")), { from: 0, to: 0 });
+});
+
+test("a blank row has no line to take", () => {
+  assert.equal(lineBounds(cellsOf("")), null);
+  assert.equal(lineBounds([0, 0, 0]), null);
+});
+
+test("clicks count up while each comes soon after the last on the same place", () => {
+  const a = nextClick(null, 1000, 10, 5, 500);
+  assert.equal(a.count, 1);
+  const b = nextClick(a, 1300, 10, 5, 500);
+  assert.equal(b.count, 2);
+  const c = nextClick(b, 1600, 11, 5, 500);
+  assert.equal(c.count, 3);
+});
+
+test("a click that comes too late is a first click again, so a stray second click selects nothing", () => {
+  const a = nextClick(null, 1000, 10, 5, 500);
+  const late = nextClick(a, 1501, 10, 5, 500);
+  assert.equal(late.count, 1);
+  const b = nextClick(a, 1500, 10, 5, 500);
+  assert.equal(b.count, 2, "a click exactly on the limit still counts");
+  assert.equal(nextClick(b, 2001, 10, 5, 500).count, 1, "the third click is too late as well");
+});
+
+test("a click somewhere else starts the count over", () => {
+  const a = nextClick(null, 1000, 10, 5, 500);
+  assert.equal(nextClick(a, 1100, 10, 6, 500).count, 1, "another row");
+  assert.equal(nextClick(a, 1100, 20, 5, 500).count, 1, "far along the same row");
+});
+
+test("a fourth click starts over instead of counting on", () => {
+  let c = nextClick(null, 1000, 10, 5, 500);
+  c = nextClick(c, 1100, 10, 5, 500);
+  c = nextClick(c, 1200, 10, 5, 500);
+  assert.equal(c.count, 3);
+  assert.equal(nextClick(c, 1300, 10, 5, 500).count, 1);
+});
+
+// The dot and the ">" in the gutter are the screen's, not the text's.
+
+test("copying a block leaves the dot and the > mark behind, and the gutter its other rows are indented by", () => {
+  const store = new RowStore();
+  const spans: BlockSpan[] = [{ id: 1, top: 0, height: 3 }, { id: 2, top: 3, height: 2 }];
+  store.capture(screenOf(["● first line", "  second line", "  third line", "> my message", "  carries on"], 5), spans, { top: 0, bottom: 5 });
+  const got = store.text(sel([1, 0, 0], [2, 1, 19]), [1, 2]);
+  assert.equal(got.text, "first line\nsecond line\nthird line\nmy message\ncarries on");
+});
+
+test("a selection that starts after the marker takes no marker, and does not touch the indent", () => {
+  const store = new RowStore();
+  store.capture(screenOf(["● first line", "  second line"]), [{ id: 1, top: 0, height: 2 }], { top: 0, bottom: 2 });
+  // Starting at the word "first": column 2, so the dot is not in what was selected.
+  assert.equal(store.text(sel([1, 0, 2], [1, 1, 12]), [1]).text, "first line\n  second line", "the indent is what the text had; it is only taken off with the marker");
+});
+
+test("a dot or a > anywhere but the start of a row is text, and stays", () => {
+  const store = new RowStore();
+  store.capture(screenOf(["● a > b ● c", "  x > y"]), [{ id: 1, top: 0, height: 2 }], { top: 0, bottom: 2 });
+  assert.equal(store.text(sel([1, 0, 0], [1, 1, 8]), [1]).text, "a > b ● c\nx > y");
+});
+
+test("a row that starts with a > but no space after it is not a marker", () => {
+  const store = new RowStore();
+  store.capture(screenOf([">>> prompt"]), [{ id: 1, top: 0, height: 1 }], { top: 0, bottom: 1 });
+  assert.equal(store.text(sel([1, 0, 0], [1, 0, 19]), [1]).text, ">>> prompt");
+});
+
+test("rows of a block whose marker was not selected keep their text exactly as drawn", () => {
+  const store = new RowStore();
+  store.capture(screenOf(["● first line", "  second line", "  third line"]), [{ id: 1, top: 0, height: 3 }], { top: 0, bottom: 3 });
+  assert.equal(store.text(sel([1, 1, 0], [1, 2, 19]), [1]).text, "  second line\n  third line");
+});
+
+test("the highlight leaves out the dot or '>' marker and the indent under it, like the copied text", () => {
+  const s = screenOf(["● first row", "  carried on", "> typed row"]);
+  const spans: BlockSpan[] = [{ id: 1, top: 0, height: 2 }, { id: 2, top: 2, height: 1 }];
+  applyGrowSelection(s, sel([1, 0, 0], [2, 0, 10]), spans, { top: 0, bottom: 3 });
+  const inverse = (x: number, y: number) => (s.attrs[s.index(x, y)]! & ATTR.inverse) !== 0;
+  assert.equal(inverse(0, 0), false, "the dot");
+  assert.equal(inverse(1, 0), false, "the space after it");
+  assert.equal(inverse(2, 0), true, "the text of the row");
+  assert.equal(inverse(0, 1), false, "the indent under the dot");
+  assert.equal(inverse(2, 1), true, "the carried-on text");
+  assert.equal(inverse(0, 2), false, "the > mark");
+  assert.equal(inverse(2, 2), true, "its text");
 });

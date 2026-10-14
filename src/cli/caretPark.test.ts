@@ -100,7 +100,9 @@ test("EVERY write path re-parks the cursor, and presents atomically without hidi
   // seen travelling across the screen.
   const { readFile } = await import("node:fs/promises");
   const source = await readFile(new URL("./framebuffer/writer.ts", import.meta.url), "utf8");
-  const writes = (source.match(/real\.write\(/g) ?? []).length;
+  // Every write to the terminal goes through `send` (which stops them all once the screen is handed back),
+  // and `send` itself calls `real.write`.
+  const writes = (source.match(/(?:real\.write|send)\(/g) ?? []).length;
   const parks = (source.match(/caretTail\(\)/g) ?? []).length;
   const synced = (source.match(/SYNC_START \+ escape/g) ?? []).length;
   assert.ok(writes >= 3, `expected the three write paths, found ${writes}`);
@@ -135,7 +137,8 @@ test("the declaration is made during RENDER, never from a layout effect", async 
   // it: the call must sit in the render body itself.
   const before = source.slice(0, call);
   const lastEffect = Math.max(before.lastIndexOf("useLayoutEffect("), before.lastIndexOf("useEffect("));
-  const lastClose = before.lastIndexOf("});");
+  // An effect closes with `});` or, when it lists what it depends on, `]);`.
+  const lastClose = Math.max(before.lastIndexOf("});"), before.lastIndexOf("]);"));
   assert.ok(
     lastEffect < lastClose,
     "declareCaret is inside an effect — the frame is written before effects run, so it would be a keystroke behind",

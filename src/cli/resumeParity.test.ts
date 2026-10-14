@@ -74,7 +74,10 @@ test("the calls the live path never draws are not drawn on resume either", () =>
   // Replaying it as one puts a row in a resumed transcript that was never in the live
   // one — which is the same complaint from the other direction.
   const replay = app.slice(resumeFrom);
-  const loop = replay.slice(replay.indexOf("for (const call of"), replay.indexOf('type: "toolStart"'));
+  // From the loop over the calls to the row they become (a command the user ran draws a row earlier on, so
+  // the end is looked for AFTER the loop starts).
+  const loopAt = replay.indexOf("for (const call of");
+  const loop = replay.slice(loopAt, replay.indexOf('type: "toolStart"', loopAt));
   assert.match(loop, /spawn_subagent/, "the replay draws the spawn call as an ordinary row");
 });
 

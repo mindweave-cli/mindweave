@@ -12,13 +12,14 @@
  * Ink's wrapper to be inconsistent about.
  */
 import { memo } from "react";
-import { Box, Text } from "ink";
+import { Box, Text, type DOMElement } from "ink";
+import { registerExpandable } from "../expandHits.js";
 import { renderMarkdown } from "../markdown.js";
 import { wrapAnsi, visibleWidth } from "../wrap.js";
 import { BAD, USER_BG, USER_FG } from "../theme.js";
 import { compactionLines } from "../compaction.js";
 import { ToolLine } from "./ToolLine.js";
-import { WorkGroup } from "./WorkGroup.js";
+import { WorkGroup, shadeRows } from "./WorkGroup.js";
 import { SubagentView } from "./SubagentView.js";
 import type { Block } from "../transcript.js";
 
@@ -197,6 +198,35 @@ function BlockViewInner({ block, columns, tightTop, hovered, hoveredItem }: { bl
               </Box>
             )),
           )}
+        </Box>
+      );
+    }
+
+    case "help": {
+      // Mindweave's own text, not part of the conversation, so it is set apart from it: a row in
+      // the same style as the folded ones, with the text on the shaded band under it. It is not
+      // folded, it is asked for; a click anywhere on it takes it away and the conversation is
+      // as it was.
+      const rows = shadeRows(block.text.split("\n"), columns - 4);
+      return (
+        <Box ref={(node: DOMElement | null) => registerExpandable(block.id, node)} marginTop={tightTop ? 0 : 1} flexDirection="column" width={columns}>
+          <Box flexDirection="row" width={columns}>
+            <Box minWidth={2}><Text>{"●"}</Text></Box>
+            <Text bold dimColor={!hovered}>Commands and shortcuts</Text>
+            <Text dimColor>{"  click to close"}</Text>
+            <Text dimColor={!hovered} bold={hovered}>{"  ▾"}</Text>
+          </Box>
+          {rows.map((r, j) => (
+            <Box key={j} flexDirection="row" width={columns}>
+              <Text>{"  "}</Text>
+              <Text backgroundColor={USER_BG} color={USER_FG}>
+                {" "}
+                {r.kind !== undefined ? <Text dimColor>{r.kind}</Text> : null}
+                {r.text}
+                {" ".repeat(r.pad)}{" "}
+              </Text>
+            </Box>
+          ))}
         </Box>
       );
     }

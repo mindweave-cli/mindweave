@@ -256,3 +256,35 @@ test("Esc actually sets the flag, and a new turn clears it", async () => {
   // And the priority has to reach the message, or the model is never told.
   assert.match(app, /arrival: next\.priority === "now" \? "interrupting" : undefined/, "the priority is dropped on the way out");
 });
+
+// ── the person's own shell commands, typed after ! ──────────────────────────────
+
+test("a ! command queues like a slash command: it waits for the turn to end and goes on its own", () => {
+  assert.equal(queueMessage("!git status").priority, "later");
+  assert.equal(isCommand("!x"), true);
+  assert.equal(isCommand("   !x"), true);
+  assert.equal(isCommand("hello !x"), false, "a ! that is not the first character is just text");
+});
+
+test("a ! command is never steered into a turn that is running", () => {
+  const queue = [queueMessage("fix the bug"), queueMessage("!npm test"), queueMessage("and the other bug")];
+  const { send, rest } = takeSteerable(queue);
+  assert.deepEqual(send.map((q) => q.text), ["fix the bug"]);
+  assert.deepEqual(rest.map((q) => q.text), ["!npm test", "and the other bug"], "order kept, nothing overtakes the command");
+});
+
+test("after the turn a ! command goes alone, and the messages around it are not merged into it", () => {
+  const queue = [queueMessage("a"), queueMessage("b"), queueMessage("!echo x"), queueMessage("c")];
+  const first = drain(queue)!;
+  assert.equal(first.send, "a\n\nb");
+  const second = drain(first.rest)!;
+  assert.equal(second.send, "!echo x");
+  assert.equal(second.priority, "later");
+  const third = drain(second.rest)!;
+  assert.equal(third.send, "c");
+});
+
+test("a ! command typed right after Esc is still a command, not a message that interrupts", () => {
+  assert.equal(queueMessage("!echo x", { interrupting: true }).priority, "later");
+  assert.equal(queueMessage("echo x", { interrupting: true }).priority, "now");
+});

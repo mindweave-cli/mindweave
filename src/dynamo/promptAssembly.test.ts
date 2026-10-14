@@ -231,3 +231,23 @@ test("the base prompt keeps sub-agents rare: the agent checks its own work, a ve
   assert.doesNotMatch(p, /SEPARATE verifier/);
   assert.doesNotMatch(p, /fix what it found and run it again/);
 });
+
+// ── the person's own shell commands, typed after ! ──────────────────────────────
+
+test("the agent is told about the ! prompt: send the person there for what only a person can do", () => {
+  for (const shell of ["Windows PowerShell 5.1", "sh"]) {
+    const prompt = basePrompt(shell);
+    assert.match(prompt, /tell them to type it after `!` in the prompt box/, `${shell}: the way to hand a step to the person`);
+    assert.match(prompt, /signing in, a password, a two-factor prompt/, `${shell}: what only a person can do`);
+    assert.match(prompt, /A command marked as run by the user was run by them, not by you/, `${shell}: whose command it is`);
+    assert.match(prompt, /never say or imply that you ran it, and never run it again unless they ask/, `${shell}: not claimed, not repeated`);
+  }
+});
+
+test("it is said once, in the shell section where the agent reads about commands", () => {
+  const prompt = basePrompt("sh");
+  assert.equal(prompt.split("was run by them, not by you").length, 2);
+  const shell = prompt.indexOf("# Using the shell");
+  const note = prompt.indexOf("tell them to type it after `!`");
+  assert.ok(shell >= 0 && note > shell, "inside the shell section, after its heading");
+});

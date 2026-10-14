@@ -113,6 +113,9 @@ export function estimateHeight(block: Block, columns: number): number {
     case "notice":
       rows = textRows(block.title, columns) + textRows(block.body, columns);
       break;
+    case "help":
+      rows = 1 + textRows(block.text, columns);
+      break;
     case "tool":
       rows = 1 + (block.expanded && block.full ? textRows(block.full, columns) : Math.min(textRows(block.detail, columns), DETAIL_GUESS_CAP));
       break;

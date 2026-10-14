@@ -173,7 +173,18 @@ Earlier parts of a long conversation are summarized automatically as the context
 // thin-prompt boundary is about not teaching how to code, not about withholding
 // facts about the environment). Keyed on the shell label so a POSIX host gets the
 // POSIX note instead. `run_command` also appends a live lint advisory on Windows.
+/**
+ * What the agent is told about the `!` prompt. Two things: it can send the person there for what
+ * only a person can do (a login, a password, a prompt that waits for answers), and an entry marked
+ * as their command is theirs, so it is never reported as the agent's own work.
+ */
+export const USER_COMMANDS_NOTE = `When a step needs the person themselves (signing in, a password, a two-factor prompt, an installer that asks questions), do not attempt it. Say what to run and tell them to type it after \`!\` in the prompt box, for example \`! gh auth login\`. Their command runs in their own session; the moment it ends you are given its output, marked as theirs, and you carry on from it exactly as you would have had you run it yourself. Then end your turn and wait for them to run it: do not guess its result. A command marked as run by the user was run by them, not by you: never say or imply that you ran it, and never run it again unless they ask.`;
+
 function shellSection(shell: string): string {
+  return `${shellSectionBody(shell)}\n\n${USER_COMMANDS_NOTE}`;
+}
+
+function shellSectionBody(shell: string): string {
   const isPowerShell = /powershell/i.test(shell);
   if (isPowerShell) {
     return `# Using the shell (${shell})
