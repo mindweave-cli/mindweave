@@ -92,6 +92,11 @@ const PRICES: [fragment: string, price: ModelPrice][] = [
 
 const UNKNOWN_PRICE: ModelPrice = { cacheHit: 0.05, cacheMiss: 0.1, output: 0.5 };
 
+/** Cached data expires after two hours without use. */
+export function cacheLifetimeMs(_model: ModelId): number {
+  return 2 * 60 * 60 * 1000;
+}
+
 export function price(model: ModelId): ModelPrice {
   const id = model.toLowerCase();
   return PRICES.find(([fragment]) => id.includes(fragment))?.[1] ?? UNKNOWN_PRICE;
@@ -177,6 +182,7 @@ export const groqManifest: DriverManifest = {
   models: MODELS,
   thinkLevels,
   price,
+  cacheLifetimeMs,
   contextWindow,
   bufferedOutputTokens,
   normalize,

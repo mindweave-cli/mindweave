@@ -179,7 +179,9 @@ test("the queue is actually WIRED to the running turn", async () => {
   assert.match(handler.slice(0, 900), /takeSteerable\(queueRef\.current\)/, "the drain does not use the queue's own rule");
   // And shown in the chat AS IT GOES, through the pacer, so it lands in the order it
   // happened rather than after the tool rows that came later.
-  assert.match(handler.slice(0, 1400), /enqueueReveal\(\{ type: "user"/, "a steered message is sent without ever appearing on screen");
+  assert.match(handler.slice(0, 2000), /\{ type: "user", text: displayText \}/, "a steered message is sent without ever appearing on screen");
+  assert.match(handler.slice(0, 2000), /enqueueReveal\(a\)/, "a steered message skips the pacer");
+  assert.match(handler.slice(0, 2000), /setDeparting\(/, "a steered message vanishes from the queue line before it reaches the chat");
 });
 
 // ── "now": typed after Esc, and therefore NOT for the turn being killed ───────
@@ -287,4 +289,24 @@ test("after the turn a ! command goes alone, and the messages around it are not 
 test("a ! command typed right after Esc is still a command, not a message that interrupts", () => {
   assert.equal(queueMessage("!echo x", { interrupting: true }).priority, "later");
   assert.equal(queueMessage("echo x", { interrupting: true }).priority, "now");
+});
+
+// ── send now (ctrl+F) ─────────────────────────────────────────────────────────
+
+test("send-now keeps the promises it was built on (source-enforced, as the Esc handler is)", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const app = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
+  const input = await readFile(new URL("./components/PromptInput.tsx", import.meta.url), "utf8");
+  // 1. A stopped turn takes nothing in: a message queued before Esc used to be steered into the turn that was
+  //    being cancelled, drawn in the chat, and never answered.
+  const steer = app.slice(app.indexOf("async function steerRunningTurn"), app.indexOf("async function steerRunningTurn") + 900);
+  assert.match(steer, /if \(abortRef\.current\?\.signal\.aborted\) return \[\];/, "steering into a stopped turn would lose the message");
+  // 2. Send-now is the queue, made quicker. It must never stop, abort or kill anything: a command moves to the
+  //    background and keeps running, and everything else is left alone.
+  const force = app.slice(app.indexOf("function forceSend"), app.indexOf("function forceSend") + 2200);
+  assert.doesNotMatch(force, /\.abort\(|\.kill\(|stopUi|dismissWaiting/, "ctrl+F destroys nothing; only Esc stops things");
+  assert.match(force, /pressBackground\(/, "a command in the way is moved to the background, as ctrl+X does");
+  assert.match(force, /queueMessage\(text/, "the message goes through the same queue as Enter");
+  // 3. The key reaches it from the box that knows what is typed.
+  assert.match(input, /key\.ctrl && input === "f" && onForceSend/);
 });

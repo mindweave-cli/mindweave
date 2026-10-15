@@ -71,6 +71,12 @@ export function formatHelp(sections: readonly HelpSection[]): string {
       "  that was read (lines 410–551, or the whole file). Click a command to see what it\n" +
       "  printed. When it tests your app, each step is a line too (Tested 4 steps), and a\n" +
       "  step that failed says why. A long output, a file written whole or an edit works the same way.",
+    "About a message you want sent now\n" +
+      "  Typing while the agent works queues your message, and it reaches the agent when its\n" +
+      "  current step ends. Press ctrl+F instead of Enter to get it there sooner: a command the\n" +
+      "  agent is waiting on moves to the background (as with ctrl+X) and keeps running, so the\n" +
+      "  step ends and your message arrives at once. Nothing is stopped. With the box empty,\n" +
+      "  ctrl+F does that for what is already queued. Esc is the key that stops things.",
     "About a command that takes long\n" +
       "  After a couple of seconds the command's own line offers ctrl+X. Press it and the\n" +
       "  command the agent is waiting on keeps running as a background shell, and the agent\n" +

@@ -113,6 +113,7 @@ export function renderMessages(req: ModelRequest): {
 } {
   const messages: Anthropic.MessageParam[] = [];
   const extraSystem: string[] = [];
+  const known = new Set((req.deferredTools ?? []).map((t) => t.function.name));
   let pendingResults: Anthropic.ToolResultBlockParam[] = [];
 
   const flushResults = () => {
@@ -123,10 +124,17 @@ export function renderMessages(req: ModelRequest): {
 
   for (const msg of req.messages) {
     if (msg.role === "tool") {
+      // A result that loaded deferred tools is sent as references to them, which the API expands in
+      // place, so the list of tools sent first never changes. Only for tools this request carries:
+      // a reference to one that is not in the list (plan mode hides the mutating ones) is a 400.
+      const refs = (msg.loaded ?? []).filter((name) => known.has(name));
       pendingResults.push({
         type: "tool_result",
         tool_use_id: msg.tool_call_id ?? "",
-        content: msg.content || "(no output)",
+        content:
+          refs.length > 0
+            ? (refs.map((tool_name) => ({ type: "tool_reference", tool_name })) as unknown as Anthropic.ToolResultBlockParam["content"])
+            : msg.content || "(no output)",
       });
       continue;
     }
@@ -205,11 +213,17 @@ function markStablePrefix(messages: Anthropic.MessageParam[]): void {
 
 /** Translate the tool schemas from their stored OpenAI shape. */
 function renderTools(req: ModelRequest): Anthropic.Tool[] {
-  return (req.tools ?? []).map((t) => ({
+  const render = (t: NonNullable<ModelRequest["tools"]>[number]): Anthropic.Tool => ({
     name: t.function.name,
     description: t.function.description,
     input_schema: t.function.parameters as Anthropic.Tool.InputSchema,
-  }));
+  });
+  const loaded = (req.tools ?? []).map(render);
+  // Tools held back until a result references them. All of them on every request, loaded or not, so
+  // the list is identical from one request to the next; they are not part of the prompt until a
+  // result loads them. At least one tool has to be loaded from the start, which is always true.
+  const held = loaded.length > 0 ? (req.deferredTools ?? []).map((t) => ({ ...render(t), defer_loading: true }) as Anthropic.Tool) : [];
+  return [...loaded, ...held];
 }
 
 /**

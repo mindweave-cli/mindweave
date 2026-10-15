@@ -90,18 +90,16 @@ test("a tool the prompt tells the model to use is either advertised or pointed a
   }
 });
 
-test("the shell tools are hidden until a shell exists, and stay once one has", () => {
+test("the shell tools are advertised from the first request, whether or not a shell exists", () => {
+  // The tool list is the first thing a provider hashes for its cache: a tool that appears
+  // when the first background shell starts re-bills the whole conversation at that moment.
   const none = advertised(freshCtx());
-  assert.ok(!none.includes("shells"), "shells is advertised in a session that has never backgrounded anything");
-  assert.ok(!none.includes("kill_shell"), "kill_shell is advertised with no shell to kill");
+  assert.ok(none.includes("shells"), "shells appears only after a shell starts, which changes the cached prefix");
+  assert.ok(none.includes("kill_shell"), "kill_shell appears only after a shell starts, which changes the cached prefix");
 
-  // A FINISHED shell still counts. The gate reads `list()`, not `running()`, so the tool
-  // list latches once per session instead of flipping the cached prefix on every exit.
   const ctx = freshCtx();
   (ctx as { backgroundShells?: unknown }).backgroundShells = { list: () => [{ id: 1, status: "exited" }] };
-  const some = advertised(ctx);
-  assert.ok(some.includes("shells"), "a session with a finished shell cannot read its output");
-  assert.ok(some.includes("kill_shell"));
+  assert.deepEqual(advertised(ctx), none, "starting a shell changed the advertised tools");
 });
 
 test("neither deferral nor gating can hide a tool from dispatch", () => {

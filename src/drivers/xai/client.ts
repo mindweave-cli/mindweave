@@ -64,6 +64,15 @@ export function cacheSplit(usage: Record<string, unknown>): { hit: number; miss:
   return { hit, miss: Math.max(0, prompt - hit) };
 }
 
+/**
+ * xAI keeps each cached prefix on one server and sends a request with the same conversation id to
+ * that server, so the id is what lets a later request find the cache an earlier one wrote. Without
+ * it a request can land on a server that holds nothing. A random id, never the person or project.
+ */
+export function conversationHeader(req: ModelRequest): Record<string, string> | undefined {
+  return req.sessionId ? { "x-grok-conv-id": req.sessionId } : undefined;
+}
+
 /** Everything the shared wire layer needs to talk to xAI. */
 export const xaiProvider: CompatProvider = {
   label: "xAI",
@@ -74,6 +83,7 @@ export const xaiProvider: CompatProvider = {
   extraStop,
   cacheSplit,
   bufferedMaxTokens: BUFFERED_OUTPUT_TOKENS,
+  requestHeaders: conversationHeader,
 };
 
 /** Ask the model for one turn. */

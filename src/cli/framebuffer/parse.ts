@@ -157,23 +157,29 @@ function blank(screen: Screen, from: number, to: number): void {
   screen.attrs.fill(0, lo, hi);
 }
 
+/** Where the next character goes, carried from one line of a frame to the next. */
+interface Cursor {
+  x: number;
+  y: number;
+}
+
 /**
- * Draw `frame` into `screen`, starting at row `top`.
+ * Interpret one line of a frame: text and SGR styling, written at the cursor.
  *
- * The screen is NOT cleared first — the caller decides that, because a resize
- * wants a clean grid while an ordinary frame is a complete repaint of the rows it
- * covers and clearing would be redundant work. Rows the frame does not reach are
- * left alone.
+ * Returns whether the line was PURE: nothing but printable characters and SGR sequences, so that what it
+ * leaves in the grid depends only on the line itself, the pen it started with and the grid's width. Only a
+ * pure line may be remembered (see `parseFrame`); anything that moves the cursor, erases, or is a control
+ * character makes the result depend on more than the text.
  */
-export function parseFrame(screen: Screen, frame: string, top = 0): void {
-  const pen: Pen = { fg: DEFAULT_COLOR, bg: DEFAULT_COLOR, attrs: 0 };
-  let x = 0;
-  let y = top;
+function parseLine(screen: Screen, frame: string, pen: Pen, cursor: Cursor, top: number): boolean {
+  let pure = true;
+  let x = cursor.x;
+  let y = cursor.y;
 
   for (let i = 0; i < frame.length; ) {
     const ch = frame[i]!;
 
-    if (ch === "") {
+    if (ch === "\x1b") {
       // CSI: ESC [ params... final-byte
       if (frame[i + 1] === "[") {
         let j = i + 2;
@@ -190,15 +196,19 @@ export function parseFrame(screen: Screen, frame: string, top = 0): void {
         if (final === "m") {
           applySgr(pen, params);
         } else if (final === "H" || final === "f") {
+          pure = false;
           // Absolute cursor position, 1-based on the real screen. `top` is where
           // row 0 of this grid sits, so it comes back off to get a grid row.
           y = (params[0] ?? 1) - 1 + top;
           x = (params[1] ?? 1) - 1;
         } else if (final === "C") {
+          pure = false;
           x += Math.max(1, params[0] ?? 1);
         } else if (final === "D") {
+          pure = false;
           x = Math.max(0, x - Math.max(1, params[0] ?? 1));
         } else if (final === "J") {
+          pure = false;
           // Erase display. A real terminal blanks the cells; skipping it left this
           // parser believing text was still there that the terminal had already wiped,
           // which is a difference that only shows up on a resize (the one time the
@@ -208,17 +218,21 @@ export function parseFrame(screen: Screen, frame: string, top = 0): void {
           const to = mode === 2 ? screen.chars.length : mode === 1 ? y * screen.width + x : screen.chars.length;
           blank(screen, from, to);
         } else if (final === "K") {
+          pure = false;
           // Erase in line, same three modes but bounded to the current row.
           const mode = params[0] ?? 0;
           const rowStart = y * screen.width;
           const from = mode === 0 ? rowStart + x : rowStart;
           const to = mode === 1 ? rowStart + x + 1 : rowStart + screen.width;
           blank(screen, from, to);
+        } else {
+          pure = false;
         }
         // Every other CSI is skipped whole — see the file header.
         i = j + 1;
         continue;
       }
+      pure = false;
       const introducer = frame[i + 1];
       if (introducer === "]" || introducer === "P" || introducer === "X" || introducer === "^" || introducer === "_") {
         // A STRING sequence: OSC, DCS, SOS, PM, APC. What follows the introducer is
@@ -258,20 +272,15 @@ export function parseFrame(screen: Screen, frame: string, top = 0): void {
       continue;
     }
 
-    if (ch === "\n") {
-      y++;
-      x = 0;
-      i += 1;
-      continue;
-    }
-
     if (ch === "\r") {
+      pure = false;
       x = 0;
       i += 1;
       continue;
     }
 
     if (ch === "\t") {
+      pure = false;
       // Tab stops every eight columns. Stamping the tab itself would put a character in
       // the model that `paint` then writes back out, and the terminal would advance the
       // cursor for it — knocking the rest of the row, and everything the diff believes
@@ -283,6 +292,7 @@ export function parseFrame(screen: Screen, frame: string, top = 0): void {
 
     const control = frame.charCodeAt(i);
     if (control < 0x20 || control === 0x7f) {
+      pure = false;
       // Every remaining C0 control and DEL. A terminal acts on these; none of them leave
       // a glyph behind, so neither may the model.
       if (control === 0x08) x = Math.max(0, x - 1);
@@ -328,4 +338,93 @@ export function parseFrame(screen: Screen, frame: string, top = 0): void {
     }
     x += w;
   }
+
+  cursor.x = x;
+  cursor.y = y;
+  return pure;
+}
+
+/** One remembered line: the cells it writes at the left edge of its row, and the pen it leaves behind. */
+interface RowMemo {
+  chars: Uint32Array;
+  fg: Uint32Array;
+  bg: Uint32Array;
+  attrs: Uint32Array;
+  endFg: number;
+  endBg: number;
+  endAttrs: number;
+  endX: number;
+}
+
+/** Remembered lines. Most of a frame is the same lines as the one before it, and reading a line is the cost. */
+const ROW_MEMO_MAX = 800;
+const rowMemo = new Map<string, RowMemo>();
+
+/**
+ * Draw `frame` into `screen`, starting at row `top`.
+ *
+ * The screen is NOT cleared first — the caller decides that, because a resize
+ * wants a clean grid while an ordinary frame is a complete repaint of the rows it
+ * covers and clearing would be redundant work. Rows the frame does not reach are
+ * left alone.
+ *
+ * A frame is its lines, and between two frames nearly all of them are the same, so a line that has been
+ * read before (same text, same starting pen, same grid width) is copied in from memory instead of being
+ * read again. Only lines that are pure (see `parseLine`) are remembered, and the copy writes exactly the
+ * cells reading would have written. `memo: false` reads everything, for comparing the two.
+ */
+export function parseFrame(screen: Screen, frame: string, top = 0, memo = true): void {
+  const pen: Pen = { fg: DEFAULT_COLOR, bg: DEFAULT_COLOR, attrs: 0 };
+  const cursor: Cursor = { x: 0, y: top };
+  let at = 0;
+  for (;;) {
+    const nl = frame.indexOf("\n", at);
+    const line = nl === -1 ? frame.slice(at) : frame.slice(at, nl);
+    if (line !== "") readLine(screen, line, pen, cursor, top, memo);
+    if (nl === -1) return;
+    cursor.y++;
+    cursor.x = 0;
+    at = nl + 1;
+  }
+}
+
+function readLine(screen: Screen, line: string, pen: Pen, cursor: Cursor, top: number, memo: boolean): void {
+  const y = cursor.y;
+  const inRange = y >= 0 && y < screen.height;
+  // Only a line read from the start of its row, which is every line of a frame.
+  if (!memo || cursor.x !== 0) {
+    parseLine(screen, line, pen, cursor, top);
+    return;
+  }
+  const key = `${screen.width}\u0001${pen.fg}\u0001${pen.bg}\u0001${pen.attrs}\u0001${line}`;
+  const known = rowMemo.get(key);
+  if (known) {
+    if (inRange) {
+      const base = y * screen.width;
+      screen.chars.set(known.chars, base);
+      screen.fg.set(known.fg, base);
+      screen.bg.set(known.bg, base);
+      screen.attrs.set(known.attrs, base);
+    }
+    pen.fg = known.endFg;
+    pen.bg = known.endBg;
+    pen.attrs = known.endAttrs;
+    cursor.x = known.endX;
+    return;
+  }
+  const pure = parseLine(screen, line, pen, cursor, top);
+  if (!pure || !inRange || cursor.y !== y) return;
+  const base = y * screen.width;
+  const extent = Math.min(cursor.x, screen.width);
+  if (rowMemo.size >= ROW_MEMO_MAX) rowMemo.delete(rowMemo.keys().next().value as string);
+  rowMemo.set(key, {
+    chars: screen.chars.slice(base, base + extent),
+    fg: screen.fg.slice(base, base + extent),
+    bg: screen.bg.slice(base, base + extent),
+    attrs: screen.attrs.slice(base, base + extent),
+    endFg: pen.fg,
+    endBg: pen.bg,
+    endAttrs: pen.attrs,
+    endX: cursor.x,
+  });
 }

@@ -240,6 +240,11 @@ function reduce(s: InputState, a: Action): InputState {
 interface PromptInputProps {
   /** Called with the trimmed text when the user sends (Enter). */
   onSubmit: (value: string) => void;
+  /**
+   * ctrl+F: send NOW, stopping the work in flight. Called with what is typed (trimmed, possibly
+   * empty: then it is the queue that goes). The box is emptied first when there was text, as for Enter.
+   */
+  onForceSend?: (value: string) => void;
   /** When true, the box is shown but input is inert (Mindweave is working). */
   disabled?: boolean;
   placeholder?: string;
@@ -262,6 +267,8 @@ interface PromptInputProps {
   /** Hand the App a way to place the caret from a mouse click. Only this component knows
    *  what its rows currently hold, which is what a click has to be resolved against. */
   registerCaretClick?: (place: ((x: number, y: number) => void) | null) => void;
+  /** Hands the app a function that takes the queue back into the box (a click on the queued line). */
+  registerQueuePull?: (pull: (() => void) | null) => void;
   /** Hand the App a way to offer it a dragged range. Returns true when both ends landed
    *  in the input, which tells the App the selection is editable text rather than
    *  something dragged out of the transcript. */
@@ -329,6 +336,7 @@ const DEFAULT_MAX_INPUT_ROWS = 8;
 
 export function PromptInput({
   onSubmit,
+  onForceSend,
   disabled = false,
   placeholder = "",
   width,
@@ -338,6 +346,7 @@ export function PromptInput({
   onLargePaste,
   onDroppedPaths,
   registerCaretClick,
+  registerQueuePull,
   registerTextSelect,
   maxMenuRows = DEFAULT_MAX_SUGGESTIONS,
   onMenuChange,
@@ -642,6 +651,15 @@ export function PromptInput({
         return;
       }
 
+      // ctrl+F: send what is typed (or what is queued) right now, cutting the work short. The same
+      // text Enter would send: the box as it really is, not a frame behind.
+      if (key.ctrl && input === "f" && onForceSend) {
+        const typed = (latest.current.value !== value ? latest.current.value : value).trim();
+        if (typed) dispatch({ t: "reset" });
+        onForceSend(typed);
+        return;
+      }
+
       // Ignore control chords / keys we don't handle here.
       if (key.ctrl || key.meta || key.tab) {
         return;
@@ -747,6 +765,16 @@ export function PromptInput({
     };
     return clickToOffset(view.rows, view.cursorRow, view.cursorCol, rowAt, screen.width, x, y);
   }
+
+  useEffect(() => {
+    if (!registerQueuePull) return;
+    registerQueuePull(() => {
+      if (!onQueuePop) return;
+      const popped = onQueuePop(latest.current.value, latest.current.cursor, "up");
+      if (popped) dispatch({ t: "restore", value: popped.text, cursor: popped.cursor });
+    });
+    return () => registerQueuePull(null);
+  }, [registerQueuePull, onQueuePop]);
 
   useEffect(() => {
     if (!registerCaretClick) return;

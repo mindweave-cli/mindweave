@@ -208,6 +208,9 @@ export function microCompactThreshold(model: string): number {
  * 60 minutes is the smallest value that is safe everywhere: past an hour no provider in
  * the lineup is documented to still be holding the prefix, so clearing can only be
  * reclaiming something already lost. Being wrong is then free rather than expensive.
+ *
+ * This is the value for a provider that states no lifetime of its own. One that does (see
+ * `cacheLifetimeFor`) is trusted instead, so a short-lived cache is recognised as gone sooner.
  */
 export const CACHE_TTL_MS = (() => {
   const raw = Number(process.env.MINDWEAVE_CACHE_TTL_MS);
@@ -222,33 +225,113 @@ export const CACHE_TTL_MS = (() => {
 const COLD_COMPACT_FLOOR = 0.5;
 
 /**
- * Whether to microcompact because the provider's cache has gone cold, rather than
- * because context is filling up.
+ * How long this model's provider keeps a cached prefix after its last use: what the driver says,
+ * else the long default above. `MINDWEAVE_CACHE_TTL_MS` overrides both.
+ */
+export function cacheLifetimeFor(model: string): number {
+  const raw = Number(process.env.MINDWEAVE_CACHE_TTL_MS);
+  if (Number.isFinite(raw) && raw > 0) return raw;
+  return manifestForModel(model).cacheLifetimeMs?.(model) ?? CACHE_TTL_MS;
+}
+
+/**
+ * Whether this model's provider discounts cached input at all. Where a cache hit costs what a miss
+ * costs (or nothing is charged), timing a rewrite around the cache gains nothing.
+ */
+export function cacheIsDiscounted(model: string): boolean {
+  const price = manifestForModel(model).price(model);
+  return price.cacheMiss > 0 && price.cacheHit < price.cacheMiss;
+}
+
+/**
+ * What the next request to a model will find in the provider's cache.
+ *
+ *  - `warm`: this model was called within its provider's cache lifetime.
+ *  - `idle`: it was called, but longer ago than that.
+ *  - `switched`: other models were called in this session and this one has not been. Providers
+ *    cache per model, so the copy the previous model holds is of no use to this one, however
+ *    recently it was written.
+ *  - `none`: no call has been made, so there is nothing cached.
+ *
+ * A session reopened from a file starts with its last model stamped at the time the file was last
+ * saved, so a long break reads as `idle` and a model change as `switched`.
+ */
+export type CacheStatus = "warm" | "idle" | "switched" | "none";
+
+export function cacheStatus(o: {
+  now: number;
+  model: string;
+  /** When each model was last called in this session, epoch ms. */
+  lastByModel?: Readonly<Record<string, number>>;
+  ttlMs: number;
+}): CacheStatus {
+  const last = o.lastByModel?.[o.model];
+  if (last && last > 0) return o.now - last > o.ttlMs ? "idle" : "warm";
+  return o.lastByModel && Object.keys(o.lastByModel).length > 0 ? "switched" : "none";
+}
+
+/** Whether the provider holds no usable copy of the conversation for the next request. */
+export function isCold(status: CacheStatus): boolean {
+  return status === "idle" || status === "switched";
+}
+
+/**
+ * Whether to microcompact because the provider's cache is gone, rather than because context is
+ * filling up.
  *
  * The normal gate exists for a specific reason: clearing an old tool body REWRITES the
  * transcript, and the transcript is the cached half of the request, so on a warm cache
  * it trades a cheap cached read for a full prefix rewrite at 1.25x. That is a loss, and
  * it is why microcompaction waits for real pressure.
  *
- * None of that argument survives the cache expiring. Once the gap since the last call
- * exceeds the TTL there is no entry left to invalidate — the next request pays to write
- * the whole prefix no matter what it contains. Clearing stale tool bodies first is then
- * strictly free, and the tokens never have to be paid for again.
- *
- * `lastCallAt` of 0 means no call has been made yet (a fresh session), which is not a
- * cold cache — it is no cache, with nothing yet worth clearing.
+ * None of that argument survives the cache being gone. There is no entry left to invalidate —
+ * the next request pays to write the whole prefix no matter what it contains. Clearing stale
+ * tool bodies first is then strictly free, and the tokens never have to be paid for again.
  */
-export function cacheLikelyCold(
-  lastCallAt: number,
-  now: number,
-  used: number,
-  microBar: number,
-  ttlMs: number = CACHE_TTL_MS,
-): boolean {
-  if (lastCallAt <= 0) return false;
-  if (now - lastCallAt <= ttlMs) return false;
-  return used >= microBar * COLD_COMPACT_FLOOR;
+export function cacheLikelyCold(status: CacheStatus, used: number, microBar: number): boolean {
+  return isCold(status) && used >= microBar * COLD_COMPACT_FLOOR;
 }
+
+/**
+ * Whether to compact the conversation from the session notes now, because the whole history is
+ * about to be sent at full price regardless.
+ *
+ * Only when there is a lot to shrink (at the micro bar), only where the provider discounts cached
+ * input (otherwise the timing gains nothing), and not twice in quick succession: compacting loses
+ * detail, and someone moving between models should not have it happen on every switch.
+ */
+export function shouldCompactForCold(o: {
+  status: CacheStatus;
+  used: number;
+  microBar: number;
+  discounted: boolean;
+  /** When the last such compaction ran, epoch ms, if one did. */
+  lastColdCompactAt?: number;
+  /** How long this model has gone uncalled. */
+  idleMs: number;
+  now: number;
+}): boolean {
+  if (!isCold(o.status) || !o.discounted) return false;
+  // A short break is not worth losing detail over, even on a provider whose cache is gone by then.
+  if (o.status === "idle" && o.idleMs < COLD_COMPACT_MIN_IDLE_MS) return false;
+  if (o.used < o.microBar) return false;
+  return !(o.lastColdCompactAt && o.now - o.lastColdCompactAt < COLD_COMPACT_COOLDOWN_MS);
+}
+
+/** The line shown in the chat when the conversation is compacted because the provider's cache is gone. */
+export function coldCompactionLine(status: CacheStatus, model: string, idleMs: number): string {
+  const why =
+    status === "switched"
+      ? `${model} has no cached copy of this conversation`
+      : `the provider's cache for this conversation expired after ${Math.max(1, Math.round(idleMs / 60_000))} minutes idle`;
+  return `Compacted automatically: ${why}, so it was going to be re-sent at full price anyway. The session notes and the latest work were kept.`;
+}
+
+/** An idle break shorter than this never compacts the conversation, whatever the provider's cache lifetime. */
+export const COLD_COMPACT_MIN_IDLE_MS = 15 * 60 * 1000;
+
+/** After a compaction for a cold cache, wait this long before doing it again. */
+export const COLD_COMPACT_COOLDOWN_MS = 30 * 60 * 1000;
 
 /**
  * Fraction of the prefix a clear must reclaim to pay for the cache rewrite it causes.

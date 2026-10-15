@@ -124,6 +124,11 @@ const PRICES: Record<string, ModelPrice> = {
   [LUNA]: { cacheHit: 0.02, cacheMiss: 0.2, output: 1.2 },
 };
 
+/** A prefix stays eligible about 30 minutes after its last use, and may be kept longer. */
+export function cacheLifetimeMs(_model: ModelId): number {
+  return 30 * 60 * 1000;
+}
+
 /** Cache-aware list price for a model, falling back to the default model's. */
 export function price(model: ModelId): ModelPrice {
   return PRICES[model] ?? PRICES[DEFAULT_MODEL]!;
@@ -214,6 +219,7 @@ export const openaiManifest: DriverManifest = {
   models: MODELS,
   thinkLevels,
   price,
+  cacheLifetimeMs,
   contextWindow,
   bufferedOutputTokens,
   acceptsImages,

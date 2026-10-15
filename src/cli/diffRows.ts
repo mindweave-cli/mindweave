@@ -122,3 +122,18 @@ export function markChangedWords(rows: readonly (DiffRow | null)[]): (readonly S
   }
   return marks;
 }
+
+/**
+ * A line with its tabs written out as spaces, to the next stop (pure).
+ *
+ * A tab moves the cursor without painting anything, so in a tinted row it left a hole in the
+ * colour wherever code was indented with tabs, and the terminal's idea of the row's width no
+ * longer matched the one the layout had measured, which made the right edge of the band ragged
+ * and cut lines at the wrong place.
+ */
+export function expandTabs(line: string, stop = 4): string {
+  if (!line.includes("\t")) return line;
+  let out = "";
+  for (const ch of line) out += ch === "\t" ? " ".repeat(stop - (out.length % stop)) : ch;
+  return out;
+}

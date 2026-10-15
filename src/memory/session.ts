@@ -502,6 +502,10 @@ export async function resumeSession(
     // what was just read. See governor/freshness.ts.
     governanceStamp: stamp,
     modelConfig,
+    // When the last call finished, so a session reopened after a long break is known to have lost
+    // its provider cache and one reopened a minute later is not. Keyed by the model that made it:
+    // reopened on a different model, nothing is cached for that one.
+    ...(meta.updatedAt ? { lastCallByModel: { [meta.model ?? modelConfig.model]: meta.updatedAt }, lastCallAt: meta.updatedAt } : {}),
     // The maintained session notes survive a resume, so a continued session keeps its
     // crisp running state. The watermark starts fresh; it'll refresh as it grows again.
     ...(sessionMemory ? { sessionMemory, sessionMemoryInit: true } : {}),

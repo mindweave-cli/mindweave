@@ -30,6 +30,10 @@ import type { ChildProcess } from "node:child_process";
 import { killTree, killTreeSync } from "./killTree.js";
 import { OutputReader, removeOutputFile, sizeOf } from "./commandOutput.js";
 import { stripNativeStderrNoise } from "./nativeStderr.js";
+import { defangHarnessMarkers } from "./untrusted.js";
+
+/** What a shell printed, as the model reads it: the PowerShell stderr dressing removed, and the harness tags defanged. */
+const forModel = (text: string): string => defangHarnessMarkers(stripNativeStderrNoise(text));
 
 const MAX_BUFFER_CHARS = 5_000_000;
 /** How often a running shell's output file is read. Fast enough that  returns
@@ -168,6 +172,29 @@ export function guessNotifyPolicy(command: string): NotifyPolicy {
 }
 
 /**
+ * Servers and watchers outside the npm world, written as the commands people type. Each one runs until
+ * it is stopped, so it never "finishes": `flask run`, `python manage.py runserver`, `docker compose up`.
+ *
+ * Left OUT on purpose, because the same words are often a finite program: `cargo run`, `go run`, `dotnet run`
+ * and `python app.py` (a CLI as often as a server). Those still wait in the foreground, and a command the
+ * person typed moves to the background after two minutes or with ctrl+X. `docker compose up -d` is left
+ * out too: it starts the containers and returns.
+ */
+const OTHER_SERVER_COMMANDS: readonly RegExp[] = [
+  /\bflask\b[^\n]*\brun\b/,
+  /\bmanage\.py\s+runserver/,
+  /\b(?:uvicorn|gunicorn|hypercorn|daphne|waitress-serve|streamlit\s+run|jupyter\s+(?:notebook|lab)|ollama\s+serve)\b/,
+  /\bpython3?\s+-m\s+(?:http\.server|flask\s+run|uvicorn|gunicorn|streamlit)\b/,
+  /\b(?:rails|bin\/rails)\s+(?:s|server)\b/,
+  /\bphp\s+artisan\s+serve\b/,
+  /\bphp\s+-s\s/,
+  /\b(?:hugo|jekyll|mkdocs|eleventy|zola)\s+(?:server|serve)\b/,
+  /\b(?:gatsby\s+develop|trunk\s+serve|cargo\s+(?:watch|leptos\s+watch)|dotnet\s+watch|deno\s+(?:serve|task\s+(?:dev|start|serve)))\b/,
+  /(?:^|[\s;&|])(?:tsc|rollup|esbuild|webpack|parcel|jest|vitest|sass|tailwindcss)\b[^\n]*\s(?:--watch|-w|--serve)\b/,
+  /\bdocker[- ]compose\s+up\b(?![^\n]*(?:\s-d\b|--detach))/,
+];
+
+/**
  * Is this command a dev server / interactive app — something that runs until stopped,
  * where "it exited" means the USER closed it, NOT that a task finished? (pure/tested)
  *
@@ -179,6 +206,8 @@ export function guessNotifyPolicy(command: string): NotifyPolicy {
  */
 export function isInteractiveServerCommand(command: string): boolean {
   const c = command.toLowerCase();
+  // Servers and watchers outside npm come first: `docker compose up --build` has the word "build" and runs on.
+  if (OTHER_SERVER_COMMANDS.some((re) => re.test(c))) return true;
   if (/\bbuild\b/.test(c)) return false; // `next build`, `tauri build`, `vite build` — finite
   // Package-runner dev/serve/start/preview scripts: `npm run dev`, `pnpm start`, `yarn serve`.
   if (/\b(npm|pnpm|yarn|bun)\b[^\n]*\b(dev|serve|start|preview)\b/.test(c)) return true;
@@ -787,7 +816,7 @@ export class BackgroundShells {
     await entry.finalRead;
     const fresh = entry.reader ? await entry.reader.next(POLL_READ_BYTES) : "";
     if (fresh) this.append(entry, fresh);
-    const output = stripNativeStderrNoise(entry.seen.slice(Math.max(0, entry.seen.length - TAIL_CHARS)));
+    const output = forModel(entry.seen.slice(Math.max(0, entry.seen.length - TAIL_CHARS)));
     // What was just handed over is not handed over again.
     entry.notifiedUpto = entry.seen.length;
     if (outcome === "up") {
@@ -814,7 +843,7 @@ export class BackgroundShells {
     await entry.finalRead;
     const fresh = entry.reader ? await entry.reader.next(POLL_READ_BYTES) : "";
     if (fresh) this.append(entry, fresh);
-    let chunk = stripNativeStderrNoise(entry.seen.slice(entry.handed));
+    let chunk = forModel(entry.seen.slice(entry.handed));
     entry.handed = entry.seen.length;
     if (chunk.length > MAX_READ_CHARS) {
       chunk = `… (earlier output omitted)\n${chunk.slice(chunk.length - MAX_READ_CHARS)}`;
@@ -835,7 +864,7 @@ export class BackgroundShells {
     await entry.finalRead;
     const fresh = entry.reader ? await entry.reader.next(POLL_READ_BYTES) : "";
     if (fresh) this.append(entry, fresh);
-    const all = stripNativeStderrNoise(entry.seen);
+    const all = forModel(entry.seen);
     const clipped = all.length > maxChars || entry.truncated === true;
     return { info: view(entry), tail: all.length > maxChars ? all.slice(all.length - maxChars) : all, clipped };
   }
@@ -925,7 +954,7 @@ export class BackgroundShells {
     // so each note continues where the previous one stopped.
     const deltaOf = (entry: Entry) => {
       const fresh = entry.seen.slice(entry.notifiedUpto);
-      return stripNativeStderrNoise(fresh.slice(Math.max(0, fresh.length - TAIL_CHARS)));
+      return forModel(fresh.slice(Math.max(0, fresh.length - TAIL_CHARS)));
     };
     for (const entry of this.shells.values()) {
       // Cut ONCE per shell per drain, and handed to the first note that fires. Two events
@@ -963,7 +992,7 @@ export class BackgroundShells {
         out.push({
           info: view(entry),
           kind: "stalled",
-          tail: stripNativeStderrNoise(entry.seen.slice(Math.max(0, entry.seen.length - TAIL_CHARS))),
+          tail: forModel(entry.seen.slice(Math.max(0, entry.seen.length - TAIL_CHARS))),
           wake: true,
         });
         emitted = true;

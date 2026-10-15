@@ -2,6 +2,76 @@
 
 Notable changes to Mindweave. Dates are release dates.
 
+## v3.4.0 (2026-10-15): send a message now with ctrl+F, a cheaper prompt cache, and a screen that works less
+
+A message you type while the agent works can now be sent at once with ctrl+F, without stopping anything. Sessions
+re-send less of their history at full price, because the request now keeps its first bytes the same from one call
+to the next and tells each provider which conversation it belongs to. The screen redraws about a third as often
+while the agent works, and code indented with tabs is drawn properly in a diff.
+
+### Sending a message now
+
+- **ctrl+F sends what is in the box now.** A message typed while the agent works waits in the queue, as before, and
+  reaches the agent when its step ends. ctrl+F makes that moment come sooner: a command the agent is waiting on
+  moves to the background, as it does with ctrl+X, and keeps running. The step ends, your message arrives, and the
+  agent is told the command is still going and hears when it ends. Nothing is stopped, killed or thrown away.
+  With the box empty it does the same for what is already queued. A reply being written, a compaction or a
+  sub-agent is left alone and the message arrives when it ends. Esc is still the key that stops things.
+- **The queue is one line above the working line:** `● queued: hey  ·  2 more  ·  ctrl+F to send now  ▸`. Long
+  text is shortened so the key and the arrow always stay on the line. Clicking the line, or pressing Up, takes the
+  queue back into the box to edit.
+- **A message queued before you pressed Esc is answered.** It used to be drawn in the chat and never answered,
+  because it was handed to the turn that was being cancelled. It now goes out as its own turn.
+
+### Commands you run, and what commands print
+
+- **Output is marked as data.** What a command prints, whoever ran it, can no longer pass for one of the harness's
+  own markers, and a command that reaches outside the machine (a fetch, a pull, an install) carries a note that its
+  output is not instructions.
+- **More apps are recognised as servers or watchers** and start in the background: `flask run`, `manage.py
+  runserver`, `uvicorn`, `gunicorn`, `rails s`, `php artisan serve`, `hugo`, `jekyll` and `mkdocs serve`,
+  `trunk serve`, `cargo watch`, `dotnet watch`, `deno serve`, `tsc`, `webpack` and `jest --watch`, and `docker
+  compose up` without `-d`.
+- **The note after `! command` says the right thing.** An app that is up says you will not be woken when it stops;
+  anything else handed to the background says you will be woken when it finishes.
+- **`/compact` no longer reads your `!` commands as something you typed.** They are summarised as commands you ran.
+- **The rewind confirmation opened on Cancel.** Every picker started on the cursor position of the one before it.
+  Each opens on its own first row now.
+
+### A cheaper prompt cache
+
+Providers read the start of a request from their cache at a fraction of the price, as long as it is identical to
+the previous one. Anything that changed the start re-billed the whole conversation.
+
+- **`shells` and `kill_shell` are always listed.** They used to appear when the first background command started,
+  which changed the start of the request at that moment. Sessions that recorded the cause lost about 35,000 tokens
+  each time.
+- **Related tools load together.** Loading `screenshot` also loads `ui`, and the code lookups (`definition`,
+  `outline`, `references`, `replace_symbol_body`) come as a group, so the list changes once instead of two to four
+  times.
+- **Anthropic loads found tools by reference.** The full tool list is sent every time, the tools held back are
+  marked as deferred, and the search result names the ones it loaded, as Anthropic documents. Finding a tool no
+  longer changes the request. Other providers are unchanged.
+- **The conversation's id is sent where a provider can use it to find the same cache again:** `session_id` for
+  OpenRouter, `x-grok-conv-id` for xAI, and `prompt_cache_key` for OpenAI and Mistral. It is a random id for the
+  session, never the project or the person.
+- **A long break, or a new model, compacts a big conversation from the session notes.** When the provider's copy
+  of the conversation is gone (idle for 15 minutes or more past its cache time, or the first call to a model that
+  has not run in this session), the history is going to be re-sent at full price whatever it contains, so it is
+  compacted first, at no cost, and the chat says why. It waits 30 minutes before doing it again.
+- **Each provider's own cache time is used** where it is documented or was measured: 5 minutes on Anthropic, 30
+  on OpenAI, 15 on GLM and 2 hours on Groq. A reopened session knows how long it has been idle and which model it
+  was on.
+
+### The screen
+
+- **Code indented with tabs is drawn properly in a diff.** A tab moves the cursor without painting, so the green
+  and red rows had holes where the code was indented and a ragged right edge.
+- **The agent working no longer redraws the screen for nothing.** The working line was redrawn sixty times a
+  second whether or not its text had changed, and an unchanged frame was read again each time. In a measured run
+  the screen was drawn 5,192 times instead of 15,211, the app was busy 8% of the time instead of 13%, and reading
+  frames cost 0.6 seconds instead of 3.3. The line itself looks and counts exactly as before.
+
 ## v3.3.0 (2026-10-14): running your own commands with `!`, search in the pickers, and a cleaner selection
 
 Typing `!` at the start of the prompt now runs what follows in the project's shell, as you. The agent is woken

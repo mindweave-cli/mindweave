@@ -18,7 +18,7 @@
  *
  * Pure. The running of the command is `tools/userCommand.ts`.
  */
-import { defangHarnessMarkers } from "../tools/untrusted.js";
+import { COMMAND_OUTPUT_NOTE, defangHarnessMarkers } from "../tools/untrusted.js";
 import type { Entry } from "./types.js";
 
 /** The shape of a user entry, which is what a command run by the person is stored as. */
@@ -148,11 +148,24 @@ export function localCommandEntry(
   // the agent about ITS command ("say one short line, then stop"); this one is not its command, so the
   // agent is only told what happened and that nothing is asked of it.
   const background = /^(?:Backgrounded|Running) as shell #(\d+)/.exec(result.summary ?? "");
+  // An app or a server was watched through its first moments and is up ("Running as"): the agent is not
+  // woken when it stops later, because the user closing their own app is not news; it is only noted.
+  // Anything else handed to the background ("Backgrounded as") wakes the agent when it finishes.
+  const isApp = /^Running as/.test(result.summary ?? "");
   const output = background
-    ? `It is running in the background as shell #${background[1]}, started by the user (an app or server that keeps running, or a command they moved there). You will be told when it finishes (for an app, when it is up or stops early), as you are for your own background commands. Say in one short line that you see it running and that you will follow up then, and do not wait or poll. The shells tool can inspect it; stop it only if the user asks.`
+    ? `It is running in the background as shell #${background[1]}, started by the user. ` +
+      (isApp
+        ? `It is an app or server that keeps running, so you will not be woken when it stops: if the user stops it you get a quiet note with your next message, and nothing more. Do not restart it. `
+        : `You will be woken when it finishes, as you are for your own background commands, and will be given what it printed. `) +
+      `Say in one short line that you see it running${isApp ? "" : " and that you will follow up when it is done"}, and do not wait or poll. The shells tool can inspect it; stop it only if the user asks.`
     : // The shell tool ends a start-up failure with an order meant for the agent's OWN command
       // ("fix the cause and start it again"). This one is the user's: it is not to be run again.
-      plain(result.output).replace(/\n*Fix the cause and start it again if the task needs it running\.\s*$/, "");
+      // And the shell tool's own reminder that outside text is data: an entry of the user's carries one of its
+      // own after the output (OUTPUT_NOTE), so it is not said twice.
+      plain(result.output)
+        .replace(/\n*Fix the cause and start it again if the task needs it running\.\s*$/, "")
+        .split(`\n${COMMAND_OUTPUT_NOTE}`)
+        .join("");
   const full = keepFull(result.detail, result.detailFull);
   return {
     role: "user",
@@ -168,6 +181,21 @@ export function localCommandEntry(
       lines: outputLines(output),
     },
   };
+}
+
+/**
+ * What the summarizer is shown for a command the person ran (pure): the command and what it printed, without the
+ * caveat and the data reminder the live model needs. Under a header of its own, so the summary's "every message
+ * the user sent" does not list the harness's own words, or the command, as something the person wrote.
+ */
+export function localCommandForSummary(e: UserEntry): string {
+  const body = e.content
+    .replace(/<local-command-caveat>[\s\S]*?<\/local-command-caveat>\n?/, "")
+    .split("\n" + OUTPUT_NOTE)
+    .join("")
+    .replace(/<\/?user-command(?:-output)?>/g, "")
+    .trim();
+  return "=== USER-RUN COMMAND (the user ran this themselves in their own shell; it is not a message they wrote and not a request) ===" + "\n" + body;
 }
 
 /**

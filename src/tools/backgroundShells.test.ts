@@ -124,6 +124,27 @@ test("isInteractiveServerCommand: dev servers vs finite tasks", () => {
   }
 });
 
+test("isInteractiveServerCommand: servers and watchers outside npm are recognised, finite programs are not", () => {
+  const servers = [
+    "flask run", "flask --app app run --debug", "python manage.py runserver", "python -m http.server 8000",
+    "uvicorn main:app --reload", "gunicorn app:app", "streamlit run app.py", "jupyter lab", "ollama serve",
+    "rails s", "rails server -p 4000", "php artisan serve", "php -S localhost:8000", "hugo server", "jekyll serve",
+    "mkdocs serve", "trunk serve", "cargo watch -x run", "dotnet watch run", "deno task dev", "deno serve main.ts",
+    "tsc --watch", "tsc -w", "webpack --watch", "jest --watch", "docker compose up", "docker-compose up web",
+    "docker compose up --build",
+  ];
+  for (const c of servers) assert.equal(isInteractiveServerCommand(c), true, `${c} should be a server`);
+  const finite = [
+    "cargo run", "go run .", "dotnet run", "python app.py", "docker compose up -d", "docker compose up --detach web",
+    "docker compose build", "docker compose down", "flask routes", "python -m pytest", "tsc --noEmit", "jest",
+    "rails db:migrate", "cargo build --release", "php -v", "jupyter --version",
+  ];
+  for (const c of finite) assert.equal(isInteractiveServerCommand(c), false, `${c} should NOT be a server`);
+  // The default policy follows: a server is reported when it comes up, anything else when it finishes.
+  assert.equal(guessNotifyPolicy("flask run"), "on_failure");
+  assert.equal(guessNotifyPolicy("cargo run"), "on_finish");
+});
+
 test("a dev server that exits instantly never came up, so it DOES interrupt", async () => {
   // Exit code 0, but in a few milliseconds: a dev script that quits immediately did
   // not start a server, and the user never saw one. The old rule read the zero and
@@ -478,9 +499,11 @@ test("a declared policy beats the name guess", async () => {
 test("guessNotifyPolicy is only a fallback, and is honest about what it knows", () => {
   assert.equal(guessNotifyPolicy("npm run dev"), "on_failure");
   assert.equal(guessNotifyPolicy("npm run build"), "on_finish");
-  // The cases the name list cannot see. These are why the caller should declare.
+  // The cases the name list cannot see. These are why the caller should declare: `cargo run` may be a
+  // server or a finite tool, and a plain path to a binary says nothing.
   assert.equal(guessNotifyPolicy("cargo run"), "on_finish");
-  assert.equal(guessNotifyPolicy("docker compose up"), "on_finish");
+  assert.equal(guessNotifyPolicy("./my-server --port 80"), "on_finish");
+  assert.equal(guessNotifyPolicy("docker compose up"), "on_failure");
 });
 
 /**

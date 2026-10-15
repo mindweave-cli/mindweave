@@ -102,7 +102,7 @@ test("moved to the background, the agent is told it will be woken when it finish
     assert.match(result.summary ?? "", /^Backgrounded as shell #\d+/);
     assert.match(entry.content, /The user ran the command below themselves/);
     assert.match(entry.content, /running in the background as shell #\d+, started by the user/);
-    assert.match(entry.content, /You will be told when it finishes/);
+    assert.match(entry.content, /You will be woken when it finishes/);
     assert.doesNotMatch(entry.content, /notified AUTOMATICALLY/, "the agent is not promised a report on the person's command");
     const shells = s.toolContext.backgroundShells!;
     const still = shells.running();
@@ -166,7 +166,8 @@ test("an app or a dev server starts in the background, and the agent is told it 
     assert.equal(s.transcript.length, 1, "and the conversation already holds it");
     assert.match(entry.content, /The user ran the command below themselves/);
     assert.match(entry.content, /running in the background as shell #\d+, started by the user/);
-    assert.match(entry.content, /You will be told when it finishes/);
+    assert.match(entry.content, /you will not be woken when it stops/, "an app is not promised a wake when it stops");
+    assert.doesNotMatch(entry.content, /You will be woken when it finishes/);
     assert.doesNotMatch(entry.content, /Then STOP/, "the shell tool's words to the agent about ITS command are not passed on");
     assert.equal(entry.localCommand?.ok, true);
     const shells = s.toolContext.backgroundShells!;

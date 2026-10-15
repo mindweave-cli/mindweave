@@ -126,6 +126,9 @@ export interface CompatProvider {
   /** Extra request headers, e.g. a router's app identification. Optional. */
   headers?: Record<string, string>;
 
+  /** Headers that depend on the request, such as the id of the conversation it belongs to. */
+  requestHeaders?(req: ModelRequest): Record<string, string> | undefined;
+
   /**
    * Last word on the request body before it is sent, for what the shared shape cannot
    * express: a router's model id differs from the id Mindweave stores, and explicit
@@ -726,6 +729,12 @@ export async function listModels(provider: CompatProvider): Promise<ListedModel[
   return (body.data ?? []).filter((m) => typeof m.id === "string" && m.id.length > 0);
 }
 
+/** The provider with this request's own headers folded in. */
+function withRequestHeaders(provider: CompatProvider, req: ModelRequest): CompatProvider {
+  const extra = provider.requestHeaders?.(req);
+  return extra ? { ...provider, headers: { ...provider.headers, ...extra } } : provider;
+}
+
 /** Ask the model for one turn. */
 export async function compatToolTurn(
   provider: CompatProvider,
@@ -733,7 +742,7 @@ export async function compatToolTurn(
   signal?: AbortSignal,
 ): Promise<Turn> {
   const body = { ...buildBody(provider, req, provider.bufferedMaxTokens), stream: false };
-  return toTurn(provider, await post(provider, body, signal));
+  return toTurn(provider, await post(withRequestHeaders(provider, req), body, signal));
 }
 
 /**
@@ -754,5 +763,5 @@ export async function compatStreamTurn(
     stream: true,
     stream_options: { include_usage: true },
   };
-  return consumeStream(provider, await postStream(provider, body, signal), onEvent);
+  return consumeStream(provider, await postStream(withRequestHeaders(provider, req), body, signal), onEvent);
 }

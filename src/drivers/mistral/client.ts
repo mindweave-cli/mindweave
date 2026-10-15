@@ -53,6 +53,9 @@ export const mistralProvider: CompatProvider = {
   reasoningFields,
   cacheSplit: standardCacheSplit,
   bufferedMaxTokens: BUFFERED_OUTPUT_TOKENS,
+  // A stable id for the conversation raises the chance that a later request finds the prefix an
+  // earlier one cached. It is a random id, never the person or the project.
+  finishBody: (body, req) => (req.sessionId ? { ...body, prompt_cache_key: req.sessionId } : body),
 };
 
 /** Ask the model for one turn. */

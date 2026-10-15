@@ -26,7 +26,7 @@
 import type { Entry } from "./types.js";
 import { fullPathsOf } from "./types.js";
 import { estimateImagesTokens } from "./images.js";
-import { clearedLocalCommand } from "./localCommand.js";
+import { clearedLocalCommand, localCommandForSummary } from "./localCommand.js";
 
 // ~3.5 chars/token, deliberately tokenizer-free: triggers need a cheap, stable,
 // slightly-conservative proxy, not an exact count (better to compact a touch
@@ -550,6 +550,7 @@ export function formatTranscriptForSummary(entries: Entry[]): string {
           : "";
         return `=== ASSISTANT ===\n${e.content}${calls}`;
       }
+      if (e.role === "user" && e.localCommand) return localCommandForSummary(e);
       return `=== ${e.role.toUpperCase()} ===\n${e.content}`;
     })
     .join("\n\n");

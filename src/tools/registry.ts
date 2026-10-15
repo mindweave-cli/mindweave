@@ -96,9 +96,33 @@ export function findTool(name: string): Tool | undefined {
  * so a stray mutating call is still refused — this just keeps the model from
  * reaching for one.
  */
-export function toolSchemas(
-  opts: { planMode?: boolean; readOnlyOnly?: boolean; ctx?: ToolContext; /** Tools a read-only session may have anyway (a verifier's command tool). */ alsoAllow?: ReadonlySet<string> } = {},
-): ToolSchema[] {
+export interface ToolSchemaOptions {
+  planMode?: boolean;
+  readOnlyOnly?: boolean;
+  ctx?: ToolContext;
+  /** Tools a read-only session may have anyway (a verifier's command tool). */
+  alsoAllow?: ReadonlySet<string>;
+  /**
+   * Ignore which deferred tools have been found, so the list is the same whatever has been loaded.
+   * For a provider that loads a found tool by reference: see `deferredSchemas`.
+   */
+  fixedList?: boolean;
+}
+
+export function toolSchemas(opts: ToolSchemaOptions = {}): ToolSchema[] {
+  return schemasOf(opts, false);
+}
+
+/**
+ * Every deferred tool this session could be offered, in registry order, whether or not it has been
+ * found. For a provider that loads a found tool by reference: it is sent this whole list on every
+ * request, marked as held back, so finding a tool adds nothing to what it was sent before.
+ */
+export function deferredSchemas(opts: ToolSchemaOptions = {}): ToolSchema[] {
+  return schemasOf(opts, true);
+}
+
+function schemasOf(opts: ToolSchemaOptions, onlyDeferred: boolean): ToolSchema[] {
   const readOnly = opts.planMode || opts.readOnlyOnly;
   // `planOnly` runs the filter the other way: those tools exist BECAUSE planning is
   // happening, so they appear only in plan mode and are hidden the rest of the time.
@@ -118,10 +142,10 @@ export function toolSchemas(
   // is worse than a cache miss. Activation is monotonic (the set only grows), so the
   // rebuild happens once per capability, not once per call. Nothing activated → identical
   // bytes to before, so the common session pays nothing.
-  const activated = opts.ctx?.activatedTools;
+  const activated = opts.fixedList ? undefined : opts.ctx?.activatedTools;
   const tools = (readOnly ? TOOLS.filter((tool) => tool.readOnly || (!opts.planMode && opts.alsoAllow?.has(tool.name))) : TOOLS)
     .filter((tool) => (tool.planOnly ? opts.planMode === true : true))
-    .filter((tool) => !tool.deferred || (activated?.has(tool.name) ?? false))
+    .filter((tool) => (onlyDeferred ? tool.deferred === true : !tool.deferred || (activated?.has(tool.name) ?? false)))
     // `relevantWhen` needs the live session; with no ctx (a schema-shape test, a
     // count) the tool is shown, because hiding it would be a false negative about
     // what the registry contains.

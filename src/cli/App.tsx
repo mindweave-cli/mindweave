@@ -114,7 +114,7 @@ import { countNewReplies, hitsPill, pillBounds, scrollPill, type PillBounds } fr
 import { SCROLLBACK_BLOCKS, virtualWindow } from "./virtualWindow.js";
 import { perf, perfEnabled } from "./perfLog.js";
 import { newPacer, nextHoldAt, nextMove, takeImmediate, takePaced, type Pacer, type PaceFlags } from "./revealQueue.js";
-import { drain as drainQueue, popAll as popAllQueued, queueMessage, takeSteerable, visibleQueue, type Queued } from "./messageQueue.js";
+import { drain as drainQueue, popAll as popAllQueued, queueMessage, takeSteerable, type Queued } from "./messageQueue.js";
 import { routeCommand, parseCommandLine, unknownCommandMessage } from "./commandRoute.js";
 import { resolveChoice, splitModelArg } from "./commandArgs.js";
 import { carryAcrossFreshSession } from "./sessionCarry.js";
@@ -432,6 +432,14 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
   /** The chip's cells in SCREEN coordinates, for the pointer handler. Null when there is
    *  nothing to click. Published by the render, read between frames. */
   const pillHit = useRef<PillBounds | null>(null);
+  /** The queued line's row within the live region (measured as it is drawn), and its screen row for a click. */
+  const queueRow = useRef<number | null>(null);
+  // Steered messages that left the queue but have not reached the chat yet (see steerRunningTurn).
+  const [departing, setDeparting] = useState<Queued[]>([]);
+  const departingRef = useRef(0);
+  const queueHitRow = useRef<number | null>(null);
+  /** Pulls the queue back into the input box to edit (installed by the input, as the caret click is). */
+  const pullQueue = useRef<(() => void) | null>(null);
   // Where the layout's first row sits on the screen, published each render for the pointer.
   const frameTopRef = useRef(0);
   // The row the pointer is over, if it can be pressed. State rather than a ref: it is what
@@ -1911,6 +1919,12 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
           // On PRESS rather than release: the chip is a single row and the view moves out
           // from under the pointer the instant it is hit, so a release-matched-to-press
           // would be testing the pointer against a screen that had already changed.
+          // The queued line is a button too: a click on it takes the queue back into the box to edit.
+          if (queueHitRow.current !== null && event.y === queueHitRow.current && pullQueue.current) {
+            clearSelection();
+            pullQueue.current();
+            continue;
+          }
           const hit = pillHit.current;
           if (hit && hitsPill(hit, event.x, event.y)) {
             clearSelection();
@@ -2302,6 +2316,8 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
     holdTimer.current = null;
     revealQ.current = [];
     pacer.current = newPacer(revealQ.current);
+    departingRef.current = 0;
+    setDeparting([]);
   }
 
   function enqueueReveal(a: Action) {
@@ -2350,6 +2366,13 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
     // same de-sync risk a reveal carries, so the banner is healed on the same frame.
     requestFullRepaint();
     applyBatch(actions);
+    // A steered message that has just reached the chat stops showing in the queue line.
+    const arrived = departingRef.current > 0 ? actions.filter((a) => a.type === "user").length : 0;
+    if (arrived > 0) {
+      const n = Math.min(arrived, departingRef.current);
+      departingRef.current -= n;
+      setDeparting((d) => d.slice(n));
+    }
   }
 
   function pace(): PaceFlags {
@@ -2445,21 +2468,32 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
    * rows around it.
    */
   async function steerRunningTurn(s: Session): Promise<SteeredMessage[]> {
+    // Never into a turn that has been stopped (Esc, ctrl+F, an interrupted command). Handed over at its
+    // last step boundary, a message queued BEFORE the stop was drawn in the chat, put in the transcript
+    // and never answered, because nothing runs after a stopped turn. It stays queued and goes out as
+    // the next turn, which is what the person who typed it expects.
+    if (abortRef.current?.signal.aborted) return [];
     const { send, rest } = takeSteerable(queueRef.current);
     if (send.length === 0) return [];
     queueRef.current = rest;
-    setQueued(rest);
     const out: SteeredMessage[] = [];
+    const shown: Action[] = [];
     for (const { text } of send) {
       // No history write here: `onSend` records every message the moment it is typed,
       // queued or not, so ↑ walks them in the order they were written rather than the
       // order they happened to go out. Recording again on the way out appended each one
       // a second time.
       const { content, displayText, notes, images } = await prepareMessage(s, text);
-      enqueueReveal({ type: "user", text: displayText });
-      for (const n of notes) enqueueReveal({ type: "note", text: n });
+      shown.push({ type: "user", text: displayText }, ...notes.map((n): Action => ({ type: "note", text: n })));
       out.push({ content, ...(images.length > 0 ? { images } : {}) });
     }
+    // The message leaves the queue line in the same paint it reaches the chat, so it is never on
+    // neither. Behind other rows it waits its beat in the chat's order, so the queue line keeps
+    // showing it (`departing`) until then.
+    setDeparting((d) => [...d, ...send]);
+    departingRef.current += send.length;
+    setQueued([...queueRef.current]);
+    for (const a of shown) enqueueReveal(a);
     return out;
   }
 
@@ -4007,6 +4041,35 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
     void handleSubmit(text);
   }
 
+  /**
+   * ctrl+F: send NOW, the way the queue sends, at the first moment that loses nothing.
+   *
+   * It is the queue, not a second mechanism: the message goes in the same queue and reaches the agent
+   * by the same road (handed to the running turn when its step ends). What it adds is a way to make
+   * that moment come SOONER, and the only thing that holds a step up for long without anyone's
+   * leave is a command the turn is waiting on. That is moved to the background, as ctrl+X moves it:
+   * it keeps running, the step ends at once, the message arrives, and the agent is told the command
+   * is still going and hears when it ends. Nothing is stopped, killed or thrown away; only Esc, or
+   * the person asking, does that.
+   *
+   * A reply being written, a compaction or a sub-agent has no such handle and is left alone: the
+   * message arrives the moment it ends, exactly as it would have through Enter.
+   */
+  function forceSend(text: string) {
+    if (!busy && queueRef.current.length === 0) {
+      // Idle: nothing is in the way, so it is Enter.
+      if (text) onSend(text);
+      return;
+    }
+    if (text) {
+      setScrollUp(0);
+      setHistory((h) => (h[h.length - 1] === text ? h : [...h, text]));
+      queueRef.current.push(queueMessage(text, { interrupting: interrupting.current }));
+      setQueued([...queueRef.current]);
+    }
+    if (busy) pressBackground(session.current?.toolContext.foregroundCommands);
+  }
+
   // Autocomplete entries: the built-in slash commands, this project's skills, and any
   // prompts the connected MCP servers offer (all read from the live session, so a freshly
   // created skill — or a server that just finished connecting — shows up next render).
@@ -4095,7 +4158,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
     const cur = session.current;
     if (overlay.kind === "app") {
       return (
-        <Picker
+        <Picker key={overlay.kind}
           title="Mindweave desktop app"
           note={APP_EXPLANATION}
           items={[{ label: "Open the download page", description: "opens your default browser" }]}
@@ -4113,14 +4176,14 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
         description: [timeAgo(p.at), changeSummary(p)].filter(Boolean).join(" · "),
       }));
       return (
-        <Picker title="Rewind to before which message?" items={items} width={width} maxRows={maxRows} rightAlignDescription onSelect={onOverlaySelect} onCancel={onOverlayCancel} />
+        <Picker key={overlay.kind} title="Rewind to before which message?" items={items} width={width} maxRows={maxRows} rightAlignDescription onSelect={onOverlaySelect} onCancel={onOverlayCancel} />
       );
     }
     if (overlay.kind === "rewindConfirm") {
       const p = overlay.point;
       const quoted = p.text.length > 48 ? `${p.text.slice(0, 47)}…` : p.text;
       return (
-        <Picker
+        <Picker key={overlay.kind}
           title={`Rewind to before “${quoted}”?`}
           items={rewindChoices(p).map(({ label, description }) => ({ label, description }))}
           describeSelection
@@ -4137,12 +4200,12 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
         description: `${timeAgo(m.updatedAt)} · ${m.entryCount} msg${m.entryCount === 1 ? "" : "s"}`,
       }));
       return (
-        <Picker title="Continue which session?" items={items} width={width} maxRows={maxRows} rightAlignDescription onSelect={onOverlaySelect} onCancel={onOverlayCancel} />
+        <Picker key={overlay.kind} title="Continue which session?" items={items} width={width} maxRows={maxRows} rightAlignDescription onSelect={onOverlaySelect} onCancel={onOverlayCancel} />
       );
     }
     if (overlay.kind === "resumeMode") {
       return (
-        <Picker
+        <Picker key={overlay.kind}
           title={`Continue “${sessionTitle(overlay.meta)}” — how?`}
           items={RESUME_MODES}
           width={width}
@@ -4158,7 +4221,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
         description: sh.status === "running" ? `running ${shellElapsed(sh)} — Enter to stop` : sh.status === "killed" ? "killed" : `exited ${sh.exitCode}`,
       }));
       return (
-        <Picker title="Background shells" items={items} width={width} maxRows={maxRows} onSelect={onOverlaySelect} onCancel={onOverlayCancel} />
+        <Picker key={overlay.kind} title="Background shells" items={items} width={width} maxRows={maxRows} onSelect={onOverlaySelect} onCancel={onOverlayCancel} />
       );
     }
     if (overlay.kind === "provider") {
@@ -4181,7 +4244,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
         return { label: p.label + (p.id === active ? "  ✓" : ""), description: `${models} · ${key}${here}` };
       });
       return (
-        <Picker
+        <Picker key={overlay.kind}
           title="Choose a provider"
           items={items}
           width={width}
@@ -4216,7 +4279,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
         };
       });
       return (
-        <Picker
+        <Picker key={overlay.kind}
           title={`Choose ${/^[aeiou]/i.test(pickerProvider) ? "an" : "a"} ${pickerProvider} model`}
           items={items}
           width={width}
@@ -4235,7 +4298,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
       const curLabel = cur ? thinkLabel(cur.modelConfig) : "";
       const items = levels.map((l) => ({ label: l.label + (l.label === curLabel ? "  ✓" : ""), description: l.description }));
       return (
-        <Picker
+        <Picker key={overlay.kind}
           title={`Reasoning for ${modelLabel(model)}`}
           items={items}
           width={width}
@@ -4249,7 +4312,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
     if (overlay.kind === "screen") {
       const choices = screenChoices(shell);
       return (
-        <Picker
+        <Picker key={overlay.kind}
           title="Which shell?"
           items={choices.map((c) => ({ label: c.label, description: c.description }))}
           width={width}
@@ -4424,6 +4487,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
   const frameTop = readingInline ? Math.max(0, rows - frameHeight) : 0;
   frameTopRef.current = frameTop;
   pillHit.current = pill !== null && pillRow.current !== null ? pillBounds(pill, width, frameTop + pillRow.current) : null;
+  queueHitRow.current = queueRow.current !== null ? frameTop + queueRow.current : null;
   // The whole conversation stays reachable: the cap is only a safety valve (see
   // SCROLLBACK_BLOCKS). Blocks outside the window cost one number each here and nothing
   // in Yoga, which only ever sees the window and its spacers.
@@ -4542,15 +4606,22 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
             compress can eat its own border lines and merge rows together
             (confirmed with a bare Ink render) instead of the clean bottom-clip
             flexShrink:0 actually gives. */}
+        {/* Messages queued while busy: ONE line, above the working line. Sent in order when the turn
+            ends, or brought through sooner with ctrl+F. Measured so a click on it can find it. */}
+        <Box
+          flexShrink={0}
+          marginBottom={queued.length + departing.length > 0 ? 1 : 0}
+          ref={(node: DOMElement | null) => {
+            queueRow.current = node && queued.length + departing.length > 0 ? measureElement(node).y : null;
+          }}
+        >
+          <QueuedBar queued={[...departing, ...queued]} />
+        </Box>
+
         {/* Persistent status line: spinner + timer while working,
             "● Cooked for 1m 23s · N tokens" once finished. */}
         <Box flexShrink={0}>
           <StatusLine busy={busy} userCommand={busy && userTurn.current} startedAt={turnStart.current} lastMs={lastMs} usage={taskUsage} received={liveTokens} advance={advanceTokens} waiting={overlay?.kind === "approval"} waited={() => waitedMs.current + (waitSince.current != null ? Date.now() - waitSince.current : 0)} />
-        </Box>
-
-        {/* Messages queued while busy — sent in order when the turn ends. */}
-        <Box flexShrink={0}>
-          <QueuedBar queued={queued} />
         </Box>
 
         {/* The Marathon panel: pinned right above the input, passive (it never takes a key),
@@ -4568,6 +4639,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
           {ready ? (
             <PromptInput
               onSubmit={onSend}
+              onForceSend={forceSend}
               opening={opening}
               disabled={false}
               placeholder={
@@ -4584,6 +4656,9 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
               }}
               registerTextSelect={(select) => {
                 textSelect.current = select;
+              }}
+              registerQueuePull={(pull) => {
+                pullQueue.current = pull;
               }}
               maxMenuRows={maxMenuItems}
               menuAbove={shell === "inline"}
@@ -5322,15 +5397,25 @@ function StatusLine({
   // rather than as jumping, and the working dot moves smoothly. It was 50ms (20 frames a
   // second), which was the slowest-looking thing on a screen that could draw three times as
   // often, and at 1Hz before that it moved once a second in whatever lump had arrived, which
-  // is a stutter, not an animation. A tick costs about a millisecond now that unchanged rows
-  // are not rebuilt (see inkOutputPatch.ts). Nothing else re-renders with it: the tick is this
-  // component's own state and the figure is read through a getter, so the cost is one
-  // small subtree per frame.
+  // is a stutter, not an animation. Only the easing advances on every tick; a render is asked for
+  // only when the line's text would change (see below), because a tick that draws the same text
+  // still costs a whole pass through layout and the terminal writer, about a millisecond each,
+  // sixty times a second, for the whole time the agent works.
   const [, tick] = useState(0);
+  // The line as the last render drew it, and the line as it would be drawn now. The clock below runs
+  // at the display's pace to keep the counter easing smoothly, but a render that would draw the same
+  // text is a whole pass through layout and the terminal writer for nothing, and most ticks are that:
+  // the seconds change once a second and the count only when the eased figure moves a whole step.
+  // Read through a ref so the interval never has to be torn down when the props change.
+  const drawn = useRef("");
+  const nowKey = useRef<() => string>(() => "");
+  nowKey.current = () => (busy && startedAt != null ? statusKey(userCommand, waiting, startedAt, waited(), received()) : "");
+  drawn.current = nowKey.current();
   useEffect(() => {
     if (!busy) return;
     const id = setInterval(() => {
       advance();
+      if (nowKey.current() === drawn.current) return;
       tick((t) => t + 1);
     }, LIVE_TICK_MS);
     return () => clearInterval(id);
@@ -5402,6 +5487,16 @@ const EDGE_SCROLL_MS = 45;
 
 /** The working line's render clock, in milliseconds. See StatusLine's tick. */
 const LIVE_TICK_MS = 16;
+
+/**
+ * Everything the working line's text is made of, as one string (pure). Two equal keys draw the same
+ * line, so a render for an unchanged key can be skipped. Built from the same calls the line uses.
+ */
+export function statusKey(userCommand: boolean, waiting: boolean, startedAt: number, waitedMs: number, got: number): string {
+  const secs = workedSeconds(Date.now(), startedAt, waitedMs);
+  if (userCommand) return `u|${fmtElapsed(secs)}`;
+  return `${waiting ? "w" : workingVerb(startedAt, Date.now() - startedAt - waitedMs)}|${fmtElapsed(secs)}|${got > 0 ? formatTokens(got) : ""}`;
+}
 
 function fmtElapsed(s: number): string {
   return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
@@ -5478,18 +5573,25 @@ function bgClock(ms: number): string {
  * you cannot see the handle on — ↑ is not a thing anyone guesses, and the cost of not
  * guessing it is a message you no longer wanted being sent anyway.
  */
+/**
+ * What is waiting to be sent, on ONE line shaped like a work row: the marker, what it is, a dot
+ * between the parts, the key that sends it, and the arrow that opens it (a click pulls the queue back
+ * into the box to edit, as the up key does). Long text is cut so the key and the arrow always stay
+ * on the line.
+ */
 function QueuedBar({ queued }: { queued: Queued[] }) {
   if (queued.length === 0) return null;
-  const { rows, hidden } = visibleQueue(queued);
+  const first = queued[0]!.text.replace(/\s+/g, " ").trim();
+  const more = queued.length - 1;
   return (
-    <Box flexDirection="column">
-      {rows.map((q, i) => (
-        <Text key={i} dimColor wrap="truncate-end">{"⏎ queued: "}{q.text}</Text>
-      ))}
-      {hidden > 0 ? (
-        <Text dimColor>{`  …and ${hidden} more`}</Text>
-      ) : null}
-      <Text dimColor>{`  ↑ to edit ${queued.length === 1 ? "it" : "them"}`}</Text>
+    <Box flexShrink={0}>
+      <Text dimColor>{"● "}</Text>
+      <Box flexShrink={1}>
+        <Text dimColor wrap="truncate-end">{"queued: "}{first}</Text>
+      </Box>
+      <Box flexShrink={0}>
+        <Text dimColor>{more > 0 ? `  ·  ${more} more` : ""}{"  ·  ctrl+F to send now  "}{"▸"}</Text>
+      </Box>
     </Box>
   );
 }

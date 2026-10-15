@@ -73,6 +73,24 @@ test("searching a native tool ACTIVATES it, so it becomes advertised and callabl
   assert.ok(names.includes("screenshot"), "a searched tool must be advertised on the next request, or it is callable in name only");
 });
 
+test("tools used together load together, so the tool list changes once", async () => {
+  // Every tool added to the list rewrites the first bytes of the next request and re-bills the whole
+  // conversation, so a screenshot followed later by `ui` paid for it twice.
+  const shot = { activatedTools: new Set<string>() } as unknown as ToolContext;
+  const r = await findTools.execute({ query: "screenshot" }, shot);
+  assert.deepEqual([...shot.activatedTools!].sort(), ["screenshot", "ui"]);
+  assert.match(r.output, /"name":"ui"/, "the model is handed the schema of everything that was loaded");
+
+  const code = { activatedTools: new Set<string>() } as unknown as ToolContext;
+  await findTools.execute({ query: "definition" }, code);
+  assert.deepEqual([...code.activatedTools!].sort(), ["definition", "outline", "references", "replace_symbol_body"]);
+
+  // A tool with no companions loads alone.
+  const memory = { activatedTools: new Set<string>() } as unknown as ToolContext;
+  await findTools.execute({ query: "save_memory" }, memory);
+  assert.deepEqual([...memory.activatedTools!], ["save_memory"]);
+});
+
 test("when nothing is deferred it tells the model not to bother", async () => {
   // Returning a result list here would teach the model it must search before calling
   // tools that are already sitting in its tool list.

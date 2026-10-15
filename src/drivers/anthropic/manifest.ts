@@ -246,6 +246,16 @@ const PRICES: Record<string, ModelPrice> = {
   [HAIKU_55]: { cacheHit: 0.01, cacheMiss: 0.1, output: 0.5, cacheWrite: 0.1 * CACHE_WRITE_MULTIPLIER },
 };
 
+/** Every model here supports tool search: a found tool is loaded by reference, with the tool list unchanged. */
+export function loadsToolsByReference(_model: ModelId): boolean {
+  return true;
+}
+
+/** The default cache entry lives five minutes from its last use; the client does not ask for the longer tier. */
+export function cacheLifetimeMs(_model: ModelId): number {
+  return 5 * 60 * 1000;
+}
+
 /** Cache-aware list price for a model, falling back to the default model's. */
 export function price(model: ModelId): ModelPrice {
   return PRICES[model] ?? PRICES[DEFAULT_MODEL]!;
@@ -355,6 +365,8 @@ export const anthropicManifest: DriverManifest = {
   models: MODELS,
   thinkLevels,
   price,
+  cacheLifetimeMs,
+  loadsToolsByReference,
   contextWindow,
   bufferedOutputTokens,
   acceptsImages,

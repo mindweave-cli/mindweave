@@ -25,6 +25,7 @@ import {
   toTurn,
   toUsage,
 } from "./client.js";
+import * as manifest from "./manifest.js";
 import { DEFAULT_MODEL, FABLE, FABLE_51, HAIKU, HAIKU_55, MODELS, OPUS, OPUS_48, OPUS_55, SONNET, SONNET_55, normalize, price, surfaceOf, thinkLevels } from "./manifest.js";
 import type { Effort, ModelRequest, StreamEvent } from "../types.js";
 
@@ -814,4 +815,59 @@ test("Haiku 5.5 searches with the basic web search tool, and is only sent tool_c
     1000,
   );
   assert.deepEqual(body.tool_choice, { type: "auto" });
+});
+
+// ── Deferred tools, loaded by reference ───────────────────────────────────────
+
+const schema = (name: string) => ({ type: "function" as const, function: { name, description: `does ${name}`, parameters: { type: "object", properties: {} } } });
+
+const withHeld: ModelRequest = {
+  ...base,
+  model: { model: SONNET_55, thinking: false, effort: "low" },
+  tools: [schema("read_file"), schema("find_tools")],
+  deferredTools: [schema("screenshot"), schema("ui")],
+  messages: [
+    { role: "user", content: "look at it" },
+    { role: "assistant", content: "", tool_calls: [{ id: "t1", type: "function", function: { name: "find_tools", arguments: "{}" } }] },
+    { role: "tool", tool_call_id: "t1", content: "<functions>long text with the schemas</functions>", loaded: ["screenshot", "ui"] },
+  ],
+};
+
+test("held-back tools are sent after the loaded ones, marked defer_loading, on every request", () => {
+  const tools = buildBody(withHeld, 1000).tools as unknown as { name: string; defer_loading?: boolean }[];
+  assert.deepEqual(tools.map((t) => t.name), ["read_file", "find_tools", "screenshot", "ui"]);
+  assert.deepEqual(tools.map((t) => t.defer_loading), [undefined, undefined, true, true]);
+  // Nothing about which of them has been loaded changes what is sent: the same list with and without the result.
+  const before = buildBody({ ...withHeld, messages: withHeld.messages.slice(0, 2) }, 1000).tools;
+  assert.deepEqual(before, buildBody(withHeld, 1000).tools, "loading a tool changed the tool list, which invalidates the whole cache");
+});
+
+test("a result that loaded tools is sent as tool_reference blocks, in place of its text", () => {
+  const { messages } = renderMessages(withHeld);
+  const result = (messages[2]!.content as Anthropic.ToolResultBlockParam[])[0]!;
+  assert.deepEqual(result.content, [
+    { type: "tool_reference", tool_name: "screenshot" },
+    { type: "tool_reference", tool_name: "ui" },
+  ]);
+});
+
+test("a reference is only sent for a tool this request carries", () => {
+  // Plan mode hides the mutating tools, and a reference to one that is not in the list is a 400.
+  const planMode: ModelRequest = { ...withHeld, deferredTools: [schema("screenshot")] };
+  const result = (renderMessages(planMode).messages[2]!.content as Anthropic.ToolResultBlockParam[])[0]!;
+  assert.deepEqual(result.content, [{ type: "tool_reference", tool_name: "screenshot" }]);
+  const none: ModelRequest = { ...withHeld, deferredTools: undefined };
+  const text = (renderMessages(none).messages[2]!.content as Anthropic.ToolResultBlockParam[])[0]!;
+  assert.match(String(text.content), /long text with the schemas/, "with nothing to reference, the model got no result at all");
+});
+
+test("without any loaded tool there is no deferred entry to send", () => {
+  // At least one tool must be loaded from the start, so a request with none sends no deferred ones.
+  const bare = buildBody({ ...withHeld, tools: [] }, 1000);
+  assert.equal(bare.tools, undefined);
+  assert.equal(buildBody({ ...withHeld, deferredTools: undefined }, 1000).tools!.length, 2);
+});
+
+test("every model this provider offers loads tools by reference, per the documented list", () => {
+  for (const id of ALL) assert.equal(manifest.loadsToolsByReference?.(id), true, id);
 });

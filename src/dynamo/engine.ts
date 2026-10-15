@@ -31,7 +31,7 @@ import { catastrophicCommandReason, riskyCommandReason } from "../tools/guard.js
 import { appendCommandRule } from "../governor/write.js";
 import { loadHooks, runHooks, type HookConfig } from "./hooks.js";
 import { askPendingInstalls } from "../tools/serverConsent.js";
-import { findTool, toolSchemas, TOOLS } from "../tools/registry.js";
+import { deferredSchemas, findTool, toolSchemas, TOOLS, type ToolSchemaOptions } from "../tools/registry.js";
 import { deferredToolsIndex } from "../tools/deferredNative.js";
 import { prefixPrint, diffPrefix, cacheCallLine, writeCacheLog } from "./cacheBreak.js";
 import { commandShellLabel, commandTurnedAway } from "../tools/runCommand.js";
@@ -87,6 +87,12 @@ import {
   autoCompactThreshold,
   microCompactThreshold,
   cacheLikelyCold,
+  cacheStatus,
+  cacheLifetimeFor,
+  cacheIsDiscounted,
+  shouldCompactForCold,
+  coldCompactionLine,
+  type CacheStatus,
   clearIsWorthIt,
   measuredOverhead,
   sharpContextWindow,
@@ -849,7 +855,7 @@ function buildRequest(
         ...(calls ? { tool_calls: toWire(e.toolCalls!) } : {}),
       });
     } else {
-      messages.push({ role: "tool", tool_call_id: e.toolCallId, content: e.content });
+      messages.push({ role: "tool", tool_call_id: e.toolCallId, content: e.content, ...(e.loaded?.length ? { loaded: e.loaded } : {}) });
     }
   }
 
@@ -897,6 +903,7 @@ function buildRequest(
     ),
     tools,
     model: session.modelConfig,
+    sessionId: session.id,
   });
 }
 
@@ -1247,20 +1254,23 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
       mcpRevision = mcpNow;
       mcpTurn = session.toolContext.mcp?.snapshot(ro);
     }
-    return [
-      ...toolSchemas({
-        planMode: session.toolContext.planMode ?? false,
-        readOnlyOnly: session.toolContext.readOnlyTools,
-        // A verifier has to run what it checks: the command tool and the app driver come back for it.
-        ...(session.toolContext.verifierTools ? { alsoAllow: VERIFIER_EXTRA_TOOLS } : {}),
-        // Lets `relevantWhen` tools (use_skill) check the live session, so a tool with
-        // nothing to act on is not advertised and a skill created mid-session brings
-        // it back next turn.
-        ctx: session.toolContext,
-      }),
-      ...(mcpTurn?.exposedSchemas() ?? []),
-    ];
+    return [...toolSchemas(schemaOptions()), ...(mcpTurn?.exposedSchemas() ?? [])];
   };
+  // What decides which of our own tools are listed. A model that loads a found tool by reference
+  // is sent the same list however many have been found; see `deferredTools`.
+  const loadsByReference = () => manifestForModel(session.modelConfig.model).loadsToolsByReference?.(session.modelConfig.model) === true;
+  const schemaOptions = (): ToolSchemaOptions => ({
+    planMode: session.toolContext.planMode ?? false,
+    readOnlyOnly: session.toolContext.readOnlyTools,
+    // A verifier has to run what it checks: the command tool and the app driver come back for it.
+    ...(session.toolContext.verifierTools ? { alsoAllow: VERIFIER_EXTRA_TOOLS } : {}),
+    // Lets `relevantWhen` tools (use_skill) check the live session, so a tool with
+    // nothing to act on is not advertised and a skill created mid-session brings
+    // it back next turn.
+    ctx: session.toolContext,
+    ...(loadsByReference() ? { fixedList: true } : {}),
+  });
+  const stepDeferred = () => (loadsByReference() && !session.toolContext.noTools ? deferredSchemas(schemaOptions()) : []);
   const lookup = (name: string) => findTool(name) ?? mcpTurn?.asTool(name);
   // The user's hooks (dynamo/hooks.ts), read once per turn, and how a problem with one is shown.
   let hookConfig: Promise<HookConfig> | undefined;
@@ -1524,12 +1534,14 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
       await loadImagePayloads(session),
       dirNotes,
     );
+    const deferred = stepDeferred();
+    if (deferred.length > 0) request.deferredTools = deferred;
     // Did the cacheable prefix survive since the last call? A break re-bills the system
     // prompt and every tool schema at full price, silently — nothing fails, the reply is
     // normal, and the only evidence is the bill. Reported so an UNEXPLAINED one is
     // visible while it is happening, instead of being reconstructed from a session file
     // after the user has paid for it. See dynamo/cacheBreak.ts.
-    const print = prefixPrint(session.modelConfig.model, request.system, request.tools ?? [], request.messages);
+    const print = prefixPrint(session.modelConfig.model, request.system, [...(request.tools ?? []), ...(request.deferredTools ?? [])], request.messages);
     const broke = session.prefixPrint ? diffPrefix(session.prefixPrint, print) : null;
     session.prefixPrint = print;
     // Read BEFORE the stamp below, so it is the gap since the previous call rather
@@ -1564,6 +1576,7 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
       // request was sent, and a long-running turn would otherwise make the gap look
       // shorter than it was.
       session.lastCallAt = Date.now();
+      (session.lastCallByModel ??= {})[session.modelConfig.model] = session.lastCallAt;
       result = await streamModel(request, options);
     } catch (error) {
       // A stalled stream is retried once, as the same request: whatever it had streamed is
@@ -2061,6 +2074,7 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
         detailKind: result.detailKind,
         quiet: result.quiet,
         fullContentOf: result.fullContentOf,
+        loaded: result.loaded,
         images: result.images,
         web: result.web,
         ui: result.ui,
@@ -2179,6 +2193,7 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
         // and shell output without its rail. The row is not the same row without this.
         ...(result.detailKind ? { detailKind: result.detailKind } : {}),
         ...(result.quiet ? { quiet: true } : {}),
+        ...(result.loaded?.length ? { loaded: result.loaded } : {}),
         ...(result.displayName ? { displayName: result.displayName } : {}),
         ...(result.displayKind ? { displayKind: result.displayKind } : {}),
         ...(result.images?.length ? { imagePaths: result.images.map((i) => i.path) } : {}),
@@ -2937,7 +2952,10 @@ async function maybeCompact(session: Session, options: RespondOptions): Promise<
   // check is about the cache being gone, which removes the only argument for waiting.
   // See `cacheLikelyCold` — on a warm cache this rewrite costs a 1.25x prefix rebuild,
   // and once the entry has expired it costs nothing at all.
-  const cold = cacheLikelyCold(session.lastCallAt ?? 0, Date.now(), used(), microBar);
+  const now = Date.now();
+  const status = cacheStatus({ now, model, lastByModel: session.lastCallByModel, ttlMs: cacheLifetimeFor(model) });
+  const idleMs = now - (session.lastCallByModel?.[model] ?? now);
+  const cold = cacheLikelyCold(status, used(), microBar);
   if (used() >= microBar || cold) {
     // Assigned unconditionally, on purpose. Gating this on a hand-picked subset of the
     // counters meant a pass that only cleared edit INPUTS or only evicted IMAGES did the
@@ -2966,6 +2984,17 @@ async function maybeCompact(session: Session, options: RespondOptions): Promise<
     }
   }
 
+  // The history is about to be sent at full price whatever it contains, so this is the cheapest
+  // moment to shrink it, and the session notes make that free: no model call. Only the top-level
+  // agent; a sub-agent starts with no cache of its own and its work is short.
+  if (
+    (session.toolContext.subagentDepth ?? 0) === 0 &&
+    shouldCompactForCold({ status, used: used(), microBar, discounted: cacheIsDiscounted(model), lastColdCompactAt: session.lastColdCompactAt, idleMs, now }) &&
+    (await compactForColdCache(session, options, microBar, status, idleMs))
+  ) {
+    return;
+  }
+
   if (used() < autoBar) return;
 
   // Circuit-breaker: once autocompact has failed MAX_COMPACT_FAILURES times this
@@ -2988,6 +3017,42 @@ async function maybeCompact(session: Session, options: RespondOptions): Promise<
   }
 
   await autocompact(session, options);
+}
+
+/**
+ * Compact from the session notes because the provider holds no cached copy of this conversation.
+ * Declines (false) when the notes cannot stand in for the history, in which case nothing changes.
+ */
+async function compactForColdCache(
+  session: Session,
+  options: RespondOptions,
+  target: number,
+  status: CacheStatus,
+  idleMs: number,
+): Promise<boolean> {
+  await settleSessionMemory(session);
+  const before = contextUsed(session);
+  const fromNotes = compactFromSessionMemory(
+    session.transcript,
+    session.sessionMemory,
+    session.sessionMemoryEntries,
+    target,
+    before - estimateEntriesTokens(session.transcript),
+  );
+  if (!fromNotes) return false;
+  options.onActivity?.(coldCompactionLine(status, session.modelConfig.model, idleMs), { context: true });
+  options.onCompactionStart?.();
+  try {
+    replaceTranscript(session, fromNotes.entries);
+    // The notes now describe everything before the tail they were spliced in front of.
+    session.sessionMemoryEntries = 1;
+    session.sessionMemoryTokens = estimateEntriesTokens(session.transcript);
+    session.lastColdCompactAt = Date.now();
+    await finishCompaction(session, options, before);
+  } finally {
+    options.onCompactionEnd?.();
+  }
+  return true;
 }
 
 /**

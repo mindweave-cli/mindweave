@@ -171,6 +171,14 @@ test("the namespace never reaches the wire", () => {
   assert.equal(buildBody(openrouterProvider, req({ model: undefined })).model, DEFAULT_MODEL.slice(PREFIX.length));
 });
 
+test("the conversation's id rides along as session_id, so routing sticks to the provider holding the cache", () => {
+  assert.equal(buildBody(openrouterProvider, req({ sessionId: "abc-123" })).session_id, "abc-123");
+  assert.equal("session_id" in buildBody(openrouterProvider, req()), false, "a request with no conversation id sent one anyway");
+  assert.equal((buildBody(openrouterProvider, req({ sessionId: "x".repeat(400) })).session_id as string).length, 256, "the id is capped at what OpenRouter accepts");
+  // A manual provider order switches sticky routing off, so none may be set alongside it.
+  assert.equal("order" in ((buildBody(openrouterProvider, req({ sessionId: "abc" })).provider as object | undefined) ?? {}), false);
+});
+
 test("reasoning is OpenRouter's one field: an effort when on, disabled when off", () => {
   assert.deepEqual(reasoningFields({ model: "m", thinking: true, effort: "max" }), { reasoning: { effort: "max" } });
   assert.deepEqual(reasoningFields({ model: "m", thinking: false, effort: "low" }), { reasoning: { enabled: false } });

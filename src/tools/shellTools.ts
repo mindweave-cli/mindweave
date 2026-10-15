@@ -10,6 +10,7 @@ import type { Tool, ToolContext, ToolResult } from "./types.js";
 import { relativize } from "./paths.js";
 import { MAX_READ_CHARS, type ShellInfo } from "./backgroundShells.js";
 import { fail, failQuietly } from "./results.js";
+import { COMMAND_OUTPUT_NOTE, commandReachesOutside } from "./untrusted.js";
 
 /**
  * One read-only tool at two levels of specificity: no `id` lists, an `id` reads.
@@ -29,24 +30,12 @@ import { fail, failQuietly } from "./results.js";
 export const shellsTool: Tool = {
   name: "shells",
   readOnly: true,
-  /**
-   * Advertised only once this session has actually started a background shell.
-   *
-   * Nothing is lost by hiding it before then: with no shells there is nothing to list
-   * and nothing to read, so the tool can only be called to be told so. It is worth
-   * roughly 600 tokens of standing prompt across this tool and `kill_shell`, paid on
-   * every uncached request of every session — including the many that never background
-   * anything.
-   *
-   * The condition is `list()`, which retains FINISHED shells, and not `running()`.
-   * That is deliberate and is about the prompt cache rather than about correctness: the
-   * tool list is part of the cached prefix, so a condition that flipped off again when
-   * the last process exited would invalidate the whole prefix twice per shell instead
-   * of once per session. `list()` only ever goes from empty to non-empty, so the cost
-   * is a single rebuild the first time a shell appears. Reading a finished shell's
-   * output is a real use anyway.
-   */
-  relevantWhen: (ctx) => (ctx.backgroundShells?.list().length ?? 0) > 0,
+  // Always advertised. The tool list is the first thing a provider hashes for its prompt cache,
+  // so a tool that appears when the first background shell starts re-bills the system prompt
+  // and the whole conversation at full price at that moment. Recorded sessions lost 35k
+  // tokens per occurrence on average, and about half of them start a background command.
+  // This tool and `kill_shell` weigh roughly 600 tokens, read from the cache after the first
+  // request, which costs far less than one rebuild.
   // The description never mentioned polling, while the tool itself pushes a strong
   // don't-poll nudge at runtime; the two now agree. It also never mentioned either cap,
   // and the buffer one matters: a chatty process can roll output out of the retained
@@ -108,7 +97,9 @@ export const shellsTool: Tool = {
             : "\n[Still running. You'll be notified automatically when it finishes — do NOT poll again. " +
               "End your turn and let the user know you'll report when it's done.]";
     return {
-      output: (body ? `${head}\n${body}` : `${head}\n(no new output)`) + nudge,
+      output:
+        (body ? `${head}\n${body}${commandReachesOutside(res.info.command) ? `\n${COMMAND_OUTPUT_NOTE}` : ""}` : `${head}\n(no new output)`) +
+        nudge,
       summary: `shell #${id} (${res.info.status})`,
     };
   },
@@ -117,10 +108,7 @@ export const shellsTool: Tool = {
 export const killShell: Tool = {
   name: "kill_shell",
   readOnly: false,
-  /** Same gate as `shells`, and for the same reason — including using `list()` rather
-   *  than `running()` so the tool list latches once per session instead of flipping
-   *  with every process that starts and stops. */
-  relevantWhen: (ctx) => (ctx.backgroundShells?.list().length ?? 0) > 0,
+  // Always advertised, for the same reason as `shells`.
   description:
     "Stop a running background shell by id. Kills the whole process tree, not just the " +
     "shell, so a dev server that spawned its own children goes down with it. " +

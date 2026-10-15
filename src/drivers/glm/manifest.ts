@@ -145,6 +145,15 @@ const PRICES: Record<string, ModelPrice> = {
   [GLM_47_FLASHX]: { cacheHit: 0.01, cacheMiss: 0.07, output: 0.4 },
 };
 
+/**
+ * The provider states only that the cache has "reasonable time limits". Measured over recorded
+ * sessions: a returning prefix was still read after 5 to 15 minutes idle (about 60% of it), and
+ * after 15 to 60 minutes almost none of it was (about 4%).
+ */
+export function cacheLifetimeMs(_model: ModelId): number {
+  return 15 * 60 * 1000;
+}
+
 /** Cache-aware list price for a model, falling back to the default model's. */
 export function price(model: ModelId): ModelPrice {
   return PRICES[model] ?? PRICES[DEFAULT_MODEL]!;
@@ -239,6 +248,7 @@ export const glmManifest: DriverManifest = {
   models: MODELS,
   thinkLevels,
   price,
+  cacheLifetimeMs,
   contextWindow,
   bufferedOutputTokens,
   acceptsImages,

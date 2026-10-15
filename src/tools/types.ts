@@ -36,6 +36,14 @@ export interface ToolResult {
   fullContentOf?: string[];
 
   /**
+   * Names of deferred tools this result loads. A provider that can load a tool by reference is
+   * sent these names in place of `output`, so the tool list it was first sent stays byte for byte
+   * the same; every other provider reads `output`, which carries the schemas as text.
+   * Set only when `output` has nothing else the model needs, since it is not sent alongside.
+   */
+  loaded?: string[];
+
+  /**
    * A short, human one-liner for the live UI (e.g. "read src/app.ts (40
    * lines)"). Display-only — never sent to the model. Separating this from
    * `output` keeps the transcript clean without starving the model of detail.

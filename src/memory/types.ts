@@ -130,6 +130,9 @@ type EntryOf =
        *  does not know a row was hidden replays it, and the screen fills with exactly the
        *  rows the tool went out of its way to suppress. */
       quiet?: boolean;
+      /** The deferred tools this result loaded. A provider that loads tools itself is sent these
+       *  names in place of the text, so the tool list it was sent first never has to change. */
+      loaded?: string[];
       /** The row's name and category as the RESULT set them, not as the call implied.
        *  A diagnostics sweep that finds errors renames itself "Build Error" and turns red;
        *  without these the same row replays as a routine "Check", which is the opposite of
@@ -460,10 +463,19 @@ export interface Session {
    * says, and a stale timestamp read back from disk would claim otherwise.
    *
    * Used to tell a warm provider cache from an expired one: past the TTL there is no
-   * entry left to invalidate, so microcompaction becomes free. See `cacheLikelyCold`.
+   * entry left to invalidate, so microcompaction becomes free. See `cacheStatus`.
    * 0 / undefined means no call has been made yet.
    */
   lastCallAt?: number;
+  /**
+   * When each model was last called in this session, epoch ms, keyed by model id. Providers cache
+   * per model, so a model switch starts from nothing however recently the previous model ran.
+   * Not stored in the session file; a reopened session starts it from when the file was last
+   * saved, which is when its last call finished.
+   */
+  lastCallByModel?: Record<string, number>;
+  /** When the conversation was last compacted because the provider's cache was gone, epoch ms. */
+  lastColdCompactAt?: number;
   /** Running cost for this session, accumulated per turn and persisted with the meta.
    *  See `dynamo/spend.ts`; undefined until the first turn completes. */
   spend?: SessionSpend;

@@ -57,6 +57,30 @@ export const DEFERRED_TOOLS: Tool[] = [
 ];
 
 /**
+ * Tools that are used together, by name. Loading one loads the rest.
+ *
+ * Every tool that joins the advertised list changes the first bytes of the next request, so the
+ * provider re-bills the system prompt and the whole conversation at that moment. A session that
+ * needs a screenshot goes on to need `ui`, and one that looks up a definition goes on to want the
+ * references and the outline; loading them one at a time paid that price once per tool. Together
+ * they cost it once, at the cost of the few hundred tokens a schema weighs, which are then read
+ * from the cache.
+ */
+const RELATED_TOOLS: readonly (readonly string[])[] = [
+  ["screenshot", "ui"],
+  ["outline", "definition", "references", "replace_symbol_body"],
+];
+
+/** The tools found, plus everything used alongside them, each once, in pool order (pure). */
+export function withRelated(found: readonly Tool[]): Tool[] {
+  const names = new Set(found.map((t) => t.name));
+  for (const group of RELATED_TOOLS) {
+    if (group.some((n) => names.has(n))) for (const n of group) names.add(n);
+  }
+  return DEFERRED_TOOLS.filter((t) => names.has(t.name));
+}
+
+/**
  * The one line about the pool that goes in the system prompt.
  *
  * It exists so the model knows these capabilities are REACHABLE rather than absent.

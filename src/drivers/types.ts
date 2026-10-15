@@ -88,6 +88,8 @@ export interface ChatMessage {
   images?: ImagePart[];
   tool_calls?: WireToolCall[];
   tool_call_id?: string;
+  /** On a `tool` message: deferred tools this result loaded, for a driver that loads them by reference. */
+  loaded?: string[];
 }
 
 /**
@@ -159,8 +161,21 @@ export interface ModelRequest {
   context?: string;
   /** Tools the model may call; empty/omitted forces a plain-text answer. */
   tools?: ToolSchema[];
+  /**
+   * Tools held back until a search result loads them, sent only to a driver that says it can load
+   * them by reference (`loadsToolsByReference`). The same list on every request of a conversation,
+   * whether or not any has been loaded, which is what keeps the provider's cache valid.
+   */
+  deferredTools?: ToolSchema[];
   /** Model + reasoning selection. */
   model?: ModelConfig;
+  /**
+   * An opaque id that stays the same for every request of one conversation. A provider that
+   * routes requests across several machines or upstream providers can use it to send a
+   * conversation to the same one, which is what lets its prompt cache be read again. Never
+   * derived from the person or the project; drivers that have no use for it ignore it.
+   */
+  sessionId?: string;
 }
 
 // ── Usage and streaming ───────────────────────────────────────────────────────
@@ -417,6 +432,25 @@ export interface DriverManifest {
 
   /** Cache-aware price for a model. */
   price(model: ModelId): ModelPrice;
+
+  /**
+   * How long, in milliseconds, this provider is documented or measured to keep a cached prompt
+   * prefix after its last use. After that long a conversation's cache is gone, and rewriting the
+   * history costs nothing extra because it will be re-sent at full price regardless.
+   *
+   * Optional: omitted means the provider states no lifetime, and core assumes a long one. The
+   * direction of a mistake matters: too short and core rewrites history while the provider still
+   * holds the prefix, throwing away a cheap read; too long only misses a saving.
+   */
+  cacheLifetimeMs?(model: ModelId): number;
+
+  /**
+   * Whether this model can have deferred tools loaded by a reference inside a tool result, with
+   * the full list of tools sent identically on every request. Where it can, core never changes the
+   * tool list mid-conversation, so finding a tool no longer re-bills the whole conversation.
+   * Absent means no: the tool joins the list the model is sent, as it always has.
+   */
+  loadsToolsByReference?(model: ModelId): boolean;
 
   /**
    * The model's USABLE context window — the span where retrieval and attention

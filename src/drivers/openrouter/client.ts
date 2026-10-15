@@ -90,6 +90,11 @@ export function finishBody(body: Record<string, unknown>, req: ModelRequest): Re
   if (needsBreakpoints(model) && Array.isArray(body.messages)) {
     out.messages = withBreakpoints(body.messages as Record<string, unknown>[], !!req.context?.trim());
   }
+  // The conversation's key for sticky routing. Without one, OpenRouter keeps a conversation on
+  // the same upstream provider only after it has seen a cache hit, and identifies it by hashing
+  // the first messages. With one, routing sticks from the first request, so the provider that
+  // holds the cache is the one asked again. It is a random id, never the project or the person.
+  if (req.sessionId) out.session_id = req.sessionId.slice(0, 256);
   // Allowed by default, which is OpenRouter's default too; the provider notice says so.
   if (process.env.MINDWEAVE_OPENROUTER_DATA?.trim().toLowerCase() === "deny") {
     out.provider = { data_collection: "deny" };

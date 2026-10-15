@@ -185,6 +185,8 @@ export interface FrameStats {
   inBytes: number;
   /** Bytes actually sent to the terminal. */
   outBytes: number;
+  /** The frame was the same as the one already drawn, so it was not read at all. */
+  unchanged: boolean;
 }
 
 /**
@@ -264,6 +266,12 @@ export function framebufferStdout<T extends OutputStream>(real: T, onFrame?: (st
   /** When every cell was last written, which is what bounds how long a disagreement
    *  with the real terminal can survive. */
   let lastFull = 0;
+  /**
+   * The body of the last frame that was painted onto a clean screen, or null when the screen may no
+   * longer show it (anything repainted it, or a selection tinted it). A frame with the same body has
+   * nothing to parse or diff: it would change no cell.
+   */
+  let lastBody: string | null = null;
   /** The pending after-the-burst repaint, cancelled and re-armed by each frame. */
   let idle: ReturnType<typeof setTimeout> | undefined;
 
@@ -317,6 +325,7 @@ export function framebufferStdout<T extends OutputStream>(real: T, onFrame?: (st
   function invalidate(): void {
     onScreen.invalidate();
     lastFull = Date.now();
+    lastBody = null;
   }
 
   // Coming back from the inline shell: the terminal has been scrolling and printing on
@@ -426,6 +435,7 @@ export function framebufferStdout<T extends OutputStream>(real: T, onFrame?: (st
       clean.copyFrom(onScreen);
       cleanValid = true;
     }
+    lastBody = null;
     pending.copyFrom(clean);
     applyFrameOverlay(pending);
     const escape = paint(onScreen, pending, 1);
@@ -606,41 +616,51 @@ export function framebufferStdout<T extends OutputStream>(real: T, onFrame?: (st
       }
       heldFrame = null;
 
-      if (syncSize() || repaintRequested || Date.now() - lastFull >= repaintEvery) invalidate();
+      const invalidated = syncSize() || repaintRequested || Date.now() - lastFull >= repaintEvery;
+      if (invalidated) invalidate();
       repaintRequested = false;
 
-      // Build the new frame. Cleared first because a frame is a complete statement
-      // about the rows it covers: a line that got shorter must leave blanks behind,
-      // not the tail of what used to be there.
-      pending.clear();
-      parseFrame(pending, body);
+      // The same picture as the one already drawn: nothing to parse and nothing to diff. In the
+      // full-screen layout Ink repeats a frame it has already written, so a screen that is not
+      // changing still arrives as a frame many times a second, and most of the work of a frame is
+      // reading it. Never with a selection showing, which tints the screen on top of the frame.
+      const same = !invalidated && lastBody === body && !hasFrameOverlay();
+      let escape = "";
+      if (!same) {
+        // Build the new frame. Cleared first because a frame is a complete statement
+        // about the rows it covers: a line that got shorter must leave blanks behind,
+        // not the tail of what used to be there.
+        pending.clear();
+        parseFrame(pending, body);
 
-      // A selection highlight is added HERE, to the finished frame, and never reaches
-      // React. `clean` keeps the untinted frame so the highlight can be moved without a
-      // re-render (see `refreshOverlay`); it is only maintained while something is
-      // actually tinting, so a session that never drags pays nothing for it.
-      if (hasFrameOverlay()) {
-        if (clean.width !== pending.width || clean.height !== pending.height) {
-          clean.resize(pending.width, pending.height);
+        // A selection highlight is added HERE, to the finished frame, and never reaches
+        // React. `clean` keeps the untinted frame so the highlight can be moved without a
+        // re-render (see `refreshOverlay`); it is only maintained while something is
+        // actually tinting, so a session that never drags pays nothing for it.
+        if (hasFrameOverlay()) {
+          if (clean.width !== pending.width || clean.height !== pending.height) {
+            clean.resize(pending.width, pending.height);
+          }
+          clean.copyFrom(pending);
+          cleanValid = true;
+          applyFrameOverlay(pending);
+        } else {
+          cleanValid = false;
         }
-        clean.copyFrom(pending);
-        cleanValid = true;
-        applyFrameOverlay(pending);
-      } else {
-        cleanValid = false;
+
+        escape = paint(onScreen, pending, 1);
+
+        // Swap rather than copy. Both grids are the same shape and `pending` is fully
+        // rewritten at the start of every frame, so the old on-screen grid is free to
+        // become the next scratch buffer — no allocation, no memcpy.
+        const previous = onScreen;
+        onScreen = pending;
+        pending = previous;
+        publishScreen(onScreen);
+        lastBody = hasFrameOverlay() ? null : body;
       }
 
-      const escape = paint(onScreen, pending, 1);
-
-      // Swap rather than copy. Both grids are the same shape and `pending` is fully
-      // rewritten at the start of every frame, so the old on-screen grid is free to
-      // become the next scratch buffer — no allocation, no memcpy.
-      const previous = onScreen;
-      onScreen = pending;
-      pending = previous;
-      publishScreen(onScreen);
-
-      onFrame?.({ inBytes: data.length, outBytes: escape.length });
+      onFrame?.({ inBytes: data.length, outBytes: escape.length, unchanged: same });
 
       // Put the screen beyond doubt once this burst of frames stops. During a burst it
       // is only ever cancelled and re-armed, so it costs nothing until things settle.

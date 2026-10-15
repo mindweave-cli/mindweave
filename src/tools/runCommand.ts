@@ -56,6 +56,7 @@ import { defaultOpenRewrite } from "./openDefault.js";
 import { verifierCommandReason } from "./verifierCommands.js";
 import { composeFileOutput, createOutputFile, removeOutputFile, tailOf } from "./commandOutput.js";
 import { stripNativeStderrNoise } from "./nativeStderr.js";
+import { COMMAND_OUTPUT_NOTE, commandReachesOutside, defangHarnessMarkers } from "./untrusted.js";
 import { hiddenDesktopName, launcherPath, VIRTUAL_DISPLAY_ARGS, wantsHiddenDesktop } from "./hiddenDesktop.js";
 
 const IS_WINDOWS = process.platform === "win32";
@@ -829,7 +830,7 @@ function settledResult(
   if (s.outcome === "aborted") {
     return { output: "Interrupted while starting.", isError: true, summary: `interrupted \`${clip(command)}\`` };
   }
-  const tail = s.output.trim() ? `Output so far:\n${s.output.trim()}` : "It has printed nothing so far.";
+  const tail = s.output.trim() ? `Output so far:\n${defangHarnessMarkers(s.output.trim())}` : "It has printed nothing so far.";
   if (s.outcome === "ended") {
     const how = s.info.signal ? `was stopped (${s.info.signal})` : `exited with code ${s.info.exitCode ?? "unknown"}`;
     return {
@@ -1094,7 +1095,9 @@ function format(
   }
 
   if (body) {
-    parts.push(body);
+    // The model's copy only (`body` itself is what the screen shows): the harness's own tags cannot pass for
+    // the harness's words, and a command that brought in outside text says so after it (see below).
+    parts.push(defangHarnessMarkers(body));
     // The gap is already marked inline, at the point it happened; this only names
     // the shape of what arrived so the model doesn't read the two halves as one run.
     //
@@ -1136,6 +1139,9 @@ function format(
   // OUTPUT — the summary line below is display-only and never reaches the model.
   const moved = cwdChangeNote(cwdBefore, ctx.cwd, shown);
   if (moved) parts.push(moved);
+  // Last, where it is read last. Only for a command that brought in text from outside (a page, a package's
+  // message, a commit message): a note on every result would cost tokens on every call for nothing.
+  if (body && commandReachesOutside(command)) parts.push(COMMAND_OUTPUT_NOTE);
   const status = timedOut ? "timed out" : signal ? `killed (${signal})` : exitCode === 0 ? "ok" : `exit ${exitCode}`;
   const failed = timedOut || signal !== null || (exitCode !== 0 && exitCode !== null);
   // Only for a command that RAN to a conclusion. A run killed on a timeout has whatever

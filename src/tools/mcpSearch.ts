@@ -20,7 +20,7 @@
  */
 import type { Tool, ToolContext, ToolResult } from "./types.js";
 import { MAX_SEARCH_RESULTS, renderResults } from "../mcp/deferred.js";
-import { DEFERRED_TOOLS, matchDeferred, renderToolSchema } from "./deferredNative.js";
+import { DEFERRED_TOOLS, matchDeferred, renderToolSchema, withRelated } from "./deferredNative.js";
 
 
 export const findTools: Tool = {
@@ -74,12 +74,15 @@ export const findTools: Tool = {
     // the whole prefix — tools, system AND messages — at full price, which cost several
     // times what the deferral saved. Dispatch resolves against the registry, so a name
     // and a schema is everything the model needs. See deferredNative.renderToolSchema.
-    const native = matchDeferred(query);
+    const native = withRelated(matchDeferred(query));
     // Activate what was found: from now on these are added to the advertised tool list
     // (registry.toolSchemas), so a strict function-calling model can actually emit the
     // call. Without this the schema below is callable in name only — the model sees it and
     // cannot invoke it, because it is not in the request's `tools` array.
     for (const t of native) ctx.activatedTools?.add(t.name);
+    // Named for a provider that loads tools by reference. Left off a result that also carries MCP
+    // matches, because that provider is sent these names instead of the text and would lose them.
+    const loadedNames = native.map((t) => t.name);
     const nativeBlock =
       native.length > 0
         ? `${native.length} of your own tool${native.length === 1 ? "" : "s"}, callable from now on:\n\n<functions>\n` +
@@ -100,6 +103,7 @@ export const findTools: Tool = {
         return {
           output: `${nativeBlock}\n\nNo MCP servers are connected in this project, so there is nothing else to search.`,
           summary: `loaded ${native.map((t) => t.name).join(", ")}`,
+          loaded: loadedNames,
         };
       }
       return {
@@ -121,6 +125,7 @@ export const findTools: Tool = {
       return {
         output: nativeBlock ? `${nativeBlock}\n\n${note}` : note,
         summary: nativeBlock ? `loaded ${native.map((t) => t.name).join(", ")}` : "nothing deferred",
+        ...(loadedNames.length > 0 ? { loaded: loadedNames } : {}),
       };
     }
 
@@ -133,6 +138,7 @@ export const findTools: Tool = {
       return {
         output: nativeBlock ? `${nativeBlock}\n\n${note}` : note,
         summary: nativeBlock ? `loaded ${native.map((t) => t.name).join(", ")}` : `no match for "${query}"`,
+        ...(loadedNames.length > 0 ? { loaded: loadedNames } : {}),
       };
     }
 

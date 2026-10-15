@@ -212,6 +212,9 @@ export function buildBody(req: ModelRequest, maxTokens: number): Responses.Respo
     // no-thinking config still gets the lightest rung rather than a refused request.
     reasoning: { effort: cfg?.thinking ? (cfg.effort as "high") : canSkipReasoning(cfg?.model ?? MODEL) ? "none" : "low" },
     store: false,
+    // A stable id for the conversation, so requests that share a prefix are sent where the cache is.
+    // A random id, never the person or the project.
+    ...(req.sessionId ? { prompt_cache_key: req.sessionId } : {}),
   };
 
   const tools = renderTools(req);

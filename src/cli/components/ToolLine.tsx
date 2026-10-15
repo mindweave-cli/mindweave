@@ -23,7 +23,7 @@ import { ACCENT, BAD, CODE, GOOD, diffTints } from "../theme.js";
 import { uiSegments, type Seg } from "../uiLines.js";
 import { registerExpandable } from "../expandHits.js";
 import { wrapDiffLine } from "../diffWrap.js";
-import { isGapRow, markChangedWords, parseDiffRow, type DiffRow, type Span } from "../diffRows.js";
+import { expandTabs, isGapRow, markChangedWords, parseDiffRow, type DiffRow, type Span } from "../diffRows.js";
 import { oneLineSteps } from "../../tools/detail.js";
 
 const DOT = "●";
@@ -107,7 +107,8 @@ export function ToolLine({ id, full, expanded, hovered, name, arg, status, actio
 
   // The branch content: rich detail lines if present, else the one-line summary.
   const open = !!full && !!expanded;
-  const rawLines = open ? full!.split("\n") : detail ? detail.split("\n") : summary ? [summary] : [];
+  // Tabs written out: a tab leaves a hole in a tinted row and throws the row's measured width off.
+  const rawLines = (open ? full!.split("\n") : detail ? detail.split("\n") : summary ? [summary] : []).map((l) => expandTabs(l));
   // The wait joins the END of the facts line, beside the size and the format, rather than
   // taking a line of its own: it is another fact about the same thing, and a row that grew
   // a line once it settled would change shape after the fact.
@@ -163,6 +164,7 @@ export function ToolLine({ id, full, expanded, hovered, name, arg, status, actio
   // A command is named from the FRONT and everything else from the back. Trimming a path
   // from the front leaves the filename, which is what was being looked for; trimming a
   // command the same way leaves the plumbing and drops the program. See `commandLabel`.
+  const branchShown = (status !== "running" || (working && detailKind === "shell")) && branchLines.length > 0;
   const shownArg = !arg
     ? arg
     : action === "run"
@@ -232,7 +234,7 @@ export function ToolLine({ id, full, expanded, hovered, name, arg, status, actio
           </Box>
         ) : null}
       </Box>
-      {(status !== "running" || (working && detailKind === "shell")) && branchLines.length > 0 ? (
+      {branchShown ? (
         detailKind === "shell" ? (
           <ShellLines lines={branchLines} columns={columns} errored={errored} headerHasCommand={!!arg} wrap={open} />
         ) : action === "screenshot" && detailKind !== "diff" ? (
