@@ -52,3 +52,47 @@ test("a rebuilt block is bounded like a saved one", () => {
   assert.match(full, /lines are not kept in the saved session/);
   assert.ok(editDetail("a", "b").length > 0);
 });
+
+test("an edit that re-sent a block with a few lines added is not rebuilt as every line removed and added", () => {
+  // The row's own count (-0 +2) says only two lines changed; the old and new text would show -5 +9.
+  const edits = [{ old_string: "/* c */\n.a {\n  d: none;\n}\n  flex: 1;", new_string: "/* c */\n.a {\n  d: none;\n}\n\n.b {\n  flex: 1;" }];
+  const detail = "L363-364 · −0 +2\n  361 │   d: none;\n  362 │ }\n+ 363 │ \n+ 364 │ .b {\n  365 │   flex: 1;";
+  assert.equal(rebuildFull("edit", { path: "a.css", edits }, { detail, content: "Edited" }), undefined);
+});
+
+test("a read whose text was cleared from the conversation still opens: the saved copy first, then the file as it is now", async () => {
+  const { mkdtempSync, writeFileSync, readFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join, resolve } = await import("node:path");
+  const { recoverReadText } = await import("./rebuildDetail.js");
+  const dir = mkdtempSync(join(tmpdir(), "mw-recover-"));
+  const saved = join(dir, "call_1.txt");
+  writeFileSync(saved, "  1\tone\n  2\ttwo\n");
+  const read = (p: string): string | undefined => { try { return readFileSync(p, "utf8"); } catch { return undefined; } };
+  const stub = `[old tool result cleared to save context]\n[saved at ${saved} · 2 lines · ~4 tokens; read_file it]`;
+  assert.equal(recoverReadText(stub, undefined, dir, read, resolve), "  1\tone\n  2\ttwo");
+  // Cleared before copies were saved: the file itself, and it says so.
+  writeFileSync(join(dir, "a.ts"), "x\ny\nz\n");
+  const bare = "[old tool result cleared to save context]";
+  const whole = recoverReadText(bare, { args: { path: "a.ts" } }, dir, read, resolve)!;
+  assert.match(whole, /as it is now/);
+  assert.match(whole, /1\tx\n2\ty\n3\tz/);
+  const part = recoverReadText(bare, { args: { path: "a.ts", offset: 2, limit: 1 } }, dir, read, resolve)!;
+  assert.match(part, /2\ty/);
+  assert.doesNotMatch(part, /3\tz/);
+  assert.equal(recoverReadText(bare, { args: { path: "gone.ts" } }, dir, read, resolve), undefined);
+});
+
+test("a command whose output was cleared is rebuilt from the copy clearing saved", async () => {
+  const { mkdtempSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = mkdtempSync(join(tmpdir(), "mw-recover-"));
+  const saved = join(dir, "c.txt");
+  const out = Array.from({ length: 40 }, (_, i) => `line ${i}`).join("\n");
+  writeFileSync(saved, out);
+  const detail = "$ npm test\nline 0\nline 1\n  … (38 more lines)\n✓ 0 · 1s";
+  const full = rebuildFull("run_command", { command: "npm test" }, { detail, content: `[old tool result cleared to save context]\n[saved at ${saved} · 40 lines · ~80 tokens]` });
+  assert.ok(full && full.includes("line 39"), "the whole output is back");
+  assert.equal(rebuildFull("run_command", { command: "npm test" }, { detail, content: "[old tool result cleared to save context]" }), undefined, "nothing saved, nothing invented");
+});

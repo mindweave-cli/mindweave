@@ -10,7 +10,7 @@ import { isGroupable } from "./toolDisplay.js";
 
 test("only reads and shell work group — edits and writes never do", () => {
   // Reads + silent status checks fold into one row.
-  for (const n of ["read_file", "read_symbol"]) {
+  for (const n of ["read_file", "read_symbol", "search"]) {
     assert.ok(isGroupable(n), `${n} should group (silent receipt — collapsing loses nothing)`);
   }
   // The agent working in the shell folds into its own commands row (see WorkGroup): its
@@ -18,12 +18,10 @@ test("only reads and shell work group — edits and writes never do", () => {
   for (const n of ["run_command", "shells", "kill_shell"]) {
     assert.ok(isGroupable(n), `${n} should fold into the commands row`);
   }
-  // Search and the code-intel lookups do NOT group, because they no longer render at
-  // all (search.ts sets quiet on every path; navigational() wraps the others): they are
-  // how the agent finds its way around, not work done to the project. Grouping them
-  // would put them back on screen as a count that answers nothing. `todo_write` is
-  // silent too, and for the same kind of reason — its reader is the model.
-  for (const n of ["search", "outline", "definition", "references", "relevant", "todo_write"]) {
+  // Search folds into the row beside the reads (its output is a click away). The code-intel
+  // lookups do NOT group, because they never render (navigational() wraps them), and
+  // `todo_write` is silent too: its reader is the model.
+  for (const n of ["outline", "definition", "references", "relevant", "todo_write"]) {
     assert.ok(!isGroupable(n), `${n} is hidden outright, so it must not group`);
   }
   // Anything whose row carries output you need to see (a diff, command/test output,
@@ -104,9 +102,10 @@ test("toolEnd's action/name override the row set at toolStart — a governor dec
     { type: "toolStart", toolId: "a", name: "Update", arg: "secret.txt", action: "edit" },
     { type: "toolEnd", toolId: "a", ok: false, summary: "kept protected", action: "governor", name: "Governor" },
   ]);
-  const tool = s.committed[0]!;
-  assert.ok(tool.kind === "tool");
-  assert.equal((tool as { action?: string }).action, "governor");
+  const row = [...s.committed, ...s.tail][0]!;
+  assert.ok(row.kind === "edits");
+  const tool = row.items[0]!;
+  assert.equal(tool.kind, "governor");
   assert.equal(tool.name, "Governor");
 });
 
@@ -115,9 +114,10 @@ test("toolEnd with no action/name override leaves the toolStart row untouched", 
     { type: "toolStart", toolId: "a", name: "Update", arg: "home.html", action: "edit" },
     { type: "toolEnd", toolId: "a", ok: true, summary: "1 replacement" },
   ]);
-  const tool = s.committed[0]!;
-  assert.ok(tool.kind === "tool");
-  assert.equal((tool as { action?: string }).action, "edit");
+  const row = [...s.committed, ...s.tail][0]!;
+  assert.ok(row.kind === "edits");
+  const tool = row.items[0]!;
+  assert.equal(tool.kind, "edit");
   assert.equal(tool.name, "Update");
 });
 
@@ -741,8 +741,9 @@ test("a call whose block is still open keeps its entry, so its result still land
   s = reduce(s, { type: "toolEnd", toolId: "fast", ok: true, summary: "fast done" });
   assert.ok(s.toolMap["slow"] !== undefined, "a running call is still mapped");
   s = reduce(s, { type: "toolEnd", toolId: "slow", ok: true, summary: "slow done" });
-  const rows = [...s.committed, ...s.tail].filter((b) => b.kind === "tool");
-  assert.deepEqual(rows.map((b) => (b.kind === "tool" ? b.summary : "")).sort(), ["fast done", "slow done"]);
+  // Two edits in a row are the items of one block, and each result lands on its own.
+  const rows = [...s.committed, ...s.tail].filter((b) => b.kind === "edits");
+  assert.deepEqual(rows.flatMap((b) => (b.kind === "edits" ? b.items.map((it) => it.summary) : [])).sort(), ["fast done", "slow done"]);
 });
 
 test("settling waits copies nothing when there is nothing to settle", () => {
@@ -780,7 +781,7 @@ test("an edit that really shows still separates the rows around it", () => {
   s = reduce(s, { type: "toolEnd", toolId: "r2", ok: true, summary: "ok" });
   s = reduce(s, { type: "endTurn" });
   const kinds = [...s.committed, ...s.tail].map((b) => b.kind);
-  assert.deepEqual(kinds, ["work", "tool", "work"]);
+  assert.deepEqual(kinds, ["work", "edits", "work"]);
 });
 
 test("words between the reads still end the row, even when a quiet step follows", () => {

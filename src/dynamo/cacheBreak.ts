@@ -132,6 +132,15 @@ export function diffPrefix(prev: PrefixPrint, next: PrefixPrint): CacheBreak | n
     };
   }
 
+  // The system prompt sits in front of the conversation, so it is checked first: when it
+  // changes, every message after it is re-billed too, and reporting "message N was
+  // rewritten" would blame the wrong part (a real session's biggest break read that way).
+  if (prev.system !== next.system) {
+    const delta = next.systemChars - prev.systemChars;
+    const size = delta === 0 ? "same length" : `${delta > 0 ? "+" : ""}${delta} chars`;
+    return { kind: "system", detail: `the system prompt changed (${size})` };
+  }
+
   // The conversation, compared only over the length they SHARE. Growth is the normal
   // case and costs nothing; what breaks the cache is an earlier message changing, and
   // the first one that did is where the damage starts — everything after it is a
@@ -152,12 +161,6 @@ export function diffPrefix(prev: PrefixPrint, next: PrefixPrint): CacheBreak | n
       kind: "history",
       detail: `the conversation shrank (${prev.messages.length} → ${next.messages.length} messages)`,
     };
-  }
-
-  if (prev.system !== next.system) {
-    const delta = next.systemChars - prev.systemChars;
-    const size = delta === 0 ? "same length" : `${delta > 0 ? "+" : ""}${delta} chars`;
-    return { kind: "system", detail: `the system prompt changed (${size})` };
   }
 
   return null;

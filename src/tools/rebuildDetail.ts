@@ -15,8 +15,9 @@
  * what the model was shown, which can already have had its middle cut, and that cut is
  * kept as it was rather than papered over.
  */
-import { FULL_DETAIL_MAX, SEARCH_PREVIEW_SOURCES, multiEditDetail, oneLineSteps, sessionDetailFull, shellOutput, uiOpenedText, withScope, writeDetail } from "./detail.js";
+import { FULL_DETAIL_MAX, SEARCH_PREVIEW_SOURCES, capLines, multiEditDetail, oneLineSteps, sessionDetailFull, shellOutput, uiOpenedText, withScope, writeDetail } from "./detail.js";
 import { pageLine } from "./ui.js";
+import { readFileSync } from "node:fs";
 
 /** The rows of `detail` that come before the body: the scope line of a diff. */
 function leadingScope(detail: string | undefined): string | undefined {
@@ -33,6 +34,16 @@ function shellFrame(detail: string | undefined): { head?: string; tail?: string 
   const last = lines[lines.length - 1];
   const tail = last && /^[✓✗✖]/.test(last) ? last : undefined;
   return { head, tail };
+}
+
+/**
+ * What a saved search printed, for the row's click (pure). A chat saved before searches had a
+ * row kept only what the model was given, and that is exactly what the search printed. Undefined
+ * once context clearing has replaced it with a note, which is not what the search printed.
+ */
+export function searchDetailFromContent(content: string): string | undefined {
+  if (!content.trim() || content.includes("[old tool result cleared") || content.startsWith("Error:")) return undefined;
+  return capLines(content.split("\n"), FULL_DETAIL_MAX);
 }
 
 /**
@@ -57,14 +68,24 @@ export function rebuildFull(
       .map((e) => ({ oldString: e.old_string as string, newString: e.new_string as string }));
     if (ops.length === 0) return undefined;
     const scope = leadingScope(entry.detail);
+    // The call holds the old and new text, not the file, so all it can show is every old line removed and every new line
+    // added. That is the real change only when nothing in the replaced text stayed the same. An edit that re-sent a whole
+    // block with two lines added was shown as -5 +9 above a row that said -0 +2, and a stored row that already showed the
+    // whole real diff was made to "open" onto this one. The row's own count says which it is.
+    const said = scope ? /[−-](\d+) \+(\d+)\s*$/.exec(scope) : null;
+    const rows = (s: string): number => s.replace(/\n$/, "").split("\n").length;
+    if (!said || Number(said[1]) !== ops.reduce((n, o) => n + rows(o.oldString), 0) || Number(said[2]) !== ops.reduce((n, o) => n + rows(o.newString), 0)) return undefined;
     const body = multiEditDetail(ops, FULL_DETAIL_MAX);
     full = scope ? withScope(scope, body) : body;
   } else if (tool === "run_command") {
     // Output that context clearing has already replaced is not the output: rebuilding from it
     // would show the model's note as if the command had printed it.
-    if (entry.content.includes("[old tool result cleared")) return undefined;
+    // The copy clearing saved before it emptied the result IS the output, and is used in its place.
+    const cleared = entry.content.includes("[old tool result cleared");
+    const source = cleared ? savedCopyText(entry.content) : entry.content;
+    if (source === undefined) return undefined;
     const { head, tail } = shellFrame(entry.detail);
-    const out = shellOutput(entry.content, FULL_DETAIL_MAX);
+    const out = shellOutput(source, FULL_DETAIL_MAX);
     full = [head, out || undefined, tail].filter((l): l is string => !!l).join("\n");
   }
 
@@ -192,4 +213,73 @@ export function compactSearchDetail(detail: string | undefined): { detail: strin
     ...(lost > 0 ? [`(${lost} more ${lost === 1 ? "source was" : "sources were"} not kept in this chat)`] : []),
   ];
   return { detail: shown.join("\n"), ...(whole.length > shown.length ? { detailFull: whole.join("\n") } : {}) };
+}
+
+/** Where a cleared result was saved, from the stub it left (pure): `[saved at <file> · 57 lines …]`. */
+export function savedCopyPath(content: string): string | undefined {
+  return /\[saved at (.+?) · \d+ lines/.exec(content)?.[1];
+}
+
+/** What a cleared result saved, whole, or undefined when there is no copy (or it is gone). */
+export function savedCopyText(content: string): string | undefined {
+  const saved = savedCopyPath(content);
+  if (!saved) return undefined;
+  try {
+    const text = readFileSync(saved, "utf8");
+    return text.trim() ? text : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The same, bounded the way a row's block is. */
+export function recoverSavedText(content: string): string | undefined {
+  const text = savedCopyText(content);
+  return text === undefined ? undefined : capLines(text.replace(/\n$/, "").split("\n"), FULL_DETAIL_MAX);
+}
+
+/**
+ * The text of a read, put back for the screen when clearing old context took it out of the conversation.
+ *
+ * Clearing is for what the MODEL carries; what the person sees is never lost to it. Tried in order: the copy clearing
+ * saved before it emptied the result (exactly what was read), then the file as it is now, for a chat cleared before
+ * copies were saved. That last one says it is the file as it is now, because it may have changed since.
+ * Undefined only when the file is gone as well.
+ */
+export function recoverReadText(
+  content: string,
+  call: { args?: Record<string, unknown> } | undefined,
+  cwd: string,
+  read: (path: string) => string | undefined,
+  resolvePath: (cwd: string, p: string) => string,
+): string | undefined {
+  const saved = savedCopyPath(content);
+  if (saved) {
+    const text = read(saved);
+    if (text !== undefined && text.trim()) return capLines(text.replace(/\n$/, "").split("\n"), FULL_DETAIL_MAX);
+  }
+  const args = call?.args ?? {};
+  const paths: string[] = [];
+  const one = (p: unknown): void => {
+    if (typeof p === "string") paths.push(p);
+    else if (p && typeof p === "object" && typeof (p as { path?: unknown }).path === "string") paths.push((p as { path: string }).path);
+  };
+  one(args.path);
+  if (Array.isArray(args.paths)) for (const p of args.paths) one(p);
+  if (paths.length === 0) return undefined;
+  const offset = typeof args.offset === "number" && args.offset > 0 ? args.offset : 1;
+  const limit = typeof args.limit === "number" && args.limit > 0 ? args.limit : undefined;
+  const parts: string[] = [];
+  for (const p of paths) {
+    const raw = read(resolvePath(cwd, p));
+    if (raw === undefined) continue;
+    const lines = raw.replace(/\r\n/g, "\n").replace(/\n$/, "").split("\n");
+    const end = Math.min(lines.length, limit === undefined ? lines.length : offset - 1 + limit);
+    const width = String(end).length;
+    const body = lines.slice(offset - 1, end).map((l, i) => `${String(offset + i).padStart(width)}\t${l}`).join("\n");
+    parts.push(paths.length > 1 ? `${p}\n${body}` : body);
+  }
+  if (parts.length === 0) return undefined;
+  const note = /CHANGED since/.test(content) ? "(the file has changed since it was read; this is the file as it is now)" : "(this is the file as it is now; it may have changed since it was read)";
+  return capLines([note, ...parts.join("\n\n").split("\n")], FULL_DETAIL_MAX);
 }

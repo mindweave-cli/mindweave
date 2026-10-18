@@ -14,16 +14,13 @@
  * moment of the clear, when the cached prefix is being rewritten anyway.
  *
  * read_file may open these files (tools/guard.ts allows the `cleared` folder inside
- * Mindweave's state folder). Only the most recent sessions' archives are kept.
+ * Mindweave's state folder). They are never deleted: what a click on an old row opens is read back from here, so it must not go the way of the model's copy.
  */
-import { mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { projectDir } from "./store.js";
 import { CLEARED_STUB, estimateTokens } from "./compaction.js";
 import type { Entry } from "./types.js";
-
-/** How many sessions per project keep their cleared results on disk. */
-const KEEP_SESSIONS = 10;
 
 /** Where one session's cleared results are kept. */
 export function clearedDir(cwd: string, sessionId: string): string {
@@ -75,7 +72,6 @@ function archive(
     try {
       if (!made) {
         mkdirSync(dir, { recursive: true });
-        pruneOldSessions(join(dir, ".."), dir);
         made = true;
       }
       const file = join(dir, `${e.toolCallId.replace(/[^A-Za-z0-9_-]/g, "_")}.txt`);
@@ -108,18 +104,4 @@ function singlePath(args: string): string | null {
     /* not JSON: no path */
   }
   return null;
-}
-
-/** Keep the newest KEEP_SESSIONS session folders under `root`, always including `current`. */
-function pruneOldSessions(root: string, current: string): void {
-  try {
-    const dirs = readdirSync(root)
-      .map((name) => join(root, name))
-      .filter((p) => p !== current)
-      .map((p) => ({ p, at: statSync(p).mtimeMs }))
-      .sort((a, b) => b.at - a.at);
-    for (const { p } of dirs.slice(KEEP_SESSIONS - 1)) rmSync(p, { recursive: true, force: true });
-  } catch {
-    /* nothing to prune */
-  }
 }

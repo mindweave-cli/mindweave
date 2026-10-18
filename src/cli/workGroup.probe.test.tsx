@@ -194,14 +194,14 @@ test("folded, it is one line: the count, a mark for each command, and the hint t
   const lines = text.split("\n").filter((l) => l.trim());
   assert.equal(lines.length, 1, text);
   assert.ok(lines[0]!.includes("Ran 2 commands"), lines[0]);
-  assert.ok(lines[0]!.includes("✓") && lines[0]!.includes("✗") && lines[0]!.includes("▸"), lines[0]);
+  assert.ok(!lines[0]!.includes("✓") && !lines[0]!.includes("✗") && lines[0]!.includes("▸"), "no marks beside the count: " + lines[0]);
   assert.ok(!text.includes("npm run typecheck"), "no command text until it is opened");
 });
 
 test("opened, each command has a line and its verdict, with the output still folded", async () => {
   const text = await paint(sample(), { open: true });
   assert.ok(text.includes("npm run typecheck") && text.includes("git status --short"), text);
-  assert.ok(text.includes("✗ 2 · 1.3s") && text.includes("✓ 0 · 0.2s"), text);
+  assert.ok(text.includes("2 · 1.3s") && text.includes("0 · 0.2s") && !text.includes("✓") && !text.includes("✗"), text);
   assert.ok(text.includes("▾"), text);
   assert.ok(!text.includes("error TS1"), "the output is a second click away");
 });
@@ -244,7 +244,7 @@ test("opened, a read is a line with its file and the part taken, and commands ke
   assert.ok(text.includes("App.tsx") && text.includes("lines 410–551"), text);
   assert.ok(text.includes("ipc.ts") && text.includes("menu.ts"), text);
   assert.ok(text.includes("book-factory.ts") && text.includes("whole file · 120 lines"), text);
-  assert.ok(text.includes("✓ 0 · 1.3s"), text);
+  assert.ok(text.includes("0 · 1.3s") && !text.includes("✓"), text);
   const folded = await paint(items);
   assert.equal(folded.split("\n").filter((l) => l.trim()).length, 1, folded);
 });
@@ -305,7 +305,7 @@ test("a long command keeps a gap before its verdict, and a note that does not fi
   const cmd = rows.find((r) => r.includes("$env:WEBVIEW2"))!;
   assert.match(cmd, /…\s{2,}/, `no gap after the cut command:\n${text}`);
   // The verdict of the first command still sits on its own row, with its time.
-  assert.ok(rows.some((r) => r.includes("Get-Process") && r.includes("✓ 0 · 2.5s")), text);
+  assert.ok(rows.some((r) => r.includes("Get-Process") && r.includes("0 · 2.5s")), text);
 });
 
 test("a short note stays beside its command", async () => {
@@ -376,7 +376,7 @@ test("folded, a test is one line; opened, one line per step with a mark, and the
   const items = groups(s)[0]!.items;
   const folded = (await paint(items)).split("\n").filter((l) => l.trim());
   assert.equal(folded.length, 1);
-  assert.ok(folded[0]!.includes("Tested 2 steps") && folded[0]!.includes("✓") && folded[0]!.includes("✗"), folded[0]);
+  assert.ok(folded[0]!.includes("Tested 2 steps") && !folded[0]!.includes("✓") && !folded[0]!.includes("✗"), folded[0]);
   const opened = await paint(items, { open: true });
   assert.ok(opened.includes('Look port 9222') && opened.includes('Click "Save Game"'), opened);
   assert.ok(opened.includes("Could not click [22]"), "why it failed is on the row");
@@ -488,4 +488,65 @@ test("the opened box of a one-call row is a place to click; a read's line is not
   inst.unmount();
   assert.ok(hits.includes(7), "the header");
   assert.ok(hits.includes(itemHit(7, 0)), "and the box under it, which folds the row");
+});
+
+const search = (id: string, arg: string, summary: string, detail?: string): Action[] => [
+  { type: "toolStart", toolId: id, name: "Search", arg, action: "search", group: true },
+  { type: "toolEnd", toolId: id, ok: true, summary, ...(detail ? { detail, detailKind: "text" as const } : {}) },
+];
+
+test("a search is a line in the work row, counted on its own, and is not a command", () => {
+  const s = run([...read("r", "a.ts"), ...search("s1", "downArrow", "grep downArrow (25 lines)"), ...search("s2", "upArrow", "grep upArrow (3 lines)"), { type: "endTurn" }]);
+  const g = groups(s)[0]!;
+  assert.equal(groups(s).length, 1);
+  assert.equal(commandHeader(g.items, g.live).text, "Read 1 file, searched 2 times");
+  assert.deepEqual(commandHeader(g.items, g.live).marks, [], "a search that worked earns no mark");
+});
+
+test("one search opens straight onto what it printed; with two, the click opens the one clicked", async () => {
+  const printed = "559-    return;\n562-    // keys\n563:    if (key.upArrow) {";
+  const one = groups(run([...search("s1", "upArrow", "grep upArrow (3 lines)", printed), { type: "endTurn" }]))[0]!;
+  const folded = await paint(one.items, { open: true });
+  assert.ok(folded.includes("upArrow") && folded.includes("3 lines"), folded);
+  assert.ok(folded.includes("563:") && folded.includes("562-"), "the single search is open: " + folded);
+  const two = groups(run([...search("s1", "upArrow", "grep upArrow (3 lines)", printed), ...search("s2", "downArrow", "grep downArrow (1 line)", "569:  x"), { type: "endTurn" }]))[0]!;
+  const list = await paint(two.items, { open: true });
+  assert.ok(list.includes("3 lines") && list.includes("1 line"), list);
+  assert.ok(!list.includes("563:"), "with two, none is open until clicked: " + list);
+  const opened = await paint(two.items.map((it, i) => (i === 1 ? { ...it, open: true } : it)), { open: true });
+  assert.ok(opened.includes("569:") && !opened.includes("563:"), opened);
+});
+
+test("a file too big to read whole says it was outlined, in words, not as the raw result", () => {
+  const it = { toolId: "r", name: "Read", arg: "main.js", kind: "read", status: "ok", summary: "outlined my-app/src/main.js (1007 lines — too large to read whole)" } as Commands["items"][number];
+  assert.equal(rangeText(it), "outline only · 1007 lines, too large to read whole");
+});
+
+test("a search saved before it had a row opens onto what the model was given", async () => {
+  const { searchDetailFromContent } = await import("../tools/rebuildDetail.js");
+  assert.equal(searchDetailFromContent("562-  a\n563:  b"), "562-  a\n563:  b");
+  assert.equal(searchDetailFromContent("[old tool result cleared to save context]\nfirst line"), undefined, "a note is not what it printed");
+  assert.equal(searchDetailFromContent(""), undefined);
+});
+
+test("a row of one read shows its text as soon as it opens, like one command", async () => {
+  let s = run([...read("r", "a.ts", "read a.ts lines 1-2"), { type: "endTurn" }]);
+  const g = () => groups(s)[0]!;
+  s = run([{ type: "itemDetail", toolId: "r", detail: "   1  hello\n   2  world" }], s);
+  const opened = await paint(g().items, { open: true });
+  assert.ok(opened.includes("hello") && opened.includes("world"), "one read opens straight onto its text: " + opened);
+  assert.ok(!opened.includes("▸"), "no second click to make: " + opened);
+  const before = g().open;
+  s = run([{ type: "toggleItem", id: g().id, index: 0 }], s);
+  assert.notEqual(g().open, before, "a click on its line folds the ROW, as it does for a command");
+  assert.equal(g().items[0]!.open, undefined, "and does not open the read separately");
+});
+
+test("with two reads, each line waits for its own click", async () => {
+  const s = run([...read("r", "a.ts", "read a.ts lines 1-2"), ...read("r2", "b.ts", "read b.ts lines 1-2"), { type: "itemDetail", toolId: "r", detail: "   1  hello" }, { type: "itemDetail", toolId: "r2", detail: "   1  other" }, { type: "endTurn" }]);
+  const items = groups(s)[0]!.items;
+  const folded = await paint(items, { open: true });
+  assert.ok(!folded.includes("hello") && !folded.includes("other") && folded.includes("▸"), folded);
+  const one = await paint(items.map((it, i) => (i === 1 ? { ...it, open: true } : it)), { open: true });
+  assert.ok(one.includes("other") && !one.includes("hello"), one);
 });

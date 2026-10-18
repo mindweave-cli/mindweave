@@ -51,7 +51,7 @@ import { join } from "node:path";
 import type { Tool, ToolCallChannel, ToolContext, ToolResult, UiDisplay } from "./types.js";
 import { describeImage, isRejection, type ImageRef } from "../memory/images.js";
 import { captureWindow, listWindows, type WindowInfo } from "./screenshotWin.js";
-import { ambiguousMessage, listTitles, pickWindow, safeName } from "./screenshot.js";
+import { ambiguousMessage, didYouMean, listTitles, pickWindow, safeName } from "./screenshot.js";
 import { actOn, readControls, type UiControl, type UiSnapshot } from "./uiWin.js";
 import { oneLineSteps, uiOpenedText } from "./detail.js";
 import { isLocalUrl, PageSession, shortUrl, type CastFrame, type PageAction, type PageSnapshot } from "./uiPage.js";
@@ -411,7 +411,9 @@ export function parseUiArgs(args: Record<string, unknown>, inStep = false): ({ o
     if (!head.ok) return head;
     return { ...head, steps };
   }
-  const action = args.action;
+  // A call that names a page or a window and nothing to do with it is a look (a real call: {"url": "...", "full": true}).
+  const action =
+    args.action === undefined && !inStep && (args.url !== undefined || args.port !== undefined || args.window !== undefined) ? "look" : args.action;
   if (typeof action !== "string" || !ACTIONS.includes(action as Action)) {
     return { ok: false, error: `\`action\` must be one of: ${ACTIONS.join(", ")}.` };
   }
@@ -428,16 +430,22 @@ export function parseUiArgs(args: Record<string, unknown>, inStep = false): ({ o
     if (!Number.isInteger(p) || p < 1 || p > 65535) return { ok: false, error: "`port` must be a port number, e.g. 9222." };
     port = p;
   }
-  if (url && port !== undefined) return { ok: false, error: "Pass `url` or `port`, not both." };
+  if (url && port !== undefined) {
+    // {"url": "http://127.0.0.1:9333", "port": 9333} says one thing twice; only a disagreement is an error.
+    let urlPort = "";
+    try { urlPort = new URL(url).port; } catch { /* the address was checked above */ }
+    if (urlPort === String(port)) port = undefined;
+    else return { ok: false, error: "Pass `url` or `port`, not both: `url` opens a page, `port` attaches to an app already running with a debugging port." };
+  }
   if (url && window) return { ok: false, error: "Pass `url` or `window`, not both: `url` opens a page, `window` uses an open window." };
-  const rawTarget = args.target;
+  const rawTarget = args.target ?? args.element; // what a control's number is sometimes called
   const target = typeof rawTarget === "number" ? rawTarget : typeof rawTarget === "string" && /^\d+$/.test(rawTarget.trim()) ? Number(rawTarget) : undefined;
   if (target !== undefined && (!Number.isInteger(target) || target < 1)) {
     return { ok: false, error: "`target` is a control's number from the latest list, starting at 1." };
   }
   const name = typeof args.name === "string" && args.name.trim() ? args.name.trim() : undefined;
   if ((action === "click" || action === "type" || action === "hover" || action === "inspect") && target === undefined && name === undefined) {
-    return { ok: false, error: `\`${action}\` needs \`target\` (the number of a control from the latest look) or \`name\` (its name).` };
+    return { ok: false, error: `\`${action}\` needs \`target\` (the number of a control from the latest look) or \`name\` (its name)${action === "type" ? ": say which field to type into, even if you just clicked it" : ""}.` };
   }
   const text = typeof args.text === "string" ? args.text : "";
   if (action === "type" && typeof args.text !== "string") return { ok: false, error: "`type` needs `text`." };
@@ -448,8 +456,10 @@ export function parseUiArgs(args: Record<string, unknown>, inStep = false): ({ o
     return { ok: false, error: `\`direction\` must be one of: ${DIRECTIONS.join(", ")}.` };
   }
   const gone = typeof args.gone === "string" && args.gone.trim() ? args.gone : undefined;
-  if (action === "wait" && !(text.trim() || gone)) {
-    return { ok: false, error: "`wait` needs `text` (what should appear) or `gone` (what should disappear)." };
+  // `wait` with only `wait_ms` is a plain pause, which is what it plainly asks for.
+  const pause = action === "wait" && !(text.trim() || gone) && typeof args.wait_ms === "number" && Number.isFinite(args.wait_ms);
+  if (action === "wait" && !(text.trim() || gone) && !pause) {
+    return { ok: false, error: "`wait` needs `text` (what should appear), `gone` (what should disappear), or just `wait_ms` to pause." };
   }
   const num = (v: unknown): number | undefined => (typeof v === "number" && Number.isFinite(v) ? Math.round(v) : typeof v === "string" && /^\d+$/.test(v.trim()) ? Number(v) : undefined);
   const width = num(args.width);
@@ -674,7 +684,7 @@ async function runWindow(req: UiRequest, ctx: ToolContext, prior: UiState | unde
     const pick = pickWindow(req.window, windows);
     if (pick.kind === "none") {
       return fail(
-        `No open window's title contains "${req.window}". ${listTitles(pick.candidates)}\n` +
+        `No open window's title contains "${req.window}". ${didYouMean(req.window, pick.candidates)}${listTitles(pick.candidates)}\n` +
           `If you just launched the app, give it a moment and call again. An app with a custom title bar ` +
           `is listed by its process name.`,
       );
@@ -958,6 +968,10 @@ async function runPage(req: UiRequest, ctx: ToolContext, prior: UiState | undefi
         return { did: `Could not go back: ${why}.`, failed: true, why };
       }
       return { did: "Went back.", failed: false };
+    }
+    if (r.action === "wait" && !r.text && !r.gone) {
+      await new Promise((done) => setTimeout(done, r.waitMs));
+      return { did: `Waited ${r.waitMs} ms.`, failed: false };
     }
     if (r.action === "wait") {
       const res = await page().waitFor({ text: r.text || undefined, gone: r.gone, ms: r.waitMs });

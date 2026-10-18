@@ -246,3 +246,35 @@ test("a control that is not in the list says it may only appear on hover, and wh
     assert.match(r.error, /hover that row with `hover`/);
   }
 });
+
+// ── calls that said the right thing in the wrong shape (from real sessions) ──
+
+test("parseUiArgs: a page with no action is a look", () => {
+  const r = parseUiArgs({ url: "file:///C:/p/index.html", full: true });
+  assert.equal(r.ok && r.action, "look");
+  assert.equal(parseUiArgs({ full: true }).ok, false, "with nothing to look at it is still an error");
+});
+
+test("parseUiArgs: a url and a port that name the same server are one request", () => {
+  const same = parseUiArgs({ action: "look", url: "http://127.0.0.1:9333", port: 9333 });
+  assert.ok(same.ok && same.port === undefined && same.url?.includes("9333"));
+  const different = parseUiArgs({ action: "look", url: "http://127.0.0.1:9333", port: 9222 });
+  assert.equal(different.ok, false);
+});
+
+test("parseUiArgs: element is read as target", () => {
+  const r = parseUiArgs({ action: "hover", element: "16" });
+  assert.ok(r.ok && r.target === 16);
+});
+
+test("parseUiArgs: a wait with only wait_ms is a pause, and with nothing at all is still refused", () => {
+  const pause = parseUiArgs({ action: "wait", wait_ms: 800 });
+  assert.ok(pause.ok && pause.waitMs === 800);
+  const none = parseUiArgs({ action: "wait" });
+  assert.ok(!none.ok && /wait_ms/.test(none.error));
+});
+
+test("parseUiArgs: typing without a field says which one is needed", () => {
+  const r = parseUiArgs({ action: "type", text: "hello" });
+  assert.ok(!r.ok && /say which field/.test(r.error));
+});

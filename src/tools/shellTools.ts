@@ -78,7 +78,15 @@ export const shellsTool: Tool = {
     if (id === null) return failQuietly("`id` must be a shell number.");
 
     const res = await mgr.read(id);
-    if (!res) return fail(`no background shell #${id}.`);
+    if (!res) {
+      // Say what DOES exist: the model usually has a stale number (shells do not survive a restart or /continue).
+      const known = mgr.list();
+      return fail(
+        known.length === 0
+          ? `no background shell #${id}. None exist in this session (they do not survive a restart or /continue), so start the command again with run_in_background.`
+          : `no background shell #${id}. The shells that exist: ${known.map((s) => `#${s.id}`).join(", ")}.`,
+      );
+    }
     const head = statusLine(res.info);
     const body = res.chunk.trim();
     // If it's still running, stop the model polling: the event is pushed to it, so a

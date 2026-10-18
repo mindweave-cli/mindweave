@@ -122,7 +122,16 @@ export function screenChoices(current: ScreenMode): ScreenChoice[] {
     {
       mode: "inline",
       label: `Inline (beta)${tick("inline")}`,
-      description: "prints to scrollback; a work in progress, still has rough edges",
+      description: INLINE_UNAVAILABLE,
     },
   ];
 }
+
+/**
+ * Whether the inline shell can be chosen. It cannot, for now: it has too many bugs to hand
+ * to anyone. The row stays in the chooser so it is clear the shell exists and is coming;
+ * choosing it, in the list or with `/screen inline`, only says so.
+ */
+export const INLINE_AVAILABLE = false;
+
+export const INLINE_UNAVAILABLE = "not available yet — we are working on it, it has too many bugs to use for now";

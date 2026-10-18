@@ -9,6 +9,8 @@
  * these as pure predicates means the behavior is unit-tested, never blind-shipped.
  */
 
+import { aliasTarget, shortExplanation } from "./toolAliases.js";
+
 /** True if a tool call changed files on disk (an edit or a write). */
 export function isFileMutation(toolName: string): boolean {
   return toolName === "edit" || toolName === "write_file" || toolName === "replace_symbol_body";
@@ -491,8 +493,23 @@ export function nearestTools(name: string, known: readonly string[], max = 2): s
     .map((s) => s.k);
 }
 
-/** The error handed back for a tool that does not exist, with a way forward. */
-export function unknownToolError(name: string, known: readonly string[]): string {
+/**
+ * The error handed back for a tool that does not exist, with a way forward.
+ *
+ * A name that is another agent program's word for one of OUR tools (`question` for ask_user, `bash` for run_command, see
+ * toolAliases.ts) gets more than "did you mean": which tool, what it does, and to call it in the next step. `describe`
+ * returns a tool's own description.
+ */
+export function unknownToolError(name: string, known: readonly string[], describe?: (tool: string) => string | undefined): string {
+  const meant = aliasTarget(name, known);
+  if (meant) {
+    const what = describe?.(meant);
+    return (
+      `Error: there is no tool called '${name}' here. You most likely meant '${meant}'.` +
+      (what ? ` What '${meant}' does: ${shortExplanation(what)}` : "") +
+      ` Call '${meant}' in your next step, with the arguments its definition lists.`
+    );
+  }
   const near = nearestTools(name, known);
   const hint = near.length > 0
     ? `Did you mean ${near.map((n) => `'${n}'`).join(" or ")}?`
@@ -570,3 +587,4 @@ export function replyRewrite(fault: ReplyFault): string {
     `can read the diff. Keep any fact they could not have seen. Reply with the rewrite only, nothing else.`
   );
 }
+

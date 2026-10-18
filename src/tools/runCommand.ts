@@ -161,7 +161,7 @@ export function commandTurnedAway(args: Record<string, unknown>, ctx: ToolContex
     // kill-then-relaunch is untouched and a server that failed to start can still be
     // retried. The cooldown lets a restart the user asks for later through.
     // Not for the person's own command: closing an app and starting it again is a restart, theirs to make.
-    const closed = ctx.userInitiated ? undefined : findRecentUserClose(ctx.backgroundShells.list(), command, Date.now());
+    const closed = ctx.userInitiated ? undefined : findRecentUserClose(ctx.backgroundShells.list(), command, Date.now(), undefined, ctx.userTurnAt ?? 0);
     if (closed) {
       const secs = closed.finishedAt ? Math.round((Date.now() - closed.finishedAt) / 1000) : 0;
       return {

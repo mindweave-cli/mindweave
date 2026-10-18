@@ -127,7 +127,7 @@ type Action =
   | { t: "selectRange"; from: number; to: number } // a drag covered part of the text
   | { t: "newline" } // Shift/Meta+Enter
   | { t: "splice"; start: number; end: number; text: string } // replace a range (path completion)
-  | { t: "selUp" }
+  | { t: "selUp"; max: number }
   | { t: "selDown"; max: number }
   | { t: "histReplace"; value: string; histIdx: number | null; draft?: string }
   | { t: "restore"; value: string; cursor: number } // queued messages pulled back for editing
@@ -216,9 +216,10 @@ function reduce(s: InputState, a: Action): InputState {
       return { ...clear, value, cursor: a.start + a.text.length, selected: 0 };
     }
     case "selUp":
-      return { ...clear, selected: Math.max(0, s.selected - 1) };
+      // Wraps: past either end the highlight carries on from the other, so the list never dead-ends.
+      return { ...clear, selected: s.selected <= 0 ? a.max : s.selected - 1 };
     case "selDown":
-      return { ...clear, selected: Math.min(a.max, s.selected + 1) };
+      return { ...clear, selected: s.selected >= a.max ? 0 : s.selected + 1 };
     case "histReplace":
       return {
         ...s,
@@ -561,7 +562,7 @@ export function PromptInput({
 
       // ↑/↓: navigate the menu when open, otherwise walk input history.
       if (key.upArrow) {
-        if (menuOpen) dispatch({ t: "selUp" });
+        if (menuOpen) dispatch({ t: "selUp", max: menu!.items.length - 1 });
         else if (!popQueue()) historyPrev();
         return;
       }

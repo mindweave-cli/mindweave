@@ -30,6 +30,8 @@ const PS_TIMEOUT_MS = 30_000;
 const SCRIPT = String.raw`
 param([string]$Mode = "list", [string]$Handle = "", [string]$Target = "", [string]$Action = "", [string]$Text = "", [int]$Settle = 0, [string]$Desktop = "")
 $ErrorActionPreference = "Stop"
+# Read back as UTF-8: the console's own code page turned every non-ASCII title and control name into "?".
+try { [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false) } catch {}
 $refs = @(
   [Reflection.Assembly]::LoadWithPartialName("UIAutomationClient").Location,
   [Reflection.Assembly]::LoadWithPartialName("UIAutomationTypes").Location,
@@ -447,7 +449,8 @@ async function runScript(args: string[], signal?: AbortSignal): Promise<string> 
     }, PS_TIMEOUT_MS);
     const onAbort = () => child.kill();
     signal?.addEventListener("abort", onAbort, { once: true });
-    child.stdout.on("data", (d: Buffer) => (out += d.toString("utf8")));
+    child.stdout.setEncoding("utf8"); // a character split across two chunks is joined, not broken
+    child.stdout.on("data", (d: string) => (out += d));
     child.stderr.on("data", (d: Buffer) => (err += d.toString()));
     child.on("error", (e) => {
       clearTimeout(timer);

@@ -88,3 +88,38 @@ test("a tool result kept after the cut still finds its call among what was taken
   assert.equal(row.name, "Read");
   assert.equal(row.arg, "a.ts");
 });
+
+test("REGRESSION: saves that overlap write what compaction took out once, not once per save", async () => {
+  // The engine persists from several places at once. Each overlapping save used to see the same unsaved
+  // entries and append them again: one real session's archive held every entry six times (5 MB, of which
+  // 4.5 MB repeats) and the chat redrew them that often on reopening.
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mw-earlier-"));
+  try {
+    const s = sessionIn(dir, [said("fix the login", 1), reply("Fixed it."), said("now the logout", 2), reply("Done.")]);
+    replaceTranscript(s, spliceSummary(s.transcript, "the summary", 2));
+    await Promise.all([saveSession(s), saveSession(s), saveSession(s), saveSession(s)]);
+    const back = await resumeSession(dir, s.id);
+    assert.deepEqual(back!.earlier?.map((e) => e.content), ["fix the login", "Fixed it."]);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("an archive already written with repeats is read without them", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mw-earlier-"));
+  try {
+    const s = sessionIn(dir, [said("fix the login", 1), reply("Fixed it."), said("now the logout", 2), reply("Done.")]);
+    replaceTranscript(s, spliceSummary(s.transcript, "the summary", 2));
+    await saveSession(s);
+    // append the archive's lines a second and third time, the way the old overlap did
+    const { loadEarlier } = await import("./store.js");
+    const found = (await fs.readdir(process.env.MINDWEAVE_STATE_DIR ?? "", { recursive: true })).find((n) => n.endsWith(".earlier.jsonl"));
+    assert.ok(found, "the archive was written");
+    const full = path.join(process.env.MINDWEAVE_STATE_DIR!, found);
+    const text = await fs.readFile(full, "utf8");
+    await fs.writeFile(full, text + text + text);
+    assert.deepEqual((await loadEarlier(dir, s.id)).map((e) => e.content), ["fix the login", "Fixed it."]);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});

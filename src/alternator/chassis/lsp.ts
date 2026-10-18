@@ -14,12 +14,8 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { promises as fs } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import {
-  createMessageConnection,
-  StreamMessageReader,
-  StreamMessageWriter,
-  type MessageConnection,
-} from "vscode-jsonrpc/node";
+// The JSON-RPC library is loaded when a language server is first started (see launch), not at startup.
+import type { MessageConnection } from "vscode-jsonrpc/node";
 import { languageIdFor, serverFor, specForLanguage, type ServerSpec } from "./servers.js";
 import type { CodeDiagnostic, SymbolKind } from "./types.js";
 import { flattenDocSymbols, pickNearest, type LineSpan, type RawDocSymbol } from "../../tools/spanCore.js";
@@ -465,6 +461,7 @@ export class LspManager {
       }
       return null;
     }
+    const { createMessageConnection, StreamMessageReader, StreamMessageWriter } = await import("vscode-jsonrpc/node");
     const conn = createMessageConnection(
       new StreamMessageReader(proc.stdout),
       new StreamMessageWriter(proc.stdin),

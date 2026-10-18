@@ -78,7 +78,7 @@ export const UNKNOWN_TOOL = "Unknown tool";
 // it to stay out of the stream. `todo_write` is silent for the same reason: its
 // reader is the model, not the user. Mutating tools (edit/write/run) were never
 // grouped and still keep their own row with the diff/output.
-const GROUPABLE = new Set(["read_file", "read_symbol"]);
+const GROUPABLE = new Set(["read_file", "read_symbol", "search"]);
 
 /**
  * The agent working in the shell: running a command, checking on one it left running, stopping
@@ -165,7 +165,7 @@ export function noteReads(calls: { name: string; args: Record<string, unknown> }
  * now appear while a call works, so these are left out from the start instead of flashing up and
  * disappearing.
  */
-const NEVER_SHOWN = new Set(["search", "outline", "definition", "references", "relevant", "todo_write", "find_tools"]);
+const NEVER_SHOWN = new Set(["outline", "definition", "references", "relevant", "todo_write", "find_tools"]);
 
 /** Whether a tool's calls are never drawn in the conversation. */
 export function neverShown(name: string): boolean {

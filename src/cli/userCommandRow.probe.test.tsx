@@ -142,10 +142,10 @@ test("the uncut text opens when there is more than the short one shows, like any
   assert.ok(openedLines(item).includes("more2"));
 });
 
-test("painted folded: one line, the count, the mark and the hint to open", async () => {
+test("painted folded: one line, the count and the hint to open", async () => {
   const s = run([mine("u1", "git log --oneline -3"), end("u1", DETAIL), { type: "endTurn" }]);
   const text = await paint(works(s)[0]!.items, { live: false });
-  assert.match(text, /You ran 1 command\s+✓\s+▸/);
+  assert.match(text, /You ran 1 command\s+▸/);
   assert.doesNotMatch(text, /abc123/, "folded, the output is not on screen");
 });
 
@@ -158,16 +158,16 @@ test("painted open: the command and its output on the band, and how it ended, ju
   assert.match(yours, /\$ git log --oneline -3/);
   assert.match(yours, /abc123 first/);
   assert.match(yours, /def456 second/);
-  assert.match(yours, /✓ 0 · 688ms/);
+  assert.match(yours, /0 · 688ms/);
   // Everything but the one word is the same picture.
   assert.equal(yours.replace("You ran", "Ran"), theirs, "a command of the person's opens exactly like the agent's");
 });
 
-test("a failed command of the person's shows the red mark and opens on what it printed", async () => {
+test("a failed command of the person's shows how it ended and opens on what it printed", async () => {
   const detail = "$ npm test\nboom\n✗ 1 · 2s";
   const s = run([mine("u1", "npm test"), end("u1", detail, false), { type: "endTurn" }]);
   assert.equal(header(works(s)[0]!), "You ran 1 command");
   const text = await paint(works(s)[0]!.items, { open: true, live: false });
-  assert.match(text, /✗ 1/);
+  assert.match(text, / 1 · 2s/);
   assert.match(text, /boom/);
 });

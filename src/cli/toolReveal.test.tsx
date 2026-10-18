@@ -131,7 +131,7 @@ test("a read that is done by its beat appears done, in one frame, and the turn e
   assert.equal(ended, first, "a finished row changed when the turn ended");
 });
 
-test("a row counts each file once, and a read that failed shows a red mark", () => {
+test("a row counts each file once, and a read that failed adds no mark to the row", () => {
   const s = run([
     { type: "toolStart", toolId: "t1", name: "Read", arg: "a.ts", action: "read", group: true },
     { type: "toolEnd", toolId: "t1", ok: true, summary: "read src/a.ts (195 lines)" },
@@ -144,7 +144,7 @@ test("a row counts each file once, and a read that failed shows a red mark", () 
   ]);
   const frame = frameOf(blocks(s));
   assert.match(frame, /Read 5 files/, frame);
-  assert.match(frame, /✗/, frame);
+  assert.doesNotMatch(frame, /✗|✓/, "no marks beside the count");
   assert.doesNotMatch(frame, /b\.ts/, "folded: the names are behind the click");
 });
 

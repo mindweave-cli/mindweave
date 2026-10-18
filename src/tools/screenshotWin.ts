@@ -62,6 +62,10 @@ const PS_TIMEOUT_MS = 20_000;
 const SCRIPT = String.raw`
 param([string]$Mode = "list", [string]$Handle = "", [string]$Out = "", [string]$Desktop = "", [string]$Hidden = "", [int]$Owner = 0)
 $ErrorActionPreference = "Stop"
+# The window list is read back as UTF-8. Without this the console's own code page is used, and every title with a
+# dash, an accent or a CJK character reached the model as "?" (real sessions: "Microsoft? Edge", "? Greeting"),
+# which made the title impossible to copy back into a call.
+try { [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false) } catch {}
 Add-Type -AssemblyName System.Drawing
 
 Add-Type -ReferencedAssemblies System.Drawing -TypeDefinition @"
@@ -307,7 +311,8 @@ async function runScript(args: string[], signal?: AbortSignal, shareConsole = fa
     const onAbort = () => child.kill();
     signal?.addEventListener("abort", onAbort, { once: true });
 
-    child.stdout!.on("data", (d: Buffer) => (out += d.toString()));
+    child.stdout!.setEncoding("utf8"); // a character split across two chunks is joined, not broken
+    child.stdout!.on("data", (d: string) => (out += d));
     child.stderr!.on("data", (d: Buffer) => (err += d.toString()));
     child.on("error", (e) => {
       clearTimeout(timer);

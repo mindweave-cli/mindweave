@@ -431,3 +431,20 @@ test("isServerManagementStep: only a step made of mcp_server calls", () => {
   assert.equal(isServerManagementStep(["mcp_server", "run_command"]), false);
   assert.equal(isServerManagementStep([]), false);
 });
+
+test("a made-up name that is another program's word for one of our tools says which tool, and what it does", () => {
+  const known = ["ask_user", "read_file", "run_command", "search"];
+  const describe = (t: string) => (t === "ask_user" ? "Ask the user a question and wait for the answer. Use it when you need a decision." : undefined);
+  const q = unknownToolError("question", known, describe);
+  assert.match(q, /most likely meant 'ask_user'/);
+  assert.match(q, /Ask the user a question/);
+  assert.match(q, /Call 'ask_user' in your next step/);
+  // Case and punctuation do not matter, and every one of the familiar words reaches its tool.
+  assert.match(unknownToolError("Ask-User", known), /'ask_user'/);
+  assert.match(unknownToolError("bash", known), /'run_command'/);
+  assert.match(unknownToolError("cat", known), /'read_file'/);
+  assert.match(unknownToolError("grep", known), /'search'/);
+  // A tool that is not offered is never named, and a name nobody knows still gets the old answer.
+  assert.doesNotMatch(unknownToolError("bash", ["read_file"]), /run_command/);
+  assert.match(unknownToolError("zzzzzz", known), /find_tools/);
+});

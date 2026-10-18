@@ -108,7 +108,7 @@ test("a failed call says why, in the server's own words, and is not 'Connected'"
   const text = await paint(works(s)[0]!.items, { open: true });
   assert.match(text, /Called 1 MCP tool/);
   assert.match(text, /rea · binary_overview/, "the line names the server and the tool");
-  assert.match(text, /✗/);
+  assert.doesNotMatch(text, /Connected/);
   assert.match(text, /No app is open\./, "the server's reason is on the screen");
   assert.doesNotMatch(text, /Status: Connected/, "the connection is not the verdict");
   assert.doesNotMatch(text, /Received an error result/);
@@ -120,7 +120,7 @@ test("a failed call says why, in the server's own words, and is not 'Connected'"
 test("a call that worked shows a mark and how long it took", async () => {
   const s = run([...call("a", "open_binary", { path: "C:\\Windows\\notepad.exe" }, JSON.stringify({ result: { format: "pe" } }), false, 1400), { type: "endTurn" }]);
   const text = await paint(works(s)[0]!.items, { open: true });
-  assert.match(text, /✓ rea · open_binary\s+1\.4s/);
+  assert.match(text, /rea · open_binary\s+1\.4s/);
   assert.match(text, /notepad\.exe/, "what it was asked is one click away");
   assert.match(text, /"format": "pe"/, "and the answer is laid out, not run together");
 });
@@ -169,15 +169,15 @@ test("a server change reads as its action, a tick, and what came of it", async (
   const s = run([...change("b", { action: "enable", name: "rea" }, "connected · 170 tools"), ...change("c", { action: "reconnect", name: "rea" }, "connected · 170 tools"), { type: "endTurn" }]);
   const text = await paint(works(s)[0]!.items, { open: true });
   assert.match(text, /Managed 1 MCP server/);
-  assert.match(text, /✓ enable rea\s+connected · 170 tools/);
-  assert.match(text, /✓ reconnect rea\s+connected · 170 tools/);
+  assert.match(text, /enable rea\s+connected · 170 tools/);
+  assert.match(text, /reconnect rea\s+connected · 170 tools/);
   assert.doesNotMatch(text, /▸/, "there is nothing behind a server change to open");
 });
 
 test("a server that would not connect says why under its line, in red", async () => {
   const s = run([...change("b", { action: "enable", name: "rea" }, "not connected: GHIDRA_INSTALL_DIR must be absolute", false), { type: "endTurn" }]);
   const text = await paint(works(s)[0]!.items, { open: true });
-  assert.match(text, /✗ enable rea\s+not connected/);
+  assert.match(text, /enable rea\s+not connected/);
   assert.match(text, /GHIDRA_INSTALL_DIR must be absolute/);
 });
 
@@ -186,6 +186,6 @@ test("a change the user refused is not shown as done", async () => {
   const g = works(s)[0]!;
   assert.deepEqual(commandHeader(g.items, g.live).marks, ["skipped", "skipped"], "no tick for something that did not happen");
   const text = await paint(g.items, { open: true });
-  assert.match(text, /· remove rea\s+declined/);
+  assert.match(text, /remove rea\s+declined/);
   assert.doesNotMatch(text, /✓/);
 });

@@ -76,6 +76,47 @@ export function fullReadPaths(entries: Entry[], resolve: (path: string) => strin
 }
 
 /**
+ * The line ranges of a file whose text is still present in the transcript, from `read_file`
+ * calls that took a range (pure). The companion to `fullReadPaths` for a read with
+ * `offset`/`limit`: which lines are meant comes from the result's own summary
+ * (`read a.ts lines 200-499`), the thing that says what was actually sent, and a result that
+ * has since been cleared to a stub, failed, or was itself an "unchanged" answer is left out.
+ */
+export function visibleReadRanges(
+  entries: Entry[],
+  resolve: (path: string) => string | undefined,
+): Map<string, { start: number; end: number }[]> {
+  const callById = new Map<string, { name: string; arguments: string }>();
+  for (const e of entries) {
+    if (e.role === "assistant" && e.toolCalls) {
+      for (const tc of e.toolCalls) callById.set(tc.id, { name: tc.name, arguments: tc.arguments });
+    }
+  }
+  const out = new Map<string, { start: number; end: number }[]>();
+  for (const e of entries) {
+    if (e.role !== "tool" || e.isError || e.content.includes(CLEARED_STUB) || e.content.startsWith("Error:")) continue;
+    const call = callById.get(e.toolCallId ?? "");
+    if (!call || call.name !== "read_file") continue;
+    const said = /\blines (\d+)-(\d+)/.exec(e.summary ?? "");
+    if (!said || /\(unchanged\)/.test(e.summary ?? "")) continue;
+    let args: { path?: unknown; paths?: unknown };
+    try {
+      args = JSON.parse(call.arguments) as typeof args;
+    } catch {
+      continue;
+    }
+    // A range applies to a single file; a call naming several read them whole.
+    if (typeof args.path !== "string" || Array.isArray(args.paths)) continue;
+    const abs = resolve(args.path);
+    if (!abs) continue;
+    const list = out.get(abs) ?? [];
+    list.push({ start: Number(said[1]), end: Number(said[2]) });
+    out.set(abs, list);
+  }
+  return out;
+}
+
+/**
  * Absolute paths the model has WRITTEN or EDITED, from tool calls that succeeded.
  *
  * The companion to `fullReadPaths`, and needed for the same reason on resume: a file the

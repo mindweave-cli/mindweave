@@ -1152,3 +1152,11 @@ test("a port opening before the 'up' note is delivered goes in that note, not a 
   assert.deepEqual(later.map((e) => [e.kind, e.ports]), [["opened", [5555]]]);
   mgr.dispose();
 });
+
+test("findRecentUserClose: once the person has written since it closed, it is no longer held against a reopen", () => {
+  const now = 1_000_000;
+  const shells = [closed(5, "npm run start", { finishedAt: now - 3000 })];
+  // They wrote before it closed: the guard holds. They wrote after it closed ("yes, start it again"): it lifts.
+  assert.equal(findRecentUserClose(shells, "npm run start", now, undefined, now - 10_000)?.id, 5);
+  assert.equal(findRecentUserClose(shells, "npm run start", now, undefined, now - 1_000), undefined);
+});

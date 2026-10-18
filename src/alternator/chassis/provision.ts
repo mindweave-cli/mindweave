@@ -22,7 +22,7 @@ import { existsSync, promises as fs, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import zlib from "node:zlib";
-import AdmZip from "adm-zip";
+// adm-zip is loaded where it unpacks an archive (installGithub), not at startup: it is sixteen files.
 import { stateRoot } from "../../memory/store.js";
 import { writeFileAtomic } from "../../tools/atomicWrite.js";
 
@@ -244,7 +244,7 @@ async function installGithub(key: string, spec: GithubInstall): Promise<boolean>
   if (!(await download(url, archive, target.sha256))) return false;
   try {
     if (asset.endsWith(".zip")) {
-      new AdmZip(archive).extractAllTo(dir, true);
+      new (await import("adm-zip")).default(archive).extractAllTo(dir, true);
     } else if (asset.endsWith(".tar.gz") || asset.endsWith(".tgz") || asset.endsWith(".tar.xz")) {
       if (!(await runTar(archive, dir))) return false;
     } else if (asset.endsWith(".gz")) {

@@ -1,9 +1,10 @@
 /**
  * inkSpeedLoader.ts — the module load hook that swaps in the faster Ink renderer text.
  *
- * It touches exactly two files, `ink/build/output.js` and `widest-line/index.js`, and each only
- * when its content is the stock one this was written against (see inkOutputPatch.ts and
- * widestLinePatch.ts); everything else passes through untouched.
+ * It touches exactly three files, `ink/build/output.js`, `widest-line/index.js` and
+ * `ink/build/ink.js`, and each only when its content is the stock one this was written against
+ * (see inkOutputPatch.ts, widestLinePatch.ts and inkThrottlePatch.ts); everything else passes
+ * through untouched.
  *
  * Two shapes of the same hook. `loadSync` is the one used: it runs in the main thread through
  * `module.registerHooks`. `load` is the asynchronous form for `module.register`, kept only as a
@@ -13,14 +14,16 @@
  */
 import { patchInkOutput } from "./inkOutputPatch.js";
 import { patchWidestLine } from "./widestLinePatch.js";
+import { patchInkThrottle } from "./inkThrottlePatch.js";
 
 type Source = string | ArrayBuffer | ArrayBufferView | null | undefined;
 type LoadResult = { format?: string | null; source?: Source; shortCircuit?: boolean };
 
-/** The patch for this module, or null when it is not one of the two this changes. */
-function patchFor(url: string): ((text: string) => string | null) | null {
+/** The patch for this module, or null when it is not one of the three this changes. */
+function patchFor(url: string): ((text: string, url: string) => string | null) | null {
   if (/\/node_modules\/ink\/build\/output\.js$/.test(url)) return patchInkOutput;
   if (/\/node_modules\/widest-line\/index\.js$/.test(url)) return patchWidestLine;
+  if (/\/node_modules\/ink\/build\/ink\.js$/.test(url)) return patchInkThrottle;
   return null;
 }
 
@@ -33,7 +36,7 @@ function asText(source: Source): string {
 function apply(url: string, result: LoadResult): LoadResult {
   const patch = patchFor(url);
   if (!patch || result.source == null) return result;
-  const patched = patch(asText(result.source));
+  const patched = patch(asText(result.source), url);
   return patched ? { ...result, source: patched } : result;
 }
 

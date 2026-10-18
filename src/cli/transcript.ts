@@ -159,6 +159,12 @@ export type Block =
    * `done` means it is closed AND everything in it has finished, which is when it may scroll away.
    */
   | { kind: "work"; id: number; done: boolean; closed?: boolean; items: WorkItem[]; live?: boolean; open?: boolean }
+  /**
+   * Files the agent wrote or edited one after another, with nothing between them but more edits.
+   * From the third on they are drawn as ONE row (see editGroup.ts); one or two are the rows they always were.
+   * Nothing but edits joins it: a command, a read, a sentence from the agent closes it.
+   */
+  | { kind: "edits"; id: number; done: boolean; closed?: boolean; items: WorkItem[]; live?: boolean; open?: boolean }
   /** Sub-agent work, as ONE block however many are delegated at once.
    *
    *  Read-only workers fan out in parallel (see subagent.ts), so two or three can be
@@ -258,6 +264,7 @@ export type Action =
   | { type: "compaction"; report: CompactionReport } // a compaction pass, with bars
   | { type: "say"; text: string } // an assistant markdown block, NOT recorded as the reply
   | { type: "toggleExpand"; id: number } // a click on a row: show all of it, or fold it back
+  | { type: "itemDetail"; toolId: string; detail: string } // the text behind a read, fetched when it is opened
   | { type: "toggleItem"; id: number; index: number } // a click on one command inside a commands row
   | { type: "clear" }; // /clear — drop the visible conversation, keep the id counter
 
@@ -286,7 +293,7 @@ function drain(s: TranscriptState): TranscriptState {
  */
 function forgetCommitted(toolMap: Record<string, number>, moved: Block[]): Record<string, number> {
   const ids = new Set<number>();
-  for (const b of moved) if (b.kind === "work" || b.kind === "tool") ids.add(b.id);
+  for (const b of moved) if (b.kind === "work" || b.kind === "edits" || b.kind === "tool") ids.add(b.id);
   if (ids.size === 0) return toolMap;
   let kept: Record<string, number> | null = null;
   for (const key of Object.keys(toolMap)) {
@@ -310,7 +317,7 @@ export function lastExpandable(s: TranscriptState): number | null {
   for (const list of [s.tail, s.committed]) {
     for (let i = list.length - 1; i >= 0; i--) {
       const b = list[i]!;
-      if ((b.kind === "tool" && b.full) || b.kind === "work" || b.kind === "subagent" || b.kind === "help") return b.id;
+      if ((b.kind === "tool" && b.full) || b.kind === "work" || (b.kind === "edits" && b.items.length >= 2) || b.kind === "subagent" || b.kind === "help") return b.id;
     }
   }
   return null;
@@ -334,6 +341,11 @@ function patchTail(s: TranscriptState, id: number, fields: Partial<Block>): Tran
 function dropTool(s: TranscriptState, toolId: string, blockId: number): TranscriptState {
   const { [toolId]: _gone, ...toolMap } = s.toolMap;
   const block = s.tail.find((b) => b.id === blockId);
+  if (block && block.kind === "edits" && block.items.some((it) => it.toolId !== toolId)) {
+    const items = block.items.filter((it) => it.toolId !== toolId);
+    const done = !!block.closed && items.every((it) => it.status !== "running");
+    return drain({ ...s, tail: s.tail.map((b) => (b.id === blockId ? ({ ...b, items, done } as Block) : b)), toolMap });
+  }
   if (block && block.kind === "work") {
     const items = block.items.filter((it) => it.toolId !== toolId);
     if (items.length === 0) return drain({ ...s, tail: s.tail.filter((b) => b.id !== blockId), toolMap });
@@ -359,8 +371,8 @@ function dropTool(s: TranscriptState, toolId: string, blockId: number): Transcri
  * It is done once everything in it is.
  */
 function closeToolGroup(s: TranscriptState): TranscriptState {
-  const open = s.tail.find((b) => b.kind === "work" && !b.closed);
-  if (!open || open.kind !== "work") return s;
+  const open = s.tail.find((b) => (b.kind === "work" || b.kind === "edits") && !b.closed);
+  if (!open || (open.kind !== "work" && open.kind !== "edits")) return s;
   const done = open.items.every((it) => it.status !== "running");
   return drain(patchTail(s, open.id, { closed: true, done } as Partial<Block>));
 }
@@ -527,7 +539,8 @@ export function reduce(s: TranscriptState, a: Action): TranscriptState {
         // is closed first.
         const found = sealed.tail.find((b) => b.kind === "work" && !b.closed);
         const open = found && found.kind === "work" && found.items.every((it) => !!it.byUser === !!a.byUser) ? found : undefined;
-        const base = found && !open ? closeToolGroup(sealed) : sealed;
+        // An open row of edits is closed by anything that is not an edit.
+        const base = open ? sealed : closeToolGroup(sealed);
         if (open && open.kind === "work") {
           return {
             ...sealed,
@@ -541,6 +554,27 @@ export function reduce(s: TranscriptState, a: Action): TranscriptState {
           seq: gid,
           toolMap: { ...base.toolMap, [a.toolId]: gid },
           tail: base.tail.concat({ kind: "work", id: gid, done: false, live: true, items: [item] }),
+        };
+      }
+
+      // Writing and editing files: they join the open row of edits, or start one. Only edits are ever in it.
+      if ((a.action === "edit" || a.action === "write") && !a.byUser) {
+        const edit: WorkItem = { toolId: a.toolId, name: a.name, arg: a.arg, kind: a.action, status: "running", startedAt: a.at ?? Date.now() };
+        const found = sealed.tail.find((b) => b.kind === "edits" && !b.closed);
+        if (found && found.kind === "edits") {
+          return {
+            ...sealed,
+            toolMap: { ...sealed.toolMap, [a.toolId]: found.id },
+            tail: sealed.tail.map((b) => (b.id === found.id && b.kind === "edits" ? { ...b, items: [...b.items, edit], done: false, live: true } : b)),
+          };
+        }
+        const base = closeToolGroup(sealed);
+        const gid = base.seq + 1;
+        return {
+          ...base,
+          seq: gid,
+          toolMap: { ...base.toolMap, [a.toolId]: gid },
+          tail: base.tail.concat({ kind: "edits", id: gid, done: false, live: true, items: [edit] }),
         };
       }
 
@@ -596,6 +630,25 @@ export function reduce(s: TranscriptState, a: Action): TranscriptState {
       // error rows, which is worse than showing nothing. The model still gets the full
       // reason, and the transcript still records it — this is a display decision only.
       if (a.quiet) return dropTool(s, a.toolId, blockId);
+      if (block && block.kind === "edits") {
+        const at = block.items.findIndex((it) => it.toolId === a.toolId && it.status === "running");
+        const items = block.items.map((it, i) =>
+          i === at
+            ? {
+                ...it,
+                status: a.ok ? ("ok" as const) : ("error" as const),
+                summary: a.summary,
+                detail: a.detail,
+                detailKind: a.detailKind,
+                ...(hasMore(a.detail, a.detailFull) ? { full: a.detailFull } : {}),
+                ...(a.action ? { kind: a.action } : {}),
+                ...(a.name ? { name: a.name } : {}),
+              }
+            : it,
+        );
+        const done = !!block.closed && items.every((it) => it.status !== "running");
+        return drain(patchTail(s, blockId, { items, done } as Partial<Block>));
+      }
       if (block && block.kind === "work") {
         // Some providers number their calls from zero every round, so an id can come up again in
         // a row that stayed open across rounds: the result belongs to the one still running.
@@ -648,18 +701,29 @@ export function reduce(s: TranscriptState, a: Action): TranscriptState {
       const flip = (b: Block): Block =>
         b.kind === "tool" && b.id === a.id && b.full
           ? ({ ...b, expanded: !b.expanded } as Block)
-          : b.kind === "work" && b.id === a.id
+          : (b.kind === "work" || b.kind === "edits") && b.id === a.id
             ? ({ ...b, open: !b.open } as Block)
             : b.kind === "subagent" && b.id === a.id
               ? ({ ...b, agents: b.agents.map((ag) => ({ ...ag, open: !b.agents.some((x) => x.open) })) } as Block)
               : b;
       return { ...s, committed: s.committed.map(flip), tail: s.tail.map(flip) };
     }
+    case "itemDetail": {
+      const fill = (b: Block): Block =>
+        b.kind === "work" && b.items.some((it) => it.toolId === a.toolId)
+          ? ({ ...b, items: b.items.map((it) => (it.toolId === a.toolId ? { ...it, detail: a.detail, detailKind: "text" as const } : it)) } as Block)
+          : b;
+      return { ...s, committed: s.committed.map(fill), tail: s.tail.map(fill) };
+    }
     case "toggleItem": {
       const flip = (b: Block): Block =>
         // A row of ONE call shows that call opened whenever the row is open, so a click on the call folds the ROW: there is no
         // call-level state to flip, and flipping it did nothing at all.
-        b.kind === "work" && b.id === a.id && b.items.length === 1
+        b.kind === "edits" && b.id === a.id && b.items[a.index]
+          ? // A click on one file opens or folds that file's change: on its name in the closed row (the list stays shut) or
+            // on its line in the open list. The row itself is opened by a click anywhere else on it.
+            ({ ...b, items: b.items.map((it, i) => (i === a.index ? { ...it, open: !it.open } : it)) } as Block)
+          : b.kind === "work" && b.id === a.id && b.items.length === 1
           ? ({ ...b, open: !b.open } as Block)
           : b.kind === "work" && b.id === a.id && b.items[a.index]
           ? ({ ...b, items: b.items.map((it, i) => (i === a.index ? { ...it, open: !it.open } : it)) } as Block)
@@ -676,7 +740,7 @@ export function reduce(s: TranscriptState, a: Action): TranscriptState {
       // settles into the past tense with the rest of the turn.
       s = settleWaits(s);
       const clear = (b: Block): Block =>
-        (b.kind === "tool" || b.kind === "work") && b.live ? ({ ...b, live: false } as Block) : b;
+        (b.kind === "tool" || b.kind === "work" || b.kind === "edits") && b.live ? ({ ...b, live: false } as Block) : b;
       return { ...s, committed: s.committed.map(clear), tail: s.tail.map(clear) };
     }
     case "resetReply":

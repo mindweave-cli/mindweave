@@ -13,13 +13,15 @@
  */
 import { memo } from "react";
 import { Box, Text, type DOMElement } from "ink";
-import { registerExpandable } from "../expandHits.js";
+import { registerExpandable, itemHit } from "../expandHits.js";
 import { renderMarkdown } from "../markdown.js";
 import { wrapAnsi, visibleWidth } from "../wrap.js";
 import { BAD, USER_BG, USER_FG } from "../theme.js";
 import { compactionLines } from "../compaction.js";
 import { ToolLine } from "./ToolLine.js";
 import { WorkGroup, shadeRows } from "./WorkGroup.js";
+import { EditGroup } from "./EditGroup.js";
+import { isGrouped } from "../editGroup.js";
 import { SubagentView } from "./SubagentView.js";
 import type { Block } from "../transcript.js";
 
@@ -126,6 +128,47 @@ function BlockViewInner({ block, columns, tightTop, hovered, hoveredItem }: { bl
     case "work":
       return (
         <WorkGroup
+          id={block.id}
+          items={block.items}
+          open={block.open}
+          live={block.live}
+          columns={columns}
+          tightTop={tightTop}
+          hovered={hovered}
+          hoveredItem={hoveredItem}
+        />
+      );
+
+    case "edits":
+      // One or two edits are the rows they always were; from the third on they are one row.
+      if (!isGrouped(block.items)) {
+        return (
+          <Box flexDirection="column">
+            {block.items.map((it, i) => (
+              <ToolLine
+                key={it.toolId}
+                id={itemHit(block.id, i)}
+                full={it.full}
+                expanded={it.open}
+                hovered={hoveredItem === i}
+                name={it.name}
+                arg={it.arg}
+                status={it.status}
+                action={it.kind}
+                summary={it.summary}
+                detail={it.detail}
+                detailKind={it.detailKind}
+                columns={columns}
+                live={block.live}
+                tightTop={i === 0 ? tightTop : false}
+                startedAt={it.startedAt}
+              />
+            ))}
+          </Box>
+        );
+      }
+      return (
+        <EditGroup
           id={block.id}
           items={block.items}
           open={block.open}

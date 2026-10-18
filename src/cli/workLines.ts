@@ -15,6 +15,24 @@ export function isRead(it: WorkItem): boolean {
   return it.kind === "read";
 }
 
+/** Whether this call searched the project: one line in the row, and what it printed behind a click. */
+export function isSearch(it: WorkItem): boolean {
+  return it.kind === "search";
+}
+
+/**
+ * What a search's line says at its right (pure): how much it found, from the result it left
+ * (`grep x (25 lines)`, `glob src (3 matches)`, `grep x — no matches`).
+ */
+export function searchVerdict(it: WorkItem): string {
+  if (it.status === "running") return "";
+  if (it.status === "error") return "✗";
+  const said = (it.summary ?? "").trim();
+  if (/no matches/.test(said)) return "no matches";
+  const found = /\((.+)\)\s*$/.exec(said);
+  return found ? found[1]! : said ? said : "✓";
+}
+
 /** Whether this call opened a picture for the agent to look at. */
 export function isView(it: WorkItem): boolean {
   return it.name === VIEWED_NAME;
@@ -60,8 +78,8 @@ export function stepCount(items: WorkItem[]): number {
 }
 
 /** Which kind of work a call is. */
-function workKind(it: WorkItem): "run" | "read" | "view" | "step" | "tool" | "setup" {
-  return isRead(it) ? "read" : isView(it) ? "view" : isStep(it) ? "step" : isMcp(it) ? "tool" : isServerChange(it) ? "setup" : "run";
+function workKind(it: WorkItem): "run" | "read" | "search" | "view" | "step" | "tool" | "setup" {
+  return isRead(it) ? "read" : isSearch(it) ? "search" : isView(it) ? "view" : isStep(it) ? "step" : isMcp(it) ? "tool" : isServerChange(it) ? "setup" : "run";
 }
 
 /** The files one read call took, by name: a list call names each, any other names one. */
@@ -90,7 +108,7 @@ export function fileCount(items: WorkItem[]): number {
  * commands", not "Running 3 commands" above a mark that shows two of them finished.
  */
 export function workHeader(items: WorkItem[], live: boolean | undefined): { text: string; working: boolean } {
-  const order: ("run" | "read" | "view" | "step" | "tool" | "setup")[] = [];
+  const order: ("run" | "read" | "search" | "view" | "step" | "tool" | "setup")[] = [];
   for (const it of items) {
     const k = workKind(it);
     if (!order.includes(k)) order.push(k);
@@ -108,12 +126,12 @@ export function workHeader(items: WorkItem[], live: boolean | undefined): { text
     const n = size(mine);
     const nGoing = size(going);
     const noun =
-      k === "read" ? (n === 1 ? "file" : "files") : k === "view" ? (n === 1 ? "image" : "images") : k === "step" ? (n === 1 ? "step" : "steps") : k === "tool" ? (n === 1 ? "MCP tool" : "MCP tools") : k === "setup" ? (n === 1 ? "MCP server" : "MCP servers") : n === 1 ? "command" : "commands";
+      k === "read" ? (n === 1 ? "file" : "files") : k === "search" ? (n === 1 ? "time" : "times") : k === "view" ? (n === 1 ? "image" : "images") : k === "step" ? (n === 1 ? "step" : "steps") : k === "tool" ? (n === 1 ? "MCP tool" : "MCP tools") : k === "setup" ? (n === 1 ? "MCP server" : "MCP servers") : n === 1 ? "command" : "commands";
     const count = going.length > 0 && nGoing < n ? `${nGoing} of ${n}` : `${n}`;
     const verb =
       going.length > 0
-        ? k === "read" ? "Reading" : k === "view" ? "Viewing" : k === "step" ? "Testing" : k === "tool" ? "Calling" : k === "setup" ? "Managing" : "Running"
-        : k === "read" ? "Read" : k === "view" ? "Viewed" : k === "step" ? "Tested" : k === "tool" ? "Called" : k === "setup" ? "Managed" : yours ? "You ran" : "Ran";
+        ? k === "read" ? "Reading" : k === "search" ? "Searching" : k === "view" ? "Viewing" : k === "step" ? "Testing" : k === "tool" ? "Calling" : k === "setup" ? "Managing" : "Running"
+        : k === "read" ? "Read" : k === "search" ? "Searched" : k === "view" ? "Viewed" : k === "step" ? "Tested" : k === "tool" ? "Called" : k === "setup" ? "Managed" : yours ? "You ran" : "Ran";
     const text = `${verb} ${count} ${noun}`;
     return i === 0 ? text : text.charAt(0).toLowerCase() + text.slice(1);
   });
@@ -132,6 +150,9 @@ export function rangeText(it: WorkItem): string {
   if (symbol) return `lines ${symbol[2]}–${symbol[3]} of ${symbol[1]!.split(/[\\/]/).pop()}`;
   const whole = said.match(/\(([\d,]+) lines?\)/);
   if (whole) return `whole file · ${whole[1]} line${whole[1] === "1" ? "" : "s"}`;
+  // A file too big to read whole is outlined instead, and the result says so.
+  const outlined = said.match(/^outlined\s+.+?\s+\(([\d,]+) lines?\s+[—-]\s+too large to read whole\)/);
+  if (outlined) return `outline only · ${outlined[1]} lines, too large to read whole`;
   if (/\(empty\)/.test(said)) return "empty file";
   if (/\(unchanged\)/.test(said)) return "read before, unchanged";
   return said.replace(/^read\s+\S+\s*/i, "");

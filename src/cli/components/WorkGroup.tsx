@@ -28,7 +28,7 @@ import { COMMAND_OFFER_AFTER_MS, offerBackground } from "../commandBackground.js
 import { registerExpandable, registerRowBox, itemHit } from "../expandHits.js";
 import { BAD, GOOD, USER_BG, USER_FG } from "../theme.js";
 import { visibleWidth, wrapAnsi } from "../wrap.js";
-import { FOLD_SEP, foldControls, plainLine, compactLine, isMcp, isRead, isServerChange, isStep, isView, keepIndent, mcpReason, mcpVerdict, readRows, serverReason, serverVerdict, viewSummary, wasDeclined, stepLabel, stepReason, workHeader } from "../workLines.js";
+import { FOLD_SEP, foldControls, plainLine, compactLine, isMcp, isRead, isSearch, isServerChange, isStep, isView, keepIndent, mcpReason, mcpVerdict, readRows, searchVerdict, serverReason, serverVerdict, viewSummary, wasDeclined, stepLabel, stepReason, workHeader } from "../workLines.js";
 import type { WorkItem } from "../transcript.js";
 
 const DOT = "●";
@@ -44,7 +44,7 @@ const VERDICT_WIDTH = 16;
 export function commandHeader(items: WorkItem[], live: boolean | undefined): { text: string; marks: ("ok" | "error" | "running" | "skipped")[]; more: number; working: boolean } {
   const head = workHeader(items, live);
   // A change the user refused is not a success: it gets the dim mark, not a tick.
-  const marks = items.filter((it) => !isRead(it) || it.status === "error").map((it) => (wasDeclined(it) ? ("skipped" as const) : it.status));
+  const marks = items.filter((it) => (!isRead(it) && !isSearch(it)) || it.status === "error").map((it) => (wasDeclined(it) ? ("skipped" as const) : it.status));
   const more = Math.max(0, marks.length - MAX_MARKS);
   return { text: head.text, marks: marks.slice(more), more, working: head.working };
 }
@@ -120,7 +120,7 @@ function listRows(items: WorkItem[], room: number): Row[] {
   return items.flatMap((it, index): Row[] =>
     isRead(it)
       ? readRows(it).map((r, j) => ({ key: `${it.toolId}.${j}`, index, item: it, label: fitPath(r.label, room), range: r.range }))
-      : [{ key: it.toolId, index, item: it, label: isView(it) ? fitPath(it.arg ?? it.name, room) : isStep(it) ? stepLabel(it) : isMcp(it) || isServerChange(it) ? (it.arg ?? it.name) : commandName(it, room) }],
+      : [{ key: it.toolId, index, item: it, label: isSearch(it) ? (it.arg ?? it.name.toLowerCase()) : isView(it) ? fitPath(it.arg ?? it.name, room) : isStep(it) ? stepLabel(it) : isMcp(it) || isServerChange(it) ? (it.arg ?? it.name) : commandName(it, room) }],
   );
 }
 
@@ -185,18 +185,7 @@ export function WorkGroup({
         <Box flexShrink={0}>
           <Text bold dimColor={!hovered}>{head.text}</Text>
         </Box>
-        {head.marks.length > 0 && !(open && items.some((it) => isMcp(it) || isServerChange(it))) ? (
-          <Box flexShrink={0}>
-            <Text>{"  "}</Text>
-            {head.more > 0 ? <Text dimColor>{`+${head.more} `}</Text> : null}
-            {head.marks.map((m, i) => (
-              <Text key={i} color={m === "ok" ? GOOD : m === "error" ? BAD : undefined} dimColor={m === "running" || m === "skipped"}>
-                {m === "ok" ? "✓" : m === "error" ? "✗" : "·"}
-                {i < head.marks.length - 1 ? " " : ""}
-              </Text>
-            ))}
-          </Box>
-        ) : null}
+        {/* No ticks or crosses beside the words: how each call ended is on its own line once the row is opened. */}
         {onStep ? (
           <Box flexShrink={0}>
             <Text dimColor>{"  " + stepLabel(onStep).slice(0, Math.max(12, columns - head.text.length - 24))}</Text>
@@ -208,7 +197,7 @@ export function WorkGroup({
           </Box>
         ) : null}
         {/* Only while a command is running, and only when the row has room for it. */}
-        {movableSince !== undefined && columns - head.text.length - head.marks.length * 2 >= 62 ? (
+        {movableSince !== undefined && columns - head.text.length >= 62 ? (
           <Box flexShrink={0}>
             <BackgroundHint since={movableSince} />
           </Box>
@@ -276,19 +265,26 @@ function WorkList({ id, items, columns, live, hoveredItem }: { id: number; items
         const last = i === rows.length - 1;
         const reading = isRead(it);
         const step = isStep(it);
-        const hot = !reading && hoveredItem === row.index;
+        // A read opens onto the text it took. A call that read several files has one such line, its first.
+        const firstOfCall = rows.findIndex((r) => r.index === row.index) === i;
+        const readOpens = reading && firstOfCall && it.status !== "error";
+        const hot = (!reading || readOpens) && hoveredItem === row.index;
         const running = it.status === "running";
         const mcp = isMcp(it);
         // A server change (add, enable, reconnect...) has a line and nothing behind it to open.
         const setup = isServerChange(it);
         const compact = mcp || setup;
         const line = compact ? compactLine(it) : undefined;
-        const verdict = reading || step || mcp || setup ? undefined : verdictLine(it);
-        const shown = reading
+        const search = isSearch(it);
+        const verdict = reading || step || mcp || setup || search ? undefined : verdictLine(it);
+        // No tick or cross anywhere: what is left of a verdict is its words ("0 · 0.2s").
+        const shownRaw = reading
           ? row.range ?? ""
           : running
             ? ""
-            : isView(it)
+            : search
+              ? searchVerdict(it)
+              : isView(it)
               ? viewSummary(it)
               : step
               ? it.status === "error" ? "✗" : "✓"
@@ -297,28 +293,32 @@ function WorkList({ id, items, columns, live, hoveredItem }: { id: number; items
                 : setup
                   ? serverVerdict(it)
                   : verdict ?? (it.status === "error" ? "✗" : it.summary ? it.summary : "✓");
+        const shown = shownRaw.replace(/^[✓✗✖]s*/, "");
         // Why a step failed, under it, in red: the one thing a folded failure must still say.
         const reason = step && it.status === "error" ? stepReason(it) : mcp ? mcpReason(it) : setup ? serverReason(it) : "";
         // Words that do not fit beside a long command go on a line of their own under it. Squeezed
         // into what is left of the line they broke across rows ("Running as shell" / "#1") and ran
         // into the end of the command.
         const room2 = columns - 4 - labelWidth - 3;
-        const below = !running && shown.length > 0 && !(!reading && OUTCOME.test(shown)) && shown.length > Math.max(VERDICT_WIDTH, room2) ? shown : "";
+        const below = !running && shown.length > 0 && !(!reading && OUTCOME.test(shownRaw)) && shown.length > Math.max(VERDICT_WIDTH, room2) ? shown : "";
         const verdictColor = running ? undefined : it.status === "error" || (verdict && !verdict.startsWith("✓")) ? BAD : GOOD;
-        const outcomeOnly = !reading && (OUTCOME.test(shown) || shown === "" || (setup && wasDeclined(it)));
+        const outcomeOnly = !reading && (OUTCOME.test(shownRaw) || shown === "" || (setup && wasDeclined(it)));
         const beside = below ? "" : shown;
         const failedRead = reading && it.status === "error";
-        const body = !reading && !setup && (it.open || single) ? openedLines(it) : [];
+        const body = readOpens
+          ? it.open || single ? openedLines(it) : []
+          : !reading && !setup && !(search && running) && (it.open || single) ? openedLines(it) : [];
         // The one being read stands out: bright, with its text on a shaded band under it. The ones
         // that are folded stay dim, so it is plain which is open.
         const isOpen = body.length > 0;
         const bodyWidth = Math.max(8, columns - 4);
         const shade = isOpen ? shadeRows(body, columns - 4) : [];
+        // The arrow is always in the last column of the line, so it is in the same place on every row, and the whole line is the click.
         // What an MCP line says at its right ("✓ connected · 170 tools") is longer than a command's.
-        const verdictBox = setup ? Math.min(Math.max(VERDICT_WIDTH, room2), 34) : outcomeOnly || below ? VERDICT_WIDTH : Math.max(VERDICT_WIDTH, room2);
-        // Only a command opens; a read has nothing behind its line to show.
+        const verdictBox = setup ? Math.min(Math.max(VERDICT_WIDTH, room2), 34) : Math.max(VERDICT_WIDTH, room2);
+        // A command, a search and a read open; a read only when it worked, and on its first line.
         // A row of one call opens onto that call, so its box is a place to click too: it folds the row (see toggleItem).
-        const registered = reading || setup ? undefined : (node: DOMElement | null) => registerExpandable(itemHit(id, row.index), node);
+        const registered = (reading && !readOpens) || setup ? undefined : (node: DOMElement | null) => registerExpandable(itemHit(id, row.index), node);
         return (
           <Box key={row.key} flexDirection="column" ref={registered}>
             {/* A row whose only call is a batch of steps says "Tested 11 steps" in its header; the call's own
@@ -327,7 +327,7 @@ function WorkList({ id, items, columns, live, hoveredItem }: { id: number; items
             <Box flexDirection="row" width={columns}>
               <Text>{"  "}</Text>
               <Box width={2} flexShrink={0}>
-                {running ? <PulseDot glyph="●" /> : <Text color={line!.tone === "ok" ? GOOD : line!.tone === "error" ? BAD : undefined} dimColor={line!.tone === "skipped"}>{line!.mark}</Text>}
+                {running ? <PulseDot glyph="●" /> : <Text> </Text>}
               </Box>
               <Box width={compactWidth} paddingRight={2} flexShrink={0}>
                 <Text bold={hot || isOpen} dimColor={!hot && !isOpen} wrap="truncate-end">{row.label}</Text>
@@ -353,15 +353,14 @@ function WorkList({ id, items, columns, live, hoveredItem }: { id: number; items
                   </>
                 ) : (
                   <Text
-                    color={outcomeOnly ? verdictColor : failedRead ? BAD : undefined}
-                    dimColor={!outcomeOnly && !failedRead}
+                    dimColor
                     wrap={outcomeOnly ? "truncate-end" : "wrap"}
                   >
                     {beside}
                   </Text>
                 )}
               </Box>
-              {reading || setup || single ? null : <Text dimColor={!hot && !isOpen} bold={hot || isOpen}>{it.open ? " ▾" : " ▸"}</Text>}
+              {(readOpens && !single) || !(reading || setup || single) ? <Text dimColor={!hot && !isOpen} bold={hot || isOpen}>{it.open ? " ▾" : " ▸"}</Text> : null}
             </Box>
             )}
             {below && !compact ? (

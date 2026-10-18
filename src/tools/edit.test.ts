@@ -139,3 +139,76 @@ test("an edit one line past what the row shows can still be opened", async () =>
   assert.match(r.detail ?? "", /\(1 more line\)/, "the setup is the one-line-over case");
   assert.equal(hasMore(r.detail, r.detailFull), true, "and it is openable");
 });
+
+// ── the two edit failures that cost real sessions the most: a no-op in a batch, and a miss with no hint ──
+
+test("a no-op edit in a batch is skipped, and the rest still apply", async () => {
+  // Real sessions: 13 batches failed on one old_string identical to its new_string, taking 24 good edits with them.
+  const ctx = freshCtx();
+  await fs.writeFile(join(ctx.cwd, "c.txt"), "alpha beta gamma");
+  await readFile.execute({ path: "c.txt" }, ctx);
+  const r = await edit.execute(
+    { path: "c.txt", edits: [{ old_string: "alpha", new_string: "ONE" }, { old_string: "beta", new_string: "beta" }, { old_string: "gamma", new_string: "THREE" }] },
+    ctx,
+  );
+  assert.equal(r.isError, undefined);
+  assert.equal(await fs.readFile(join(ctx.cwd, "c.txt"), "utf8"), "ONE beta THREE");
+  assert.match(r.output, /Skipped edit #2/);
+});
+
+test("an edit whose every entry is a no-op still fails, and says so", async () => {
+  const ctx = freshCtx();
+  await fs.writeFile(join(ctx.cwd, "c.txt"), "alpha beta");
+  await readFile.execute({ path: "c.txt" }, ctx);
+  const one = await edit.execute({ path: "c.txt", edits: [{ old_string: "alpha", new_string: "alpha" }] }, ctx);
+  assert.equal(one.isError, true);
+  assert.match(one.output, /edit #1.*identical/);
+  const all = await edit.execute({ path: "c.txt", edits: [{ old_string: "a", new_string: "a" }, { old_string: "b", new_string: "b" }] }, ctx);
+  assert.equal(all.isError, true);
+  assert.match(all.output, /every edit/);
+});
+
+test("a failure in a batch names the edit by its place in the call, even when no-ops came before it", async () => {
+  const ctx = freshCtx();
+  await fs.writeFile(join(ctx.cwd, "c.txt"), "alpha beta");
+  await readFile.execute({ path: "c.txt" }, ctx);
+  const r = await edit.execute(
+    { path: "c.txt", edits: [{ old_string: "alpha", new_string: "alpha" }, { old_string: "nowhere at all", new_string: "x" }] },
+    ctx,
+  );
+  assert.equal(r.isError, true);
+  assert.match(r.output, /edit #2 could not be applied/);
+});
+
+test("a miss shows the closest text and the line that differs", async () => {
+  const ctx = freshCtx();
+  const file = ["function load(path) {", "  const text = readFileSync(path, 'utf8');", "  return parse(text, { strict: true });", "}", "", "export default load;"].join("\n");
+  await fs.writeFile(join(ctx.cwd, "c.ts"), file);
+  await readFile.execute({ path: "c.ts" }, ctx);
+  const r = await edit.execute(
+    { path: "c.ts", edits: [{ old_string: "const text = readFileSync(path);\n  return parse(text, { strict: true });", new_string: "x" }] },
+    ctx,
+  );
+  assert.equal(r.isError, true);
+  assert.match(r.output, /closest text is at lines 2-3/);
+  assert.match(r.output, /the file has:\s+const text = readFileSync\(path, 'utf8'\);/);
+  assert.match(r.output, /No changes were written/);
+});
+
+test("a miss on text that is already changed says the edit may have been applied", async () => {
+  const ctx = freshCtx();
+  await fs.writeFile(join(ctx.cwd, "c.ts"), "const retries = 5;\nconst delay = 200;\n");
+  await readFile.execute({ path: "c.ts" }, ctx);
+  const r = await edit.execute({ path: "c.ts", edits: [{ old_string: "const retries = 3;", new_string: "const retries = 5;" }] }, ctx);
+  assert.equal(r.isError, true);
+  assert.match(r.output, /already in the file \(line 1\)/);
+});
+
+test("a miss with nothing alike in the file says to search instead of inventing a candidate", async () => {
+  const ctx = freshCtx();
+  await fs.writeFile(join(ctx.cwd, "c.ts"), "alpha\nbeta\ngamma\n");
+  await readFile.execute({ path: "c.ts" }, ctx);
+  const r = await edit.execute({ path: "c.ts", edits: [{ old_string: "completely unrelated database migration", new_string: "x" }] }, ctx);
+  assert.equal(r.isError, true);
+  assert.match(r.output, /Nothing in the file is close/);
+});

@@ -11,7 +11,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { ToolContext } from "./types.js";
 import { parseWindowList, type WindowInfo } from "./screenshotWin.js";
-import { ambiguousMessage, pickWindow, listTitles, safeName, screenshot, needsApproval, tieNote } from "./screenshot.js";
+import { ambiguousMessage, didYouMean, foldTitle, pickWindow, listTitles, safeName, screenshot, needsApproval, tieNote } from "./screenshot.js";
 
 function win(title: string, handle = "1", foreground = false): WindowInfo {
   return { handle, title, foreground };
@@ -328,4 +328,24 @@ test("the tool no longer tells the model to omit the title to reach an app", () 
   assert.doesNotMatch(screenshot.description, /omit `window` to grab the focused window rather than guessing/);
   assert.match(screenshot.description, /process name/);
   assert.match(screenshot.description, /never captured that way/);
+});
+
+// ── titles that differ only in punctuation (three failed calls in a row in a real session) ──
+
+test("a long dash in the request finds a window titled with a hyphen, and the other way round", () => {
+  const windows = [win("Getting started - Recipes - Google Chrome", "1"), win("Notes", "2")];
+  assert.equal(pickWindow("Getting started \u2014 Recipes", windows).kind, "match");
+  const dashed = [win("Photos \u2013 My 2023 journey", "3")];
+  assert.equal(pickWindow("photos - my 2023", dashed).kind, "match");
+});
+
+test("curly quotes and no-break spaces fold away", () => {
+  assert.equal(foldTitle("It\u2019s\u00a0\u00a0 \u201cready\u201d"), `it's "ready"`);
+  assert.equal(pickWindow("it's", [win("It\u2019s here", "1")]).kind, "match");
+});
+
+test("a request that matches nothing names the closest window, and says nothing when none is close", () => {
+  const windows = [win("Photos - My 2023 journey - Edge", "1"), win("Settings", "2")];
+  assert.match(didYouMean("Photos mockup page", windows), /Closest open window: "Photos - My 2023 journey - Edge"/);
+  assert.equal(didYouMean("zzz qqq", windows), "");
 });

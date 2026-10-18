@@ -263,6 +263,22 @@ async function readOne(
     return { label: shown, body: FILE_UNCHANGED, summary: `read ${shown} (unchanged)` };
   }
 
+  // The same for a range: lines the model was already sent, still in the conversation, from a file
+  // that has not changed. Answered in a line instead of sending the same lines again.
+  if (!full && unchanged) {
+    const wantFrom = offset ?? 1;
+    const wantTo = wantFrom - 1 + (limit ?? MAX_LINES);
+    if (coversSpan(ctx.transcriptRanges?.get(filePath), wantFrom, wantTo)) {
+      touch(ctx, filePath);
+      const shown = relativize(ctx, filePath);
+      return {
+        label: shown,
+        body: `You already have lines ${wantFrom}-${wantTo} of this file, unchanged, earlier in this conversation — use that instead of re-reading.`,
+        summary: `read ${shown} lines ${wantFrom}-${wantTo} (unchanged)`,
+      };
+    }
+  }
+
   if (limit === undefined && stat.size > MAX_BYTES) {
     return bad(
       `File is large (${formatBytes(stat.size)}). Read a range with \`offset\` and \`limit\` instead of the whole file.`,

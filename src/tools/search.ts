@@ -32,6 +32,7 @@
  * the stream. The model still gets the full result.
  */
 import type { Tool, ToolResult } from "./types.js";
+import { FULL_DETAIL_MAX, capLines } from "./detail.js";
 import { grepDef, GREP_MAX_OUTPUT_LINES } from "./grep.js";
 import { globDef, GLOB_MAX_RESULTS } from "./glob.js";
 import { listDir, MAX_ENTRIES } from "./listDir.js";
@@ -159,6 +160,8 @@ export const search: Tool = {
     // Quiet is applied HERE, on every path including errors, rather than inside either
     // implementation. One tool, one display policy — and a failed search is exactly the
     // row most likely to creep back onto the screen if each branch decided for itself.
-    return { ...result, quiet: true };
+    // The words behind the row's click: what the search printed, which the model got whole.
+    const printed = result.isError || result.detail ? undefined : capLines(result.output.split("\n"), FULL_DETAIL_MAX);
+    return { ...result, quiet: true, ...(printed ? { detail: printed, detailKind: "text" as const } : {}) };
   },
 };

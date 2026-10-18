@@ -10,7 +10,7 @@
  * so a tool call reads the same way in every surface) with no Ink, no pacing, no
  * terminal assumptions. A GUI or a server can drive a session with just this file.
  */
-import { compactNow, respond, type EngineEvent, type SteeredMessage } from "../dynamo/engine.js";
+import { compactNow, effectiveAutoCompactThreshold, respond, type EngineEvent, type SteeredMessage } from "../dynamo/engine.js";
 import type { SubagentOutcome } from "../tools/subagentOutcome.js";
 import {
   startMarathon,
@@ -41,7 +41,13 @@ import { parseAddress } from "../drivers/ollama/endpoint.js";
 import { describeImage, isRejection, type ImageRef } from "../memory/images.js";
 import { resolveAttachments, stripAttachments, attachedFiles, hideAttachedNames } from "../cli/attachments.js";
 export { attachedFiles, hideAttachedNames } from "../cli/attachments.js";
-import { isRewindPoint } from "../memory/rewind.js";
+// `!command`: a command the person runs themselves, as the CLI does it (see memory/localCommand.ts).
+export { runUserCommand } from "../tools/userCommand.js";
+export { saveSession };
+export { isUserCommandText, parseUserCommand } from "../memory/localCommand.js";
+import { isRewindPoint, reloadAgentState } from "../memory/rewind.js";
+import { relativize } from "../tools/paths.js";
+import { contextBudget } from "../dynamo/contextBudget.js";
 export { rewindPoints, rewindTo, pasteSlot, type RewindPoint, type RewindResult, type EditableMessage } from "../memory/rewind.js";
 import { wrapPastedText, collapsePastes } from "../memory/pastedText.js";
 import { manifestForModel } from "../drivers/registry.js";
@@ -349,7 +355,7 @@ export type TurnEvent =
   /** A tool call made BY a spawned sub-agent, not the lead — nests under that
    *  worker's own block instead of the main stream. */
   | { type: "subToolStart"; agentId: string; toolId: string; name: string; arg?: string; kind: string }
-  | { type: "subToolEnd"; agentId: string; toolId: string; ok: boolean; summary: string }
+  | { type: "subToolEnd"; agentId: string; toolId: string; ok: boolean; summary: string; detail?: string }
   | { type: "usage"; promptTokens: number; completionTokens: number; totalTokens: number }
   | { type: "activity"; line: string; error?: boolean }
   | { type: "compaction"; before: number; after: number; window: number }
@@ -408,7 +414,7 @@ export async function listSessions(cwd: string): Promise<SessionMeta[]> {
 export type ReplayEvent =
   | { type: "userMessage"; text: string; expiredImages?: string[]; images?: string[]; files?: string[]; noRewind?: true }
   | { type: "assistantMessage"; text: string }
-  | { type: "toolReplay"; name: string; arg?: string; kind: string; ok: boolean; summary: string; detail?: string; detailFull?: string; detailKind?: "diff" | "text" | "shell"; images?: string[]; web?: WebDisplay; ui?: UiDisplay; tool?: string; /** The call's arguments, clipped as on a live toolStart: which file a row is about. */ args?: Record<string, unknown>; /** A quiet result (only searches are replayed quiet): not a row of its own. */ quiet?: true }
+  | { type: "toolReplay"; name: string; arg?: string; kind: string; ok: boolean; summary: string; detail?: string; detailFull?: string; detailKind?: "diff" | "text" | "shell"; images?: string[]; web?: WebDisplay; ui?: UiDisplay; tool?: string; /** The call's arguments, clipped as on a live toolStart: which file a row is about. */ args?: Record<string, unknown>; /** A quiet result (only searches are replayed quiet): not a row of its own. */ quiet?: true; /** A command the person ran with `!`, not the agent. */ byUser?: true }
   | { type: "compactionSummary"; text: string };
 
 /** Compaction appends "[<paths> was attached here but is no longer in context …]" to a
@@ -455,6 +461,23 @@ export function replayHistory(session: Session): ReplayEvent[] {
           ...(files.length ? { files } : {}),
           // Typed mid-turn, or from before messages were stamped: nothing to go back to.
           ...(isRewindPoint(entry) && !earlier.has(entry) ? {} : { noRewind: true as const }),
+        });
+      }
+      // A command the person ran with `!` is shown as a command row, the same as one the agent ran.
+      if (entry.synthetic && entry.localCommand) {
+        const rec = entry.localCommand;
+        out.push({
+          type: "toolReplay",
+          name: "Run",
+          tool: "run_command",
+          arg: rec.command,
+          kind: "run",
+          ok: rec.ok,
+          summary: rec.summary ?? "",
+          ...(rec.detail ? { detail: rec.detail } : {}),
+          ...(rec.detailFull ? { detailFull: rec.detailFull } : {}),
+          detailKind: "shell",
+          byUser: true,
         });
       }
     } else if (entry.role === "assistant") {
@@ -621,7 +644,8 @@ export async function runTurn(
   message: { content: string; imagePaths?: string[]; images?: ImageRef[]; arrival?: "interrupting" },
   handlers: TurnHandlers,
 ): Promise<void> {
-  await reloadProjectMemory(session).catch(() => {});
+  // No project-notes re-read here: a MINDWEAVE.md the model wrote mid-session waits for the next
+  // compaction (memory/session.ts reloadProjectMemory), because a re-read rewrites the system prompt.
   const images = [...(message.images ?? []), ...(await resolveImages(message.imagePaths ?? [], handlers.onEvent))];
   await recordUserMessage(session, message.content, images, message.arrival);
   await streamTurn(session, handlers);
@@ -730,6 +754,13 @@ export function continueTurn(session: Session, handlers: TurnHandlers): Promise<
   return streamTurn(session, handlers);
 }
 
+/** A turn the person asked for with a command (`/init`) rather than by typing: the instruction is the model's to read,
+ *  and is not drawn as something the person said. */
+export function directiveTurn(session: Session, instruction: string, handlers: TurnHandlers): Promise<void> {
+  session.transcript.push({ role: "user", content: instruction, synthetic: true });
+  return streamTurn(session, handlers);
+}
+
 /** Re-export of the CLI's own wake decision (cli/backgroundWake.ts) — plain state in,
  *  boolean out, no Ink involved — so a caller can reuse the exact same rule for when a
  *  finished background command is worth waking the model for. */
@@ -774,7 +805,7 @@ export function forwardEngineEvent(e: EngineEvent, onEvent: (event: TurnEvent) =
   } else if (e.type === "tool" && e.phase === "end") {
     if (e.name === "spawn_subagent" || e.name === "find_tools") return;
     if (e.agent) {
-      onEvent({ type: "subToolEnd", agentId: e.agent, toolId: e.id, ok: !e.error, summary: e.summary });
+      onEvent({ type: "subToolEnd", agentId: e.agent, toolId: e.id, ok: !e.error, summary: e.summary, ...(e.detail ? { detail: e.detail } : {}) });
     } else {
       onEvent({ type: "toolEnd", id: e.id, ok: !e.error, summary: e.summary, detail: e.detail, detailFull: e.detailFull, detailKind: e.detailKind, quiet: e.quiet, ...(e.images?.length ? { images: e.images } : {}), ...(e.web ? { web: e.web } : {}), ...(e.ui ? { ui: e.ui } : {}) });
     }
@@ -928,10 +959,9 @@ export async function startMarathonRun(
   handlers: MarathonHandlers,
   override?: Partial<MarathonDeps>,
 ): Promise<MarathonState | null> {
-  // Same preparation as the first message of any turn: the project's notes re-read, and
-  // attached images resolved (and rejected loudly) the way `runTurn` does it.
+  // Same preparation as the first message of any turn: attached images resolved (and rejected
+  // loudly) the way `runTurn` does it. The project's notes are not re-read, see `runTurn`.
   const message = typeof goal === "string" ? { content: goal } : goal;
-  await reloadProjectMemory(session).catch(() => {});
   const goalImages = [
     ...(("images" in message && message.images) || []),
     ...(await resolveImages(("imagePaths" in message && message.imagePaths) || [], handlers.onEvent)),
@@ -1010,3 +1040,83 @@ export async function saveProjectNotes(cwd: string, text: string, session?: Sess
   await writeFileAtomic(join(cwd, NOTES_FILE), text);
   if (session) await reloadProjectMemory(session, { force: true });
 }
+
+// ── Slash commands the desktop app offers ────────────────────────────────────────────────────
+
+/** What `/undo` can roll back: the turns that changed files, newest first. */
+export function undoList(session: Session): {
+  turns: { label: string; files: number; skipped: number; ranShell: boolean; at: number }[];
+  /** True for a reopened session: its earlier runs left no undo history to offer. */
+  resumed: boolean;
+} {
+  const cp = session.toolContext.checkpoints;
+  return { turns: cp && cp.hasUndo() ? cp.list() : [], resumed: !!cp?.wasResumed() };
+}
+
+/** Roll back the newest `count` turns' file changes, and bring the live session back in step with the disk. */
+export async function undoTurns(
+  session: Session,
+  count: number,
+): Promise<{ turns: number; label: string; restored: string[]; conflicts: string[]; failed: string[]; skipped: string[] }> {
+  const cp = session.toolContext.checkpoints;
+  if (!cp || !cp.hasUndo()) return { turns: 0, label: "", restored: [], conflicts: [], failed: [], skipped: [] };
+  const results = await cp.undoMany(Math.max(1, Math.floor(count)));
+  const uniq = (xs: string[]) => [...new Set(xs)];
+  const restoredAbs = uniq(results.flatMap((r) => r.restored));
+  if (restoredAbs.length > 0) {
+    // A memory, rule, skill or MCP server can be among them: the session must match the disk again, and the
+    // model must read a restored file again before it edits it.
+    await reloadAgentState(session, restoredAbs);
+    for (const p of restoredAbs) session.toolContext.reads.delete(p);
+  }
+  const rel = (xs: string[]) => uniq(xs).map((p) => relativize(session.toolContext, p));
+  return {
+    turns: results.length,
+    label: results.length === 1 ? (results[0]?.label ?? "") : "",
+    restored: rel(results.flatMap((r) => r.restored)),
+    conflicts: rel(results.flatMap((r) => r.conflicts)),
+    failed: rel(results.flatMap((r) => r.failed)),
+    skipped: rel(results.flatMap((r) => r.skipped)),
+  };
+}
+
+/** What is filling the context window, as `/context` shows it (the same figures the terminal's table is built from). */
+export function contextBreakdown(session: Session): {
+  total: number;
+  window: number;
+  compactAt: number;
+  slices: { label: string; tokens: number; measured: boolean }[];
+  tools: { name: string; calls: number; tokens: number }[];
+  reclaimable: number;
+} {
+  // Only a measurement taken against the CURRENT model counts; one carried over from another provider's tool
+  // serialisation would be the biggest single error in the table.
+  const measured = session.contextOverhead;
+  const overhead = measured && measured.model === session.modelConfig.model ? measured.tokens : undefined;
+  const budget = contextBudget(session.transcript, overhead);
+  return {
+    total: budget.total,
+    window: sharpContextWindow(session.modelConfig.model),
+    compactAt: effectiveAutoCompactThreshold(session),
+    slices: budget.slices.map((s) => ({ label: s.label, tokens: s.tokens, measured: !!s.measured })),
+    tools: budget.tools.slice(0, 6).filter((t) => t.tokens > 0),
+    reclaimable: budget.reclaimable,
+  };
+}
+
+/** The request `/init` sends: the model writes the project's MINDWEAVE.md. */
+export const INIT_DIRECTIVE =
+  `Write this project's MINDWEAVE.md, at the workspace root. It is read into your ` +
+  `context at the start of every turn, so it must be SHORT and consist only of ` +
+  `things worth knowing every single time: how to build, test and run this ` +
+  `project (exact commands); the shape of the codebase and where things live; ` +
+  `conventions a newcomer would otherwise get wrong; and anything surprising. ` +
+  `Do not restate what is obvious from reading a file, do not summarize the ` +
+  `README, and do not pad it. Look at the project first — read the manifest, the ` +
+  `scripts, and enough of the source to be accurate. If MINDWEAVE.md already ` +
+  `exists, IMPROVE it in place rather than replacing it, and say what you ` +
+  `changed. If one subject deserves a page of its own, put it in its own file and ` +
+  `pull it in with an @-import line rather than making the root file long; if a ` +
+  `convention is true of one folder only, write a MINDWEAVE.md inside that folder ` +
+  `instead, which costs nothing when work is happening elsewhere. ` +
+  `Finish by confirming in one line what you wrote and why.`;

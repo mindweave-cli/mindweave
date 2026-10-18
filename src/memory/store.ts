@@ -19,6 +19,7 @@
  * CLIENT side of the eventual client/server split — the pure engine never calls
  * anything in here.
  */
+import { stripUserNotes } from "./userNotes.js";
 import { promises as fs } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -111,7 +112,7 @@ function firstUserText(transcript: Entry[]): string {
   // The first thing the PERSON said: not an engine nudge, and not a command they ran with `!`
   // (a session that opens with `! git status` is not named by the caveat the model reads).
   const first = transcript.find((e) => e.role === "user" && !e.synthetic);
-  return first?.content.trim() ?? "";
+  return first ? stripUserNotes(first.content).trim() : "";
 }
 
 /** The last thing the PERSON said. Engine-written nudges arrive as `user` messages so
@@ -122,7 +123,7 @@ function lastUserText(transcript: Entry[]): string {
     const e = transcript[i];
     // Collapsed, or a session that opened with a paste is labelled by the paste — or, once
     // it is wrapped, by the wrapper. The label is meant to be the thing the person typed.
-    if (e.role === "user" && !e.synthetic) return collapsePastes(e.content).trim();
+    if (e.role === "user" && !e.synthetic) return collapsePastes(stripUserNotes(e.content)).trim();
   }
   return "";
 }
@@ -136,7 +137,21 @@ function clip(s: string, max = 200): string {
  * Write the session to disk (transcript + meta). Best-effort: returns false on
  * any failure instead of throwing, so a persistence hiccup never aborts a turn.
  */
-export async function saveSession(session: Session): Promise<boolean> {
+export function saveSession(session: Session): Promise<boolean> {
+  // One save at a time per session. The engine persists from several places at once (after each parallel tool
+  // result, before a batch, after a reply). Overlapping saves each saw the same unsaved compaction leftovers
+  // and each appended them, so one session's `.earlier.jsonl` held every entry six times and the chat redrew
+  // them that often on reopening; they could also finish out of order and leave the OLDER transcript on disk.
+  const before = saving.get(session.id) ?? Promise.resolve(true);
+  const run = before.then(() => writeSession(session));
+  saving.set(session.id, run);
+  void run.then(() => { if (saving.get(session.id) === run) saving.delete(session.id); });
+  return run;
+}
+
+const saving = new Map<string, Promise<boolean>>();
+
+async function writeSession(session: Session): Promise<boolean> {
   try {
     const dir = sessionDir(session.cwd);
     await fs.mkdir(dir, { recursive: true });
@@ -244,7 +259,15 @@ export async function loadTranscript(projectCwd: string, id: string): Promise<En
 
 /** What compaction took out of a session (see memory/earlier.ts), or [] if nothing was. */
 export async function loadEarlier(projectCwd: string, id: string): Promise<Entry[]> {
-  return (await readEntries(earlierPath(projectCwd, id))) ?? [];
+  // Files written before saves were serialized hold repeats; the same entry never legitimately appears twice
+  // (each carries its own stamp and tool-call id), so a repeat is dropped on the way in. The file is left alone.
+  const seen = new Set<string>();
+  return ((await readEntries(earlierPath(projectCwd, id))) ?? []).filter((e) => {
+    const key = JSON.stringify(e);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 async function readEntries(path: string): Promise<Entry[] | null> {

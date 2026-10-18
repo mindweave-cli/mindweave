@@ -106,5 +106,5 @@ test("the session picker labels a session by what was TYPED", async () => {
   // wrapper, which is worse.
   const { readFile } = await import("node:fs/promises");
   const store = await readFile(new URL("../memory/store.ts", import.meta.url), "utf8");
-  assert.match(store, /collapsePastes\(e\.content\)/, "the picker still labels sessions with paste bodies");
+  assert.match(store, /collapsePastes\(stripUserNotes\(e\.content\)\)/, "the picker still labels sessions with paste bodies");
 });

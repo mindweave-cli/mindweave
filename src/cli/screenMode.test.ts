@@ -102,7 +102,7 @@ test("the inline entry signals it is unfinished, not just what it does", () => {
   // description says it plainly rather than in full — kept short on purpose.
   const inline = screenChoices("fullscreen").find((c) => c.mode === "inline")!;
   assert.match(inline.label, /beta/i);
-  assert.match(inline.description, /work in progress|rough edges|has (bugs|problems)/i, "the entry must say it is unfinished");
+  assert.match(inline.description, /not available yet|too many bugs/i, "the entry must say it cannot be used yet");
 });
 
 test("the shell in use is ticked, and only that one", () => {

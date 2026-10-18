@@ -30,6 +30,7 @@
  * for the model, and the note says plainly that this model can't see it. The same
  * message, sent on two different models, degrades rather than failing.
  */
+import { stripUserNotes } from "../memory/userNotes.js";
 import { promises as fs } from "node:fs";
 import { basename, isAbsolute, relative, resolve } from "node:path";
 import { describeImage, isImage, isRejection, type ImageRef } from "../memory/images.js";
@@ -250,7 +251,7 @@ export async function resolveAttachments(
  * collapsed), never the re-dumped file body.
  */
 export function stripAttachments(content: string): string {
-  return content
+  return stripUserNotes(content)
     .replace(/\n*<attached_file path="[^"]*">\n[\s\S]*?\n<\/attached_file>/g, "")
     .replace(IMAGE_SOURCE_RE, "")
     .trimEnd();

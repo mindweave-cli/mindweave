@@ -29,7 +29,7 @@ import type { MarathonOptions } from "../dynamo/marathon.js";
 import { contextPressure, sharpContextWindow } from "../dynamo/contextWindow.js";
 import { contextBudget, formatBudget } from "../dynamo/contextBudget.js";
 import { contextView, resetContextOverride, setContextOverride } from "../core/contextSettings.js";
-import { createSession, resumeSession, reloadProjectMemory } from "../memory/session.js";
+import { createSession, resumeSession } from "../memory/session.js";
 import { saveSession, listSessions } from "../memory/store.js";
 import { stopChassis } from "../alternator/lane.js";
 import { loadSkillBody, substituteSkillArgs } from "../governor/skills.js";
@@ -75,17 +75,18 @@ import { Picker } from "./components/Picker.js";
 import { ApprovalBox } from "./components/ApprovalBox.js";
 import { approvalAnswer, approvalBlock, workedSeconds } from "./approvalText.js";
 import { BlockView } from "./components/BlockView.js";
-import { initialState, lastExpandable, reduce, trimNarration, type Action, type Block, type TranscriptState } from "./transcript.js";
+import { initialState, lastExpandable, reduce, trimNarration, type Action, type Block, type TranscriptState, type WorkItem } from "./transcript.js";
 import { isTight } from "./blockSpacing.js";
-import { parseScreenArg, screenChoices, screenNotice, startupMode, type ScreenMode } from "./screenMode.js";
+import { INLINE_AVAILABLE, INLINE_UNAVAILABLE, parseScreenArg, screenChoices, screenNotice, startupMode, type ScreenMode } from "./screenMode.js";
 import { applyScreenMode } from "./screenShell.js";
 import { saveScreenMode } from "./screenStore.js";
 import { FULL_TAIL_BLOCKS, needsMeasure, pruneHeights, seedHeights } from "./blockHeights.js";
-import { expandableAt, hitBlock, hitItem, revealNode } from "./expandHits.js";
+import { expandableAt, hitBlock, hitItem, itemHit, revealNode } from "./expandHits.js";
+import { isGrouped, nameAt } from "./editGroup.js";
 import { shellNote } from "./shellNotes.js";
 import { pressBackground } from "./commandBackground.js";
 import { readFileSync, statSync } from "node:fs";
-import { compactSearchDetail, compactUiDetail, rebuildFull, writtenFromDisk } from "../tools/rebuildDetail.js";
+import { compactSearchDetail, compactUiDetail, rebuildFull, recoverReadText, recoverSavedText, searchDetailFromContent, writtenFromDisk } from "../tools/rebuildDetail.js";
 import { isUserShell, runUserCommand } from "../tools/userCommand.js";
 import { isUserCommandText, parseUserCommand } from "../memory/localCommand.js";
 import { shownText } from "../memory/compaction.js";
@@ -233,11 +234,10 @@ type Overlay =
       resolve: (choice: string) => void;
     };
 
-// After you pick a session in /continue, the three ways to resume it.
+// After you pick a session in /continue, the two ways to resume it.
 const RESUME_MODES = [
   { label: "Compact & continue", description: "summarize the old chat first so it won't eat your context, then pick up where you left off" },
   { label: "Continue as-is", description: "resume the full conversation unchanged" },
-  { label: "Fresh start", description: "leave it and start a new empty session here instead" },
 ];
 
 /**
@@ -885,6 +885,11 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
               const compact = compactSearchDetail(e.detail);
               if (compact) return { detail: compact.detail, ...(compact.detailFull ? { detailFull: compact.detailFull } : {}) };
             }
+            // A search saved before it had a row has no block of its own: what it printed is what the model was given.
+            if (call?.name === "search" && !e.detail) {
+              const printed = searchDetailFromContent(e.content) ?? recoverSavedText(e.content);
+              if (printed) return { detail: printed, detailKind: "text" as const };
+            }
             let full = e.detailFull ?? rebuildFull(call?.name, call?.args, e);
             // A write whose text was cleared to save context has only the file left to open.
             if (!full && call?.name === "write_file" && typeof call.args?.path === "string") {
@@ -898,7 +903,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
             return full ? { detailFull: full } : {};
           })(),
           ...(e.detailKind ? { detailKind: e.detailKind } : {}),
-          ...(e.quiet ? { quiet: true } : {}),
+          ...(e.quiet && !(!e.isError && !e.content.startsWith("Error:") && callsById.get(e.toolCallId)?.name === "search") ? { quiet: true } : {}),
           ...(e.displayName ? { name: e.displayName } : {}),
           ...(e.displayKind ? { action: e.displayKind } : {}),
           ...(e.awaitsModel ? { awaitsModel: true } : {}),
@@ -2015,7 +2020,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
               const hitId = expandableAt(event.y, frameTopRef.current, chatRef.current);
               if (hitId !== null) {
                 lastClick.current = null;
-                toggleRow(hitId);
+                toggleRow(clickTarget(hitId, event.x));
                 continue;
               }
               // Plain text: two clicks in a row take the word, three take the line.
@@ -2042,7 +2047,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
             // the input anyway, and a click that does nothing is the worse outcome.
             const hitId = expandableAt(event.y, frameTopRef.current, chatRef.current);
             if (hitId !== null) {
-              toggleRow(hitId);
+              toggleRow(clickTarget(hitId, event.x));
               continue;
             }
             placeCaretAt(event.x, event.y);
@@ -2064,7 +2069,9 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
       // the light out when it leaves. A press or a wheel turn clears it too, below, because
       // the content moves out from under a pointer that did not.
       if (lastMove) {
-        const over = expandableAt(lastMove.y, frameTopRef.current, chatRef.current);
+        // On the closed header of a row of edits the pointer can be over one file's name: that name is what is pointed at.
+        const row = expandableAt(lastMove.y, frameTopRef.current, chatRef.current);
+        const over = row === null ? null : clickTarget(row, lastMove.x);
         setHoverId((h) => (h === over ? h : over));
       } else if (notches.length > 0 || events.some((e) => e.kind === "press")) {
         setHoverId((h) => (h === null ? h : null));
@@ -2077,6 +2084,45 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
     { isActive: true },
   );
 
+  /**
+   * A read keeps no text of its own in the row: what it took is in the conversation, under the call's id.
+   * It is fetched when the line is opened, so nothing is stored twice and an old chat opens as well as a new one.
+   */
+  function fetchReadText(blockId: number, index: number) {
+    const st = stateRef.current;
+    const block = [...st.committed, ...st.tail].find((b) => b.id === blockId);
+    const item = block && block.kind === "work" && block.items.length > 0 ? block.items[block.items.length === 1 ? 0 : index] : undefined;
+    if (item && !item.open) fetchRead(item);
+  }
+
+  function fetchRead(item: WorkItem) {
+    if (item.kind !== "read" || item.detail) return;
+    const entry = session.current?.transcript.find((t) => t.role === "tool" && t.toolCallId === item.toolId);
+    // Not recorded yet (the call is still finishing): nothing to fetch, and nothing to claim.
+    if (!entry) return;
+    // Clearing context empties what the MODEL carries; the screen keeps what was read: the copy clearing saved, or the file.
+    const call = [...(session.current?.transcript ?? [])].reverse().flatMap((t) => (t.role === "assistant" ? t.toolCalls ?? [] : [])).find((c) => c.id === item.toolId);
+    let args: Record<string, unknown> | undefined;
+    try { args = call ? (JSON.parse(call.arguments) as Record<string, unknown>) : undefined; } catch { args = undefined; }
+    const text =
+      searchDetailFromContent(entry.content) ??
+      recoverReadText(entry.content, { args }, session.current?.cwd ?? process.cwd(), (p) => { try { return statSync(p).size < 4_000_000 ? readFileSync(p, "utf8") : undefined; } catch { return undefined; } }, (cwd, p) => resolve(cwd, p));
+    dispatch({ type: "itemDetail", toolId: item.toolId, detail: text ?? "(this file is not on disk any more, and the copy saved when the chat was cleared is gone too)" });
+  }
+
+  /**
+   * A click on the closed header of a row of several edits can land on one file's name: then it is that file's change that opens.
+   * The header is drawn from the same layout that answers here (editGroup.ts), so the two cannot disagree.
+   */
+  function clickTarget(hit: number, x: number): number {
+    if (hit < 0) return hit;
+    const st = stateRef.current;
+    const block = [...st.committed, ...st.tail].find((b) => b.id === hit);
+    if (!block || block.kind !== "edits" || block.open || !isGrouped(block.items)) return hit;
+    const at = nameAt(block.items, width, x, block.live);
+    return at >= 0 ? itemHit(hit, at) : hit;
+  }
+
   /** Open or fold a row, keeping it where the reader pressed it. See the height effect. */
   function toggleRow(hit: number) {
     rowToggled.current = true;
@@ -2086,7 +2132,17 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
     // for the old height. Keep that one off the screen; the effect below releases it.
     holdFrames();
     // A hit on one command inside a commands row opens that command; anything else is a row.
-    if (hitItem(hit) >= 0) dispatch({ type: "toggleItem", id: hitBlock(hit), index: hitItem(hit) });
+    if (hitItem(hit) < 0) {
+      // A row of one read shows its text as soon as it opens, so the text is fetched with the click that opens it.
+      const st = stateRef.current;
+      const block = [...st.committed, ...st.tail].find((b) => b.id === hit);
+      if (block && block.kind === "work" && !block.open && block.items.length === 1) fetchRead(block.items[0]!);
+    }
+    if (hitItem(hit) >= 0) {
+      // Before the toggle: the state is updated the moment it is dispatched, and a read already open is not fetched for.
+      fetchReadText(hitBlock(hit), hitItem(hit));
+      dispatch({ type: "toggleItem", id: hitBlock(hit), index: hitItem(hit) });
+    }
     else dispatch({ type: "toggleExpand", id: hit });
   }
 
@@ -2499,11 +2555,8 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
 
   async function streamRespond(s: Session, run?: (options: MarathonOptions) => Promise<unknown>) {
     startTurn();
-    // Pick up an edit the model made to MINDWEAVE.md, but only if one actually happened
-    // — this is a no-op otherwise. Re-reading unconditionally used to look free and was
-    // not: it rewrites the system prompt string, which discards the entire cached prefix
-    // (base prompt, tool schemas, project snapshot) at 1.25x rewrite cost.
-    await reloadProjectMemory(s).catch(() => {});
+    // No MINDWEAVE.md re-read here: an edit the model made waits for the next compaction, because
+    // re-reading rewrites the system prompt and discards the whole cached prefix (see runTurn).
     resetPacer();
     lastRevealAt.current = 0;
     streamDone.current = false;
@@ -2560,7 +2613,8 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
                 detail: e.detail,
                 detailKind: e.detailKind,
                 detailFull: e.detailFull,
-                quiet: e.quiet,
+                // A search that worked is a line in the work row; one that failed stays out of sight.
+                quiet: e.quiet && !(e.name === "search" && !e.error),
                 action: e.displayKind,
                 name: e.displayName,
               });
@@ -2744,6 +2798,10 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
     await stopCurrentLanes();
     attachApproval(resumed);
     session.current = resumed;
+    // The model now sees only the picked session. Leaving the conversation it replaced above the
+    // replayed one made each further /continue stack another on top, with the old one still
+    // reachable by scrolling up and reading as part of this one.
+    wipeChat();
 
     if (compactFirst) {
       startTurn();
@@ -2768,11 +2826,8 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
   /**
    * Drop the current chat and start a clean session in the same project.
    *
-   * `wipeScreen` is the difference between the two ways in. Reached through
-   * `/continue`, the old conversation is still worth seeing — you went looking for
-   * sessions, so the history above is context for the choice you just made. Reached
-   * through `/clear`, you asked for it to be gone, and leaving it on screen while the
-   * model can no longer see it is the worst of both: it reads as still being there.
+   * The screen is wiped with it: leaving the old conversation visible while the model
+   * can no longer see it is the worst of both, it reads as still being there.
    *
    * What SURVIVES is as deliberate as what goes, and none of it is automatic — a fresh
    * session starts genuinely empty, so anything that outlives the conversation has to
@@ -2789,7 +2844,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
    * So they are killed, and `/clear` SAYS how many, because silently stopping someone's
    * dev server is exactly the kind of surprise a one-word command should not spring.
    */
-  async function startFresh(wipeScreen = false) {
+  async function startFresh() {
     const s = session.current;
     if (!s) return;
     // Counted BEFORE the lanes stop — afterwards the manager is disposed and there is
@@ -2809,7 +2864,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
     // old session no longer claims turns the new one can undo.
     fresh.toolContext.checkpoints?.persistTo(checkpointDir(fresh.cwd, fresh.id));
     session.current = fresh;
-    if (wipeScreen) wipeChat();
+    wipeChat();
     note(
       killed > 0
         ? `— started a fresh session (stopped ${killed} background command${killed === 1 ? "" : "s"}) —`
@@ -2922,9 +2977,8 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
     return text;
   }
 
-  // Apply the resume-mode pick for a chosen session: compact & continue / as-is / fresh.
+  // Apply the resume-mode pick for a chosen session: compact & continue / as-is.
   async function applyResume(meta: SessionMeta, mode: number) {
-    if (mode === 2) return startFresh();
     return resumePicked(meta, mode === 0);
   }
 
@@ -3027,6 +3081,10 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
    * watches `shell`. Two copies is how one of them ends up switching without remembering.
    */
   function applyScreen(next: ScreenMode): void {
+    if (next === "inline" && !INLINE_AVAILABLE) {
+      note(`inline is ${INLINE_UNAVAILABLE}`);
+      return;
+    }
     if (next === shell) {
       note(`already ${screenNotice(next)}`);
       return;
@@ -3276,11 +3334,9 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
       return;
     }
 
-    // /clear — a fresh conversation without leaving the folder. Until now the only
-    // way to start over was to quit and relaunch, or to go through /continue and pick
-    // its third option, which is not somewhere anyone looks for "start over".
+    // /clear — a fresh conversation without leaving the folder, and the one place to start over.
     if (name === "/clear") {
-      await startFresh(true);
+      await startFresh();
       return;
     }
 

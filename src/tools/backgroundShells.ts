@@ -288,13 +288,16 @@ export const REOPEN_COOLDOWN_MS = 2 * 60 * 1000;
  * relaunch) untouched, because that ending is `stoppedBy: "agent"`; and it never blocks a
  * server that failed to start (`ready` is false), which the agent should be free to fix.
  * Matched on the normalized command within a cooldown, so a later, deliberate restart is
- * not held back.
+ * not held back. And only a close that happened AFTER the person's last message (`since`): a person who has written
+ * since it closed has said what they want ("yes, start it again"), and the loop this guards against is the agent
+ * reopening things on its own, between their messages.
  */
 export function findRecentUserClose(
   shells: readonly ShellInfo[],
   command: string,
   now: number,
   windowMs: number = REOPEN_COOLDOWN_MS,
+  since = 0,
 ): ShellInfo | undefined {
   const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
   const target = norm(command);
@@ -305,6 +308,7 @@ export function findRecentUserClose(
       s.stoppedBy !== "agent" &&
       s.finishedAt !== null &&
       now - s.finishedAt < windowMs &&
+      s.finishedAt > since &&
       norm(s.command) === target,
   );
 }

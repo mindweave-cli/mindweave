@@ -103,6 +103,14 @@ test("REGRESSION: rewriting an earlier message is caught and located", () => {
   assert.match(broke!.detail, /message 2 /, "the report must locate the rewrite, not just announce it");
 });
 
+test("REGRESSION: a changed system prompt is reported as the system prompt, not as a rewritten message", () => {
+  // A real session's biggest break (48k tokens re-billed) was a system prompt that grew by a few
+  // hundred characters, and the note blamed "message 167 of 168". The system prompt comes first.
+  const before = prefixPrint("m", "SYSTEM", [tool("read")], [msg("one"), msg("two")]);
+  const after = prefixPrint("m", "SYSTEM + notes", [tool("read")], [msg("one"), msg("CLEARED")]);
+  assert.equal(diffPrefix(before, after)?.kind, "system");
+});
+
 test("a dropped turn is a rewrite even when every surviving message matches", () => {
   // Overflow recovery drops the oldest rounds. Nothing was edited, but everything moved.
   const before = prefixPrint("m", "SYSTEM", [tool("read")], [msg("one"), msg("two"), msg("three")]);

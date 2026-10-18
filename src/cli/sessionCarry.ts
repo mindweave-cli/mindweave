@@ -1,8 +1,7 @@
 /**
  * sessionCarry.ts — what outlives a conversation when you start a new one in place.
  *
- * `/clear` (and `/continue`'s "start fresh") build a brand-new session in the same
- * folder. Most state SHOULD die with the conversation — the transcript, the read
+ * `/clear` builds a brand-new session in the same folder. Most state SHOULD die with the conversation — the transcript, the read
  * ledger, the working set, anything the model was told. Two things must not, and both
  * were being lost silently:
  *

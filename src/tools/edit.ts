@@ -127,6 +127,9 @@ export const edit: Tool = {
     // Validate and normalize each edit up front, so a bad shape is reported before we
     // touch the file.
     const ops: EditOp[] = [];
+    /** The 1-based position each op had in the call, and the positions of the no-ops left out. */
+    const numbers: number[] = [];
+    const skipped: number[] = [];
     for (let i = 0; i < args.edits.length; i++) {
       const e = args.edits[i] as Record<string, unknown>;
       if (!e || typeof e !== "object") return failQuietly(`edit #${i + 1} is not an object.`);
@@ -145,11 +148,25 @@ export const edit: Tool = {
       if (typeof e.new_string !== "string") {
         return failQuietly(`edit #${i + 1}: \`new_string\` is required (use an empty string to delete).`);
       }
+      // An edit that changes nothing is skipped, not failed: failing it threw away every other edit in the
+      // batch (13 failed batches in real sessions took 24 good edits with them) and cost a round trip to resend.
       if (e.old_string === e.new_string) {
-        return failQuietly(`edit #${i + 1}: \`old_string\` and \`new_string\` are identical — nothing to change.`);
+        skipped.push(i + 1);
+        continue;
       }
+      numbers.push(i + 1);
       ops.push({ oldString: e.old_string, newString: e.new_string, replaceAll: e.replace_all === true });
     }
+    if (ops.length === 0) {
+      return failQuietly(
+        skipped.length === 1
+          ? `edit #${skipped[0]}: \`old_string\` and \`new_string\` are identical — nothing to change.`
+          : `every edit has an \`old_string\` identical to its \`new_string\` — nothing to change.`,
+      );
+    }
+    const skippedNote = skipped.length > 0
+      ? `\nSkipped edit${skipped.length === 1 ? "" : "s"} ${skipped.map((n) => `#${n}`).join(", ")}: old_string and new_string were identical, so nothing was changed there.`
+      : "";
 
     const preview = ops.map((o) => `- ${o.oldString}\n+ ${o.newString}`).join("\n\n");
     const target = await prepareEditTarget(ctx, rawPath, "editing", preview);
@@ -170,7 +187,7 @@ export const edit: Tool = {
       const reason = /[.!?]$/.test(seq.reason) ? seq.reason : `${seq.reason}.`;
       // Quiet: the model has the reason and the candidate locations and fixes its own
       // aim. Nothing reached disk, so there is nothing for the user to act on.
-      const which = ops.length === 1 ? "the edit" : `edit #${seq.index + 1}`;
+      const which = args.edits.length === 1 ? "the edit" : `edit #${numbers[seq.index]}`;
       return failQuietly(`${which} could not be applied to ${rawPath}: ${reason} No changes were written.`);
     }
 
@@ -218,7 +235,7 @@ export const edit: Tool = {
     return {
       output:
         `${headline}\n` +
-        `Changed region — line-numbered so you can make further edits without re-reading:\n${window}`,
+        `Changed region — line-numbered so you can make further edits without re-reading:\n${window}${skippedNote}`,
       summary: `edited ${shown} · ${scope}`,
       // What changed in the file, numbered, with a little context; the old-then-new listing only when the two cannot be compared.
       detail: withScope(scope, diffDetail(normalizeLf(content), seq.updated) ?? multiEditDetail(ops)),

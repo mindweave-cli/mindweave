@@ -255,6 +255,109 @@ export function describeMatches(haystack: string, matches: readonly Match[], max
   return blocks.join("\n\n") + more + hint;
 }
 
+/** Most needle lines and file lines the nearest-text search looks at, so a huge paste against a huge file stays quick. */
+const NEAR_MAX_NEEDLE_LINES = 60;
+const NEAR_MAX_FILE_LINES = 20_000;
+/** A window must be at least this alike, on average, to be called "the closest text". */
+const NEAR_FLOOR = 0.55;
+
+/** How alike two lines are, 0 to 1: 1 when equal once trimmed, otherwise the share of two-letter pairs they have in common. */
+function lineSimilarity(a: string, b: string): number {
+  const x = a.trim();
+  const y = b.trim();
+  if (x === y) return 1;
+  if (x.length < 2 || y.length < 2) return 0;
+  const pairs = new Map<string, number>();
+  for (let i = 0; i < x.length - 1; i++) pairs.set(x.slice(i, i + 2), (pairs.get(x.slice(i, i + 2)) ?? 0) + 1);
+  let shared = 0;
+  for (let i = 0; i < y.length - 1; i++) {
+    const key = y.slice(i, i + 2);
+    const left = pairs.get(key);
+    if (left) {
+      shared++;
+      pairs.set(key, left - 1);
+    }
+  }
+  return (2 * shared) / (x.length + y.length - 2);
+}
+
+const clip = (s: string, n = 150): string => (s.trim().length > n ? `${s.trim().slice(0, n)}…` : s.trim());
+
+/**
+ * What to tell the model when `old_string` is not in the file (pure).
+ *
+ * "Not found, copy the text from the file" sends it back to re-read the whole file and guess again, which is how a
+ * 4% failure rate cost one to eleven more calls each. The two things it needs are almost always in the file already:
+ * whether the change is ALREADY there (the edit was applied, or a retry repeats one that worked), and the nearest
+ * text with the lines that differ, which is usually one line with a changed argument or a different quote.
+ * Nothing here changes what matches; it only describes the miss.
+ */
+export function describeMiss(haystack: string, needle: string, replacement: string): string {
+  const fileLines = haystack.split("\n");
+  // The change is already in the file: say where, because re-applying it is the wrong fix.
+  if (replacement.trim().length >= 12 && replacement !== needle) {
+    const done = findMatches(haystack, replacement).matches;
+    if (done.length > 0) {
+      return (
+        `The text you want to write is already in the file (line ${done[0]!.line}), so this edit may have been applied already. ` +
+        `Read that part of the file before changing it again.`
+      );
+    }
+  }
+  const wanted = needle.split("\n");
+  if (wanted.length > 1 && wanted[wanted.length - 1] === "") wanted.pop();
+  const asked = wanted.slice(0, NEAR_MAX_NEEDLE_LINES);
+  if (asked.length === 0 || asked.every((l) => !l.trim()) || fileLines.length > NEAR_MAX_FILE_LINES) return "";
+
+  // Comparing every window with every line is too slow on a big file (8 s for 20,000 lines), so the search is
+  // anchored: the few longest lines of the request are matched against every file line, and only the windows
+  // those lines point at are scored whole. A longest line is the one least likely to be the line that changed.
+  const anchors = asked
+    .map((l, j) => ({ j, len: l.trim().length }))
+    .filter((a) => a.len > 0)
+    .sort((a, b) => b.len - a.len)
+    .slice(0, 3);
+  const starts = new Set<number>();
+  for (const { j } of anchors) {
+    const near = fileLines
+      .map((l, k) => ({ k, s: lineSimilarity(l, asked[j]!) }))
+      .filter((x) => x.s >= NEAR_FLOOR)
+      .sort((a, b) => b.s - a.s)
+      .slice(0, 6);
+    for (const { k } of near) if (k - j >= 0 && k - j + asked.length <= fileLines.length) starts.add(k - j);
+  }
+  let best = { at: -1, score: 0 };
+  for (const i of starts) {
+    let sum = 0;
+    for (let j = 0; j < asked.length; j++) sum += lineSimilarity(fileLines[i + j]!, asked[j]!);
+    const score = sum / asked.length;
+    if (score > best.score) best = { at: i, score };
+  }
+  if (best.at < 0 || best.score < NEAR_FLOOR) {
+    return "Nothing in the file is close to it, so the text may be in another file or may have been removed. Search for a distinctive line of it.";
+  }
+
+  const differing: string[] = [];
+  let same = 0;
+  for (let j = 0; j < asked.length; j++) {
+    const there = fileLines[best.at + j]!;
+    if (there.trim() === asked[j]!.trim()) same++;
+    else if (differing.length < 3) differing.push(`  line ${j + 1} of yours: ${clip(asked[j]!)}\n  the file has:    ${clip(there)}`);
+  }
+  const from = best.at + 1;
+  const to = best.at + asked.length;
+  const shown = fileLines
+    .slice(best.at, best.at + Math.min(asked.length, 8))
+    .map((l, k) => `  ${String(from + k).padStart(5)} | ${l}`)
+    .join("\n");
+  return (
+    `The closest text is at line${to > from ? `s ${from}-${to}` : ` ${from}`} (${same} of ${asked.length} line${asked.length === 1 ? "" : "s"} match):\n${shown}` +
+    (asked.length > 8 ? "\n        …" : "") +
+    (differing.length > 0 ? `\nWhere it differs:\n${differing.join("\n")}` : "") +
+    `\nCopy the file's own text from here.`
+  );
+}
+
 /**
  * Apply one exact edit to already-LF-normalized `text`. The `oldString`/`newString`
  * are normalized here too. Returns the updated text and where the change landed, or
@@ -274,11 +377,13 @@ export function applyOneEdit(text: string, op: EditOp): EditResult {
 
   const { matches } = findMatches(haystack, needle);
   if (matches.length === 0) {
+    const miss = describeMiss(haystack, needle, replacement);
     return {
       ok: false,
       reason:
         "old_string not found. It must match the file's text, allowing only for differences in each line's " +
-        "leading/trailing whitespace. Re-read the file and copy the target text from what you are shown",
+        "leading/trailing whitespace." +
+        (miss ? `\n${miss}` : " Re-read the file and copy the target text from what you are shown"),
     };
   }
   if (matches.length > 1 && !op.replaceAll) {

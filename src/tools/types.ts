@@ -519,6 +519,12 @@ export interface ToolContext {
    */
   userInitiated?: boolean;
   /**
+   * When the person last sent a message (set by the engine as a turn that begins with their words starts, and again when a
+   * message of theirs is taken in mid-turn). A turn the agent wakes itself for does not move it. The reopen guard reads it:
+   * an app closed BEFORE this moment is something the person has since spoken about, and is theirs to decide.
+   */
+  userTurnAt?: number;
+  /**
    * Where the app the agent is testing streams to while it tests (see `ui`). A front end
    * that can show moving pictures sets it; one that cannot leaves it unset and nothing is
    * streamed. Display only: frames never reach the model, which gets its one picture per
@@ -542,6 +548,8 @@ export interface ToolContext {
    * costs a re-read and can never cost a lie.
    */
   transcriptFull?: Set<string>;
+  /** The line ranges of a file still present in the transcript from ranged reads, derived like `transcriptFull`. */
+  transcriptRanges?: Map<string, { start: number; end: number }[]>;
   /**
    * Which glob-scoped rules this session has activated, and the bounded set of paths
    * that decided it. See governor/scope.ts.

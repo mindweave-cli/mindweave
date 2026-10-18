@@ -125,6 +125,16 @@ export function estimateHeight(block: Block, columns: number): number {
         for (const it of block.items) rows += 1 + (it.open ? Math.min(textRows(it.full ?? it.detail, columns), DETAIL_GUESS_CAP) : 0);
       }
       break;
+    case "edits":
+      if (block.items.length < 2) {
+        rows = 0;
+        for (const it of block.items) rows += 2 + (it.open && it.full ? textRows(it.full, columns) : Math.min(textRows(it.detail, columns), DETAIL_GUESS_CAP));
+        rows -= 1;
+      } else {
+        rows = 1;
+        for (const it of block.items) if (block.open || it.open) rows += 1 + (it.open ? Math.min(textRows(it.full ?? it.detail, columns), DETAIL_GUESS_CAP) : 0);
+      }
+      break;
     case "subagent":
       rows = 0;
       for (const ag of block.agents) rows += 3 + (ag.open ? 4 + ag.items.length : 0);

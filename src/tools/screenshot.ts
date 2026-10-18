@@ -80,8 +80,8 @@ export function pickWindow(query: string | undefined, windows: WindowInfo[]): Wi
       : { kind: "ambiguous", candidates: windows };
   }
 
-  const needle = query.trim().toLowerCase();
-  const titled = windows.map((w) => ({ w, t: w.title.toLowerCase() }));
+  const needle = foldTitle(query);
+  const titled = windows.map((w) => ({ w, t: foldTitle(w.title) }));
   const tiers = [
     titled.filter(({ t }) => t === needle),
     titled.filter(({ t }) => t.startsWith(needle)),
@@ -107,6 +107,46 @@ export function pickWindow(query: string | undefined, windows: WindowInfo[]): Wi
     }
   }
   return { kind: "none", candidates: windows };
+}
+
+/**
+ * A title as it is compared: lower case, every kind of dash one hyphen, curly quotes straight, no-break spaces and
+ * runs of spaces one space. A model that copies "Getting started — Recipes" from a list shows a long dash where the
+ * window has a hyphen (or the reverse) often enough that, in real sessions, the same call failed three times in a row
+ * on punctuation alone.
+ */
+export function foldTitle(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[‐-―−⁃﹘﹣－]/g, "-")
+    .replace(/[‘’‚‛′]/g, "'")
+    .replace(/[“”„‟″]/g, '"')
+    .replace(/[  -​  　]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * The open windows whose titles share the most words with a request that matched none (pure), for "did you mean".
+ * Empty when nothing shares a word, so a wrong guess is not offered as a hint.
+ */
+export function nearestTitles(query: string, windows: WindowInfo[], max = 2): WindowInfo[] {
+  const words = (s: string): string[] => foldTitle(s).split(/[^\p{L}\p{N}]+/u).filter((w) => w.length >= 3);
+  const wanted = new Set(words(query));
+  if (wanted.size === 0) return [];
+  return windows
+    .map((w) => ({ w, shared: words(w.title).filter((x) => wanted.has(x)).length }))
+    .filter((x) => x.shared > 0)
+    .sort((a, b) => b.shared - a.shared)
+    .slice(0, max)
+    .map((x) => x.w);
+}
+
+/** A sentence naming the closest open windows to a title that matched none, or "" when none is close. */
+export function didYouMean(query: string, windows: WindowInfo[]): string {
+  const close = nearestTitles(query, windows);
+  if (close.length === 0) return "";
+  return `Closest open window${close.length === 1 ? "" : "s"}: ${close.map((w) => `"${w.title}"`).join(", ")}. `;
 }
 
 /**
@@ -259,7 +299,7 @@ export const screenshot: Tool = {
     if (pick.kind === "none") {
       return fail(
         query
-          ? `No open window's title contains "${query}". ${listTitles(pick.candidates)}\n` +
+          ? `No open window's title contains "${query}". ${didYouMean(query, pick.candidates)}${listTitles(pick.candidates)}\n` +
               `Three things to try, in order: if you just launched the app, its window may need a ` +
               `moment — call again. If it has a custom title bar (many desktop apps, and Tauri or ` +
               `Electron with window decorations off, show a blank OS title), it is listed by its ` +

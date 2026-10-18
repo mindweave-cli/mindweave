@@ -20,6 +20,7 @@ import type { ChatMessage, ImagePart, ModelRequest, StopReason, StreamResult, Us
 import { summarizeTask, taskLimitReason, type TaskLimits } from "./pricing.js";
 import { limitGateReason, noteUsage, refreshUsageLimits, takeLimitWarnings } from "./usageLimits.js";
 import { addTurn, emptySpend } from "./spend.js";
+import { argsProblem, argsRefusal, wireArguments } from "./toolArgs.js";
 import { isServerManagementStep, mutationNeedsVerification, isVerification, reScopeCheck, isBackgroundPollStep, stepFailureSignature, repeatFailureStep, repeatFailureNudge, failedActionLabel, firstErrorLine, sameFileEditCounts, overusedSingleEdits, batchEditNudge, narrationFault, narrationNudge, unknownToolError, replyFault, replyRewrite, VERIFY_NUDGE } from "./verify.js";
 import { guardOptions, GUARD_NO_ONE_TO_ASK, GUARD_REFUSAL, GUARD_REFUSAL_INPUT, guardRefusalWith, guardQuestion, guardDetail, interpretGuardChoice } from "./guard.js";
 import { readFreeText } from "../tools/approval.js";
@@ -55,7 +56,7 @@ import { forkSession, reconcileInterruptedTools, reloadProjectMemory, repairTool
 import { selectActiveFiles } from "../memory/workingSet.js";
 import { directoryNotesFor } from "../memory/projectNotes.js";
 import { rippleCheck } from "../tools/editRipple.js";
-import { fullReadPaths } from "../memory/presence.js";
+import { fullReadPaths, visibleReadRanges } from "../memory/presence.js";
 import {
   RESTORE_MAX_TOKENS_PER_FILE,
   renderRestored,
@@ -694,7 +695,7 @@ function toWire(calls: ToolCallRecord[]): WireToolCall[] {
   return calls.map((c) => ({
     id: c.id,
     type: "function",
-    function: { name: c.name, arguments: c.arguments },
+    function: { name: c.name, arguments: wireArguments(c.arguments) },
     // Carried through untouched. Core has no idea what is in here; a driver that needs
     // it splices it back onto the wire call, and one that does not ignores it. Gemini
     // rejects a follow-up whose call lost its `thought_signature`, so dropping this
@@ -1116,6 +1117,9 @@ export async function refreshGovernance(session: Session, force = false): Promis
  * would run unplanned.
  */
 export async function respond(session: Session, options: RespondOptions = {}): Promise<string> {
+  // A turn that begins with the person's own words: what they said now outranks an app they closed before saying it.
+  const lastEntry = session.transcript[session.transcript.length - 1];
+  if (lastEntry && lastEntry.role === "user" && !lastEntry.synthetic) session.toolContext.userTurnAt = Date.now();
   // A project's own MCP servers wait for the user; a turn starting is the first moment a
   // front end is surely listening. A no-op once nothing is held.
   if ((session.toolContext.subagentDepth ?? 0) === 0) {
@@ -1488,6 +1492,14 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
       }
     });
 
+    session.toolContext.transcriptRanges = visibleReadRanges(session.transcript, (p) => {
+      try {
+        return resolvePath(session.toolContext, p);
+      } catch {
+        return undefined;
+      }
+    });
+
     let result: StreamResult;
     // The transcript half of what we are about to send, measured the same way the
     // compaction bars measure it — so the provider's reported total minus this is the
@@ -1845,7 +1857,12 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
         // the next step instead of guessing again at a bare "unknown tool".
         // Built-ins only: an MCP tool is always `mcp__server__tool`, which is never a
         // near miss for a plain name, so including them would only add noise.
-        return { call, output: unknownToolError(call.name, TOOLS.map((t) => t.name)), summary: `unknown tool '${call.name}'`, isError: true, detail: undefined as string | undefined, fullContentOf: undefined as string | undefined };
+        return { call, output: unknownToolError(call.name, TOOLS.map((t) => t.name), (n) => TOOLS.find((t) => t.name === n)?.description), summary: `unknown tool '${call.name}'`, isError: true, detail: undefined as string | undefined, fullContentOf: undefined as string | undefined };
+      }
+      // Arguments that are not valid JSON: refused with the reason, never read as `{}` (see toolArgs.ts).
+      const badArgs = argsProblem(call.arguments);
+      if (badArgs) {
+        return { call, output: argsRefusal(call.name, badArgs), summary: "arguments were not valid JSON", isError: true, detail: undefined as string | undefined };
       }
       // The mirror of the rule below, for tools that exist BECAUSE planning is
       // happening. `planOnly` is only a schema FILTER, so nothing stopped a model from
@@ -2483,6 +2500,7 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
           ...(message.images && message.images.length > 0 ? { images: message.images } : {}),
         });
       }
+      if (arrived.length > 0) session.toolContext.userTurnAt = Date.now();
       countSteers(session, arrived.length);
       if (arrived.length > 0) await options.persist?.();
     }

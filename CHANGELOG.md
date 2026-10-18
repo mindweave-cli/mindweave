@@ -2,6 +2,87 @@
 
 Notable changes to Mindweave. Dates are release dates.
 
+## v3.4.1 (2026-10-18): a faster start, tools that fail less, and a cache that is not rewritten for nothing
+
+Mindweave now loads about a third faster, and the tools the agent uses fail less often: a call with broken
+arguments is refused with the reason, an edit batch no longer fails because one entry changes nothing, and a window
+can be found even when its title has a dash or an accented character in it. A project note the agent writes no longer
+re-bills the whole conversation at the start of the next turn.
+
+### Starting up
+
+- **The first screen comes about a third sooner.** On a Windows PC the prompt used to appear after about 1.5 seconds
+  and now appears after about 0.9. Ink asked for one small function from a library of several hundred files, and
+  every file was opened and checked before the first screen; it now loads the one file that holds the function. The
+  library that unpacks language-server downloads and the one that talks to language servers are loaded when first
+  used instead of at start. About half of the files read at launch are no longer read. `MINDWEAVE_NO_INK_PATCH=1`
+  turns the first change off.
+
+### A cache that is not rewritten for nothing
+
+- **A `MINDWEAVE.md` the agent wrote is no longer read back at the start of every turn.** Reading it again changes
+  the system prompt, which is the first thing a provider compares, so the whole conversation was re-billed at full
+  price on the next call. The new text is picked up at the next compaction, and when you save the notes yourself.
+- **A cache break caused by the system prompt says so.** It used to be reported as "message N rewritten" because
+  the messages were checked first.
+
+### Tools that fail less
+
+- **Arguments that are not valid JSON are refused with the reason.** A call cut off at the output limit, or one with
+  a stray character, used to be read as an empty call, so the agent was told that `path` was missing when its JSON
+  was broken. It now hears the parse error and the text around it, and the broken text is no longer sent back to
+  the provider in every later request.
+- **An edit batch survives an entry that changes nothing.** An entry whose old and new text are the same is skipped
+  with a note, and the others are applied. The batch fails only when every entry is one of those.
+- **A failed edit says what is in the file.** "Not found" now names the closest text and the lines that differ, or
+  says that the new text is already in the file, with its line.
+- **Window titles survive being copied.** Non-ASCII characters in a window title reached the agent as `?`, so a
+  title could not be copied back into a call. Dashes, curly quotes and non-breaking spaces no longer stop a title
+  from matching, and a miss names the closest open window.
+- **The `ui` tool accepts calls that were meant clearly.** A call with a `url` and no action looks at the page; a
+  `url` and a `port` that name the same server are accepted; `element` is read as `target`; a `wait` with only
+  `wait_ms` is a pause; and `type` without a field says which one it needs.
+- **`shells` with a number that does not exist** lists the ones that do, or says that background commands do not
+  survive a restart.
+- **A tool called by another program's name is pointed to the right one.** `bash`, `question`, `str_replace_editor`
+  and similar names get an error that says which tool was meant and what it does.
+- **A line range already in the conversation is not read again.** The agent is told it already has lines A to B.
+  A file too big to read whole is outlined, and the result says so.
+
+### Sessions
+
+- **`/continue` wipes the screen first.** A second `/continue` used to stack one conversation on top of another.
+  "Fresh start" is gone from the picker, and `/clear` is the way to start over.
+- **A session's earlier-history file is no longer written several times.** Two saves running at once appended the
+  same entries twice. Saves now wait for each other, and repeats already on disk are ignored when the file is read.
+- **Results the agent no longer carries are kept on disk.** Clearing context saved the original of each cleared
+  result, and the oldest sessions' copies were deleted. They are not deleted now, so an old row still opens.
+
+### The screen
+
+- **Searches are lines in the work row.** `searched 3 times`, each line showing the pattern and how much it
+  found, and a click opens what it printed. Reads open onto their text, taken from the conversation or, when
+  clearing has removed it from there, from the file.
+- **Edits that follow each other are one row.** From the third on, `Wrote 7 files +492  a.ts, b.ts, …`, and a click
+  on a file's name opens that file's change. One or two edits are the rows they always were.
+- **The arrow on a work row is always in the last column.**
+- **The slash menu wraps** from the last item to the first and back.
+- **The inline screen cannot be chosen for now.** It has too many rough edges; the row stays in the list and says so.
+
+### The agent
+
+- **It stays quiet between calls while it gathers or tests,** and reports once at the end or when something breaks.
+- **It closes only what it started itself.** The prompt says so, and why closing programs by name is never worth it.
+- **An app you closed is reopened only if you have written since.** The agent could reopen a program you had just
+  closed, on its own, between your messages. Your next message now counts as saying what you want.
+- **Notes for the model can travel in front of your message** inside `<mw_note>`. A front end uses it for things you
+  did outside the chat, such as renaming a file. They are never drawn in the chat or used for a session's name.
+
+### For front ends
+
+- The core now offers `/undo`, `/context` and `/init`, draws a `!` command as a command row when a session is
+  reopened, and gives sub-agent steps their output, so a desktop app can show the same things the terminal does.
+
 ## v3.4.0 (2026-10-15): send a message now with ctrl+F, a cheaper prompt cache, and a screen that works less
 
 A message you type while the agent works can now be sent at once with ctrl+F, without stopping anything. Sessions
