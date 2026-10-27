@@ -23,6 +23,7 @@ import { DEFAULT_IGNORES, globToRegExp, walkFiles } from "./walk.js";
 import { SEARCH_EXCLUDE_GLOBS, excludedFromSearch, guardedPathReason } from "./guard.js";
 import { ripgrepAvailable, runRipgrep } from "./ripgrep.js";
 import { fail, failQuietly } from "./results.js";
+import { noMatches } from "./emptyResult.js";
 
 const MAX_FILES = 5_000;
 /** Cap on matching lines returned. Exported so the merged `search` tool states the
@@ -178,7 +179,7 @@ export const grepDef: Tool = {
     // where one search would have answered it.
     if (mode === "content" && lines.length > 0) await recordSearchHits(ctx, lines);
 
-    return formatGrep(mode, pattern, lines, headLimit, offset);
+    return formatGrep(mode, pattern, lines, headLimit, offset, rawPath);
   },
 };
 
@@ -287,9 +288,10 @@ function formatGrep(
   lines: string[],
   headLimit: number | undefined,
   offset: number,
+  where?: string,
 ): ToolResult {
   if (lines.length === 0) {
-    return { output: "No matches found.", summary: `grep ${pattern} — no matches` };
+    return { output: noMatches(pattern, where), summary: `grep ${pattern} — no matches` };
   }
   if (mode === "count") {
     let total = 0;

@@ -13,8 +13,8 @@
  * current directory and everything else is set in `~/.mindweave/.env` or in-session, and
  * inventing flags here would create a second place to configure the same things. What
  * does belong is the handful of things you ask the command to DO instead of starting a
- * session: report its version, explain itself, or repair a terminal a previous run left
- * broken.
+ * session: report its version, explain itself, repair a terminal a previous run left
+ * broken, or do one task with no screen (`-p`, see headless/).
  */
 import { appVersion } from "./version.js";
 
@@ -26,7 +26,11 @@ export type Startup =
   /** Write the terminal-restore sequences and exit 0. Separate from `print` because
    *  whether there is a terminal to restore is a question about the actual stdout, and
    *  parsing stays pure. */
-  | { kind: "reset" };
+  | { kind: "reset" }
+  /** `-p` / `--print`: do one task with no screen and exit. The arguments are handed over
+   *  whole; `headless/args.ts` owns their meaning, so a typo there is a usage error rather
+   *  than something this parser has to know about. */
+  | { kind: "headless"; argv: string[] };
 
 /** `mindweave --version` output: the bare version, which is what scripts parse. */
 export function versionText(): string {
@@ -45,6 +49,18 @@ export function helpText(): string {
     "  mindweave --help              show this and exit",
     "  mindweave --version           print the version and exit",
     "  mindweave --reset-terminal    put a terminal back in order after a crash",
+    "  mindweave -p \"task\"           do one task with no screen, print the answer, exit",
+    "",
+    "Scripts and CI (-p):",
+    "  mindweave -p \"fix the failing test\"",
+    "  git diff | mindweave -p \"review this\"     the argument is the task, stdin is context",
+    "  --output-format text|json|stream-json     text (default) prints only the answer",
+    "  --mode lightning|architect|sentinel       default: the project's mode, else lightning",
+    "  --model <id>   use this model for the run (not saved)",
+    "  --continue     carry on the latest session here;  --resume <id>  a specific one",
+    "  -q, --quiet    no progress lines on stderr",
+    "  Nobody can answer a question in this mode, so anything that would ask is refused.",
+    "  Exit codes: 0 done, 1 failed, 2 bad usage, 3 no API key, 4 stopped unfinished.",
     "",
     "If a run ends badly the terminal can be left reporting mouse events, so every",
     "scroll writes something like ^[[<64;36;23M into your shell. --reset-terminal",
@@ -73,10 +89,12 @@ export function helpText(): string {
  */
 export function parseStartupArgs(argv: readonly string[]): Startup {
   let resumeSessionId: string | undefined;
+  let headless = false;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
     if (arg === "--help" || arg === "-h") return { kind: "print", text: helpText() };
     if (arg === "--version" || arg === "-v") return { kind: "print", text: versionText() };
+    if (arg === "-p" || arg === "--print") headless = true;
     // No short form on purpose: this is typed once in a blue moon, by someone reading it
     // out of --help, and a one-letter alias for it would be a trap next to -h and -v.
     if (arg === "--reset-terminal") return { kind: "reset" };
@@ -93,6 +111,9 @@ export function parseStartupArgs(argv: readonly string[]): Startup {
       i++;
     }
   }
+  // -p wins over the relaunch flag: with it, `--resume <id>` names the session to continue,
+  // not the conversation an update interrupted.
+  if (headless) return { kind: "headless", argv: [...argv] };
   return resumeSessionId === undefined ? { kind: "run" } : { kind: "run", resumeSessionId };
 }
 

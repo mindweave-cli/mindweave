@@ -16,6 +16,7 @@
  */
 import { stripAttachments, attachedFiles, hideAttachedNames } from "../cli/attachments.js";
 import { collapsePastes } from "./pastedText.js";
+import { splitExpiredImages, userAsSent } from "./compaction.js";
 import { writtenPaths } from "./presence.js";
 import { resolvePath } from "../tools/paths.js";
 import { rebuildReadLedger } from "./session.js";
@@ -113,10 +114,12 @@ const PASTE_RE = /<pasted_text lines="\d+">\n([\s\S]*?)\n<\/pasted_text>/g;
 
 /** Split a stored message back into what was typed and what came with it. */
 export function editableMessage(entry: UserEntry, cwd: string): EditableMessage {
-  const files = attachedFiles(entry.content, cwd);
-  const images = (entry.images ?? []).map((i) => i.path);
+  // What the person sent, from before anything was trimmed for the model: its attached files and pictures come back too.
+  const sent = userAsSent(entry);
+  const files = attachedFiles(sent.content, cwd);
+  const images = (sent.images ?? []).map((i) => i.path);
   const pastes: string[] = [];
-  const withSlots = stripAttachments(entry.content).replace(PASTE_RE, (_m, body: string) => {
+  const withSlots = splitExpiredImages(stripAttachments(sent.content)).text.replace(PASTE_RE, (_m, body: string) => {
     pastes.push(body);
     return pasteSlot(pastes.length - 1);
   });
@@ -131,9 +134,10 @@ export function editableMessage(entry: UserEntry, cwd: string): EditableMessage 
 
 /** One line for the picker: the message as the chat showed it. */
 function pointText(entry: UserEntry, cwd: string): string {
-  const files = attachedFiles(entry.content, cwd);
-  const images = (entry.images ?? []).map((i) => i.path);
-  const shown = hideAttachedNames(collapsePastes(stripAttachments(entry.content)), [...files, ...images]);
+  const sent = userAsSent(entry);
+  const files = attachedFiles(sent.content, cwd);
+  const images = (sent.images ?? []).map((i) => i.path);
+  const shown = hideAttachedNames(collapsePastes(splitExpiredImages(stripAttachments(sent.content)).text), [...files, ...images]);
   const attached = files.length + images.length;
   const line = shown.replace(/\s+/g, " ").trim();
   if (line) return line;

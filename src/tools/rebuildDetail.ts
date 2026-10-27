@@ -202,11 +202,11 @@ export function compactSearchDetail(detail: string | undefined): { detail: strin
   const summary = [grab(/^Engine: (.+)$/)?.[1], grab(/^Query time: (.+)$/)?.[1], `${total} source${total === 1 ? "" : "s"}`]
     .filter(Boolean)
     .join(" · ");
-  const row = (t: string, i: number) => `${i + 1}. ${t}`;
+  // Numbers padded to one width so the titles start in the same column past nine, folded and opened alike.
+  const digits = String(titles.length).length;
+  const row = (t: string, i: number) => `${String(i + 1).padStart(digits)}. ${t}`;
   const shown = [summary, ...titles.slice(0, SEARCH_PREVIEW_SOURCES).map(row)];
   const lost = total - titles.length;
-  // Numbers padded to one width so the titles start in the same column past nine.
-  const digits = String(titles.length).length;
   const whole = [
     summary,
     ...titles.map((t, i) => `${String(i + 1).padStart(digits)}. ${t}`),
@@ -272,12 +272,16 @@ export function recoverReadText(
   const parts: string[] = [];
   for (const p of paths) {
     const raw = read(resolvePath(cwd, p));
-    if (raw === undefined) continue;
+    if (raw === undefined) {
+      // Kept in its place so the files after it still line up with their lines.
+      if (paths.length > 1) parts.push(`===== ${p} =====\n(this file is not on disk any more)`);
+      continue;
+    }
     const lines = raw.replace(/\r\n/g, "\n").replace(/\n$/, "").split("\n");
     const end = Math.min(lines.length, limit === undefined ? lines.length : offset - 1 + limit);
     const width = String(end).length;
     const body = lines.slice(offset - 1, end).map((l, i) => `${String(offset + i).padStart(width)}\t${l}`).join("\n");
-    parts.push(paths.length > 1 ? `${p}\n${body}` : body);
+    parts.push(paths.length > 1 ? `===== ${p} =====\n${body}` : body);
   }
   if (parts.length === 0) return undefined;
   const note = /CHANGED since/.test(content) ? "(the file has changed since it was read; this is the file as it is now)" : "(this is the file as it is now; it may have changed since it was read)";

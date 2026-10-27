@@ -45,6 +45,7 @@ import { killTree, spawnManaged } from "./killTree.js";
 import { childEnv } from "./childEnv.js";
 import { ripgrepShellEnv } from "./ripgrepShell.js";
 import { dialectFor, parseCommand, protectedArgsReason, ruleVerdict } from "./commandPolicy.js";
+import { withCoauthor } from "./coauthor.js";
 import { captureAfterCommand, looksReadOnly, snapshotBeforeCommand } from "./shellCheckpoint.js";
 import { canonicalRoot, relativize } from "./paths.js";
 import { FULL_DETAIL_MAX, SHELL_ROWS_FAILED, SHELL_ROWS_OK, formatDuration, shellOutput, withOutcome } from "./detail.js";
@@ -413,7 +414,10 @@ export const runCommand: Tool = {
       }
     }
 
-    const result = await runShell(command, ctx, timeout, background, shell, declared, call, launcher);
+    // A commit the agent makes carries the co-author line when the project has said yes (see coauthor.ts). Last, after
+    // every rule has judged the command as written: the rules see what the model asked for, the shell runs the rest.
+    const toRun = await withCoauthor(command, parsed, ctx);
+    const result = await runShell(toRun, ctx, timeout, background, shell, declared, call, launcher);
     if (launcher) {
       result.output =
         `${result.output}\n\nStarted on a hidden desktop: its windows never appear on the user's screen, and the ui ` +

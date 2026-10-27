@@ -323,6 +323,11 @@ test("the reply gate fires at the turn-end boundary and can only fire once", () 
   assert.match(engineSource, /options\.onEvent\?\.\(\{ type: "replyReset" \}\)/, "the draft must be dropped from the UI buffer");
 });
 
+test("a reply that is only the placeholder for an older message is sent back once", () => {
+  assert.match(engineSource, /const copiedStub = isRecapStub\(content\)/);
+  assert.match(engineSource, /fault \? replyRewrite\(fault\) : RECAP_STUB_NUDGE/);
+});
+
 test("a superseded reply is spliced out of history, so what is saved is what was shown", () => {
   // Otherwise a resumed session replays the text the gate just removed. Both gates that
   // re-open a concluded turn record where the reply they superseded sits, and both are

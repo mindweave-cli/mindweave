@@ -30,6 +30,7 @@ import { contextPressure, sharpContextWindow } from "../dynamo/contextWindow.js"
 import { contextBudget, formatBudget } from "../dynamo/contextBudget.js";
 import { contextView, resetContextOverride, setContextOverride } from "../core/contextSettings.js";
 import { createSession, resumeSession } from "../memory/session.js";
+import { coauthorSetting, setCoauthor } from "../tools/coauthor.js";
 import { saveSession, listSessions } from "../memory/store.js";
 import { stopChassis } from "../alternator/lane.js";
 import { loadSkillBody, substituteSkillArgs } from "../governor/skills.js";
@@ -82,6 +83,7 @@ import { applyScreenMode } from "./screenShell.js";
 import { saveScreenMode } from "./screenStore.js";
 import { FULL_TAIL_BLOCKS, needsMeasure, pruneHeights, seedHeights } from "./blockHeights.js";
 import { expandableAt, hitBlock, hitItem, itemHit, revealNode } from "./expandHits.js";
+import { FILE_HIT_BASE, fileRowAt } from "./workLines.js";
 import { isGrouped, nameAt } from "./editGroup.js";
 import { shellNote } from "./shellNotes.js";
 import { pressBackground } from "./commandBackground.js";
@@ -89,7 +91,7 @@ import { readFileSync, statSync } from "node:fs";
 import { compactSearchDetail, compactUiDetail, rebuildFull, recoverReadText, recoverSavedText, searchDetailFromContent, writtenFromDisk } from "../tools/rebuildDetail.js";
 import { isUserShell, runUserCommand } from "../tools/userCommand.js";
 import { isUserCommandText, parseUserCommand } from "../memory/localCommand.js";
-import { shownText } from "../memory/compaction.js";
+import { shownText, splitExpiredImages, userAsSent } from "../memory/compaction.js";
 import { BASE_COMMANDS } from "./commands.js";
 import { attachmentBudget, dismissMarathon } from "../core/turnRunner.js";
 import { describeMarathonEvent, resumeMarathon, startMarathon, type MarathonEvent } from "../dynamo/marathon.js";
@@ -814,7 +816,8 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
         // but they are ours, not the person's. Replaying one draws it as a `>` prompt
         // the user never typed — seen live as "> That was 3 sentences between tool
         // calls…" sitting in their own chat history.
-        if (!e.synthetic) dispatch({ type: "user", text: collapsePastes(stripAttachments(e.content)) });
+        // The note compaction adds for the model when it drops an image is not something the person typed.
+        if (!e.synthetic) dispatch({ type: "user", text: collapsePastes(splitExpiredImages(stripAttachments(userAsSent(e).content)).text) });
         // A command the person ran with `!` comes back as the row it was: what they ran, how it ended,
         // and the output behind the click. The screen's record is kept whole even when the model's copy
         // of the output was cleared to save context.
@@ -2138,7 +2141,17 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
       const block = [...st.committed, ...st.tail].find((b) => b.id === hit);
       if (block && block.kind === "work" && !block.open && block.items.length === 1) fetchRead(block.items[0]!);
     }
-    if (hitItem(hit) >= 0) {
+    if (hitItem(hit) >= FILE_HIT_BASE) {
+      // One file of a read that took several: its text is fetched with the first click on any of them.
+      const st = stateRef.current;
+      const block = [...st.committed, ...st.tail].find((b) => b.id === hitBlock(hit));
+      const at = block && block.kind === "work" ? fileRowAt(block.items, hitItem(hit) - FILE_HIT_BASE) : undefined;
+      if (block && block.kind === "work" && at) {
+        const item = block.items[at.item]!;
+        if (!item.openFiles?.includes(at.file)) fetchRead(item);
+        dispatch({ type: "toggleFile", id: block.id, item: at.item, file: at.file });
+      }
+    } else if (hitItem(hit) >= 0) {
       // Before the toggle: the state is updated the moment it is dispatched, and a read already open is not fetched for.
       fetchReadText(hitBlock(hit), hitItem(hit));
       dispatch({ type: "toggleItem", id: hitBlock(hit), index: hitItem(hit) });
@@ -3158,11 +3171,13 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
   // Hand a free-text directive to the model with an instruction wrapper, as its own
   // turn — used by the manual /rules and /skills commands (the model does the
   // "rewrite it well and save it" work via remember_rule / the skill tool).
-  async function runDirective(instruction: string, activity: string) {
+  // `typed` is the command line the person wrote. `instruction` is the engine's wording for the model, which
+  // must never be drawn as if the person had said it, so the message keeps what was typed as its original.
+  async function runDirective(instruction: string, activity: string, typed?: string) {
     const s = session.current;
     if (!s) return;
     note(activity);
-    s.transcript.push({ role: "user", content: instruction });
+    s.transcript.push({ role: "user", content: instruction, ...(typed ? { original: { content: typed } } : {}) });
     await streamRespond(s);
   }
 
@@ -3362,6 +3377,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
           `instead, which costs nothing when work is happening elsewhere. ` +
           `changed. Finish by confirming in one line what you wrote and why.`,
         "writing MINDWEAVE.md…",
+        raw,
       );
       return;
     }
@@ -3798,6 +3814,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
           `imperative, self-contained rule and save it with remember_rule (add globs only if it ` +
           `clearly applies to specific files). Then confirm in one line. Directive: "${arg}"`,
         "saving a rule…",
+        raw,
       );
       return;
     }
@@ -3828,6 +3845,36 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
       } else {
         say(`'${result.pattern}' was already forbidden.`);
       }
+      return;
+    }
+
+    // /coauthor — whether commits the agent makes carry the "Co-authored-by: mwcode" line.
+    if (name === "/coauthor") {
+      const root = s.governance.forbidden.root;
+      const words = arg.trim().toLowerCase().split(/\s+/).filter(Boolean);
+      const everywhere = words.includes("all");
+      const verb = words.find((w) => w !== "all");
+      if (verb === "on" || verb === "off") {
+        await setCoauthor(root, everywhere ? "global" : "project", verb === "on");
+        const where = everywhere ? "in every project that has no answer of its own" : "in this project";
+        note(verb === "on" ? `commits I make will carry the co-author line ${where}.` : `commits I make will not carry the co-author line ${where}.`);
+        return;
+      }
+      if (verb === "reset") {
+        await setCoauthor(root, "project", null);
+        note("forgot this project's answer. I will ask at the next commit.");
+        return;
+      }
+      if (verb) {
+        say("Use /coauthor to see it, /coauthor on or /coauthor off to set it here, and add 'all' for every project. /coauthor reset forgets this project's answer.");
+        return;
+      }
+      const current = await coauthorSetting(root);
+      say(
+        current
+          ? `The co-author line is ${current.credit ? "on" : "off"}, set for ${current.from === "project" ? "this project" : "all projects"}.`
+          : "Not set yet. I will ask the first time I commit here.",
+      );
       return;
     }
 
@@ -3868,6 +3915,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
             `with the skill tool — a short invocation name, a one-line description, and the procedure ` +
             `as a clear markdown checklist (use $ARGUMENTS/$1 if it should take input). Then confirm.`,
           "creating a skill…",
+          raw,
         );
         return;
       }

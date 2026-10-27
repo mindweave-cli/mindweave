@@ -18,7 +18,7 @@ import { startChassis } from "../alternator/lane.js";
 import { BackgroundShells } from "../tools/backgroundShells.js";
 import { ForegroundCommands } from "../tools/foregroundCommands.js";
 import { Checkpoints } from "../tools/checkpoints.js";
-import { projectContextText } from "../project/context.js";
+import { projectContextText, projectContextTextRecent } from "../project/context.js";
 import { loadGovernance, governanceStamp } from "../governor/index.js";
 import { createRuleScope } from "../governor/scope.js";
 import type { Governance } from "../governor/types.js";
@@ -452,7 +452,7 @@ export async function resumeSession(
     await Promise.all([
       loadProjectMemory(cwd),
       loadMemory(cwd),
-      projectContextText(cwd),
+      projectContextTextRecent(cwd),
       loadGovernance(cwd),
       governanceStamp(cwd),
       loadModelConfig(cwd),

@@ -178,3 +178,31 @@ test("a cut that hid only one line still counts as hiding something, for both ki
   assert.equal(hasMore("a\nb\n  … (2 more lines)", "a\nb"), false, "a full block that is not longer is not more");
   assert.equal(hasMore("a\nb", "a\nb"), false);
 });
+
+test("a numbered list keeps the same rows folded and opened: opening only adds the sources below", () => {
+  const sources = Array.from({ length: 8 }, (_, i) => `${i + 1}. Source number ${i} - ${"a long title that goes on and on ".repeat(8)}`);
+  const lines = (n: number) => sources.slice(0, n).join("\n");
+  const paint = (expanded: boolean) => {
+    const stdout = new FakeStdout();
+    stdout.columns = 100;
+    const instance = render(<ToolLine id={3} name="WebSearch" arg="q" status="ok" action="search" detail={lines(5)} detailKind="text" columns={100} full={lines(8)} expanded={expanded} />, {
+      stdout: stdout as unknown as NodeJS.WriteStream,
+      stdin: fakeStdin(),
+      patchConsole: false,
+      interactive: true,
+      debug: true,
+    });
+    const rows = (stdout.frames.at(-1) ?? "").replace(ANSI, "").split("\n").map((r) => r.trimEnd());
+    instance.unmount();
+    return rows;
+  };
+  const folded = paint(false);
+  const opened = paint(true);
+  const upTo = folded.findIndex((r) => r.includes("click to show all"));
+  assert.ok(upTo > 0, folded.join("\n"));
+  assert.deepEqual(opened.slice(0, upTo), folded.slice(0, upTo), "the sources already on screen do not move or rewrap");
+  for (const r of opened) assert.ok(r.length <= 100, "never wider than the terminal");
+  const s1 = folded.filter((r) => /^\s+(1\.|a long|…)/.test(r) || r.includes("Source number 0")).length;
+  assert.ok(s1 >= 1);
+  assert.ok(opened.some((r) => r.includes("Source number 7")), "and the rest follow");
+});

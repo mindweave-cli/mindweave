@@ -76,10 +76,16 @@ import {
   estimateTokensForChars,
   formatTranscriptForSummary,
   isContinuation,
+  isRecapStub,
   microcompact,
+  RECAP_STUB_NUDGE,
   spliceSummary,
   summaryForWire,
-  summaryIsHistory,
+  summaryWireIsHistory,
+  hasUnsettledHistory,
+  settleSummaries,
+  firstChangedEntry,
+  SUMMARY_HISTORY_NOTE,
   usableSummary,
 } from "../memory/compaction.js";
 import { MAX_PARALLEL_CALLS, partitionCalls, runLimited } from "./toolBatches.js";
@@ -88,6 +94,7 @@ import {
   autoCompactThreshold,
   microCompactThreshold,
   cacheLikelyCold,
+  isCold,
   cacheStatus,
   cacheLifetimeFor,
   cacheIsDiscounted,
@@ -100,7 +107,7 @@ import {
   type CompactionReport,
 } from "./contextWindow.js";
 import { todoReminderDue, todoReminderText, type TodoQuiet } from "./todoReminder.js";
-import { refreshSessionMemory, sessionMemoryDue, settleSessionMemory } from "../memory/sessionMemory.js";
+import { refreshSessionMemory, sessionMemoryDue, settleSessionMemory, type SharedPrefix } from "../memory/sessionMemory.js";
 import { compactFromSessionMemory } from "../memory/sessionMemoryCompact.js";
 import { isContextOverflowError } from "../drivers/contextOverflow.js";
 import { detailOf, providerMessage } from "../drivers/providerError.js";
@@ -253,8 +260,11 @@ export function volatileContext(
   cwdResetFrom = "",
   /** A running Marathon's standing block (see marathonPrompt.ts), or "". */
   marathon = "",
+  /** What stands in for rewriting a compaction summary the user has written past (see SUMMARY_HISTORY_NOTE), or "". */
+  summaryNote = "",
 ): string {
   const parts: string[] = [];
+  if (summaryNote) parts.push(summaryNote);
   // Each turn starts at the project root, and a model that `cd`-ed into a subfolder last
   // turn does not know that unless it is told. It was not, and a real session ran
   // `cargo run` from the root expecting the subfolder: "could not find Cargo.toml".
@@ -799,7 +809,7 @@ function buildRequest(
       // hand-off "next step" cannot keep overriding what they actually asked.
       const said =
         e.role === "summary"
-          ? summaryForWire(e.content, summaryIsHistory(e, session.transcript.slice(i + 1)))
+          ? summaryForWire(e.content, summaryWireIsHistory(e, session.transcript.slice(i + 1)))
           : e.arrival ? arrivalNote(e.arrival, e.content) : e.content;
       if (refs && refs.length > 0) {
         const images: ImagePart[] = [];
@@ -901,6 +911,7 @@ function buildRequest(
       session.marathon?.status === "running" && (session.toolContext.subagentDepth ?? 0) === 0
         ? marathonBlock(session.marathon.goal, session.marathon.turnsSpent === 0 ? "plan" : "run")
         : "",
+      hasUnsettledHistory(session.transcript) ? SUMMARY_HISTORY_NOTE : "",
     ),
     tools,
     model: session.modelConfig,
@@ -1589,6 +1600,7 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
       // shorter than it was.
       session.lastCallAt = Date.now();
       (session.lastCallByModel ??= {})[session.modelConfig.model] = session.lastCallAt;
+      session.lastRequest = { request, sent: session.transcript.slice(0, request.messages.length) };
       result = await streamModel(request, options);
     } catch (error) {
       // A stalled stream is retried once, as the same request: whatever it had streamed is
@@ -1710,10 +1722,11 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
       // what the user sees. ONE retry — a gate that can fire twice is a loop.
       if (!replyRegated) {
         const fault = replyFault(content, mutatedThisTurn);
-        if (fault) {
+        const copiedStub = isRecapStub(content);
+        if (fault || copiedStub) {
           replyRegated = true;
           overlongReplyAt = session.transcript.length - 1; // the draft pushed just above
-          session.transcript.push({ role: "user", content: replyRewrite(fault), synthetic: true });
+          session.transcript.push({ role: "user", content: fault ? replyRewrite(fault) : RECAP_STUB_NUDGE, synthetic: true });
           // The draft has been streaming into the UI's buffer, unrendered. Drop it, or
           // the rewrite would append to it and the user would read both.
           options.onEvent?.({ type: "replyReset" });
@@ -2875,12 +2888,38 @@ async function sweepSessionMemory(session: Session, options: RespondOptions, mod
     options.onEvent?.({ type: "usage", ...usage });
     countUsage(session, usage, options);
     recordAuxCall(session, usage, "notes");
-  }).then(async (wrote) => {
+  }, (unseenTokens) => sharedNotesPrefix(session, unseenTokens)).then(async (wrote) => {
     if (wrote) await options.persist?.(); // durable: the notes sidecar is written by the persister
     return wrote;
   });
   if (mode === "end") await run;
   else void run.catch(() => {});
+}
+
+/**
+ * The main request the notes writer may build on, or null when it should send its own.
+ *
+ * Building on it means the provider reads the whole conversation from the cache the last call just
+ * filled, at the cached price, instead of being sent the unseen part at full price. That is only
+ * cheaper while the copy is there (this model was called within its cache lifetime), the request still
+ * describes the transcript (it ended on an entry that is still in the same place), and the cached read
+ * of the whole prefix costs less than the full-price read of what is new.
+ */
+async function sharedNotesPrefix(session: Session, unseenTokens: number): Promise<SharedPrefix | null> {
+  const sent = session.lastRequest;
+  const model = session.modelConfig.model;
+  if (!sent || sent.request.model?.model !== model || session.transcript.length === 0) return null;
+  // The provider holds the beginning of the conversation as it was sent. It only counts as the beginning
+  // of this one if nothing in it has been rewritten since (a clear, a compaction, a settled summary).
+  if (sent.sent.length > session.transcript.length || sent.sent.some((e, i) => e !== session.transcript[i])) return null;
+  const status = cacheStatus({ now: Date.now(), model, lastByModel: session.lastCallByModel, ttlMs: cacheLifetimeFor(model) });
+  if (status !== "warm" || !cacheIsDiscounted(model)) return null;
+  const price = manifestForModel(model).price(model);
+  const prefixTokens = estimateEntriesTokens(sent.sent) + (session.contextOverhead?.model === model ? session.contextOverhead.tokens : 0);
+  if (prefixTokens * price.cacheHit > unseenTokens * price.cacheMiss) return null;
+  // Same system prompt, tools and model as the main request; the conversation as it is now.
+  const { messages } = buildRequest(session, [], await loadImagePayloads(session));
+  return { request: { ...sent.request, messages }, entries: session.transcript.length, last: session.transcript[session.transcript.length - 1]! };
 }
 
 /**
@@ -2996,11 +3035,17 @@ async function maybeCompact(session: Session, options: RespondOptions): Promise<
     const proposed = microcompact(session.transcript).entries;
     const before = estimateEntriesTokens(session.transcript);
     const after = estimateEntriesTokens(proposed);
-    if (clearIsWorthIt({ before, after, cold, autoBar })) {
+    // What the provider would have to write again: everything from the first message the clear changes.
+    const rewritten = estimateEntriesTokens(proposed.slice(firstChangedEntry(session.transcript, proposed)));
+    if (clearIsWorthIt({ before, after, cold, autoBar, rewritten, price: manifestForModel(model).price(model) })) {
+      // The prefix is being rewritten anyway, so a summary the user has written past is settled in the same move.
       session.transcript = keepClearedOriginals(session, proposed);
+      session.transcript = settleSummaries(session.transcript);
       // Silent by design — trimming stale context is background machinery.
     }
   }
+  // With the provider's copy gone there is nothing to lose by it either, clear or no clear.
+  if (isCold(status)) session.transcript = settleSummaries(session.transcript);
 
   // The history is about to be sent at full price whatever it contains, so this is the cheapest
   // moment to shrink it, and the session notes make that free: no model call. Only the top-level

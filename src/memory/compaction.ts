@@ -25,7 +25,7 @@
  */
 import type { Entry } from "./types.js";
 import { fullPathsOf } from "./types.js";
-import { estimateImagesTokens } from "./images.js";
+import { estimateImagesTokens, type ImageRef } from "./images.js";
 import { clearedLocalCommand, localCommandForSummary } from "./localCommand.js";
 
 // ~3.5 chars/token, deliberately tokenizer-free: triggers need a cheap, stable,
@@ -85,10 +85,51 @@ export function withoutClearedNote(content: string): string {
 export const RECAP_STUB = "[earlier status update condensed — this work is done; focus on the current task]";
 const RECAP_MIN_CHARS = 220;
 
+/** Whether a reply the model has just written is the stub itself. A history with several stubs in it can make a
+ *  model write one back as its answer, and that is a placeholder, not a reply. */
+export function isRecapStub(text: string): boolean {
+  return text.trim().startsWith(RECAP_STUB.slice(0, RECAP_STUB.indexOf(" —")));
+}
+
+/** Said to the model in place of a reply that was the placeholder. */
+export const RECAP_STUB_NUDGE =
+  "That reply was the placeholder that stands in for an older message, not an answer. Answer the person's last message now, in your own words.";
+
 /** Left behind when an attached image's payload is evicted. Keeps the full PATH, which is
  *  the restoration key: with only a file name the one way back was asking the user, and a
  *  model given a name it cannot open will guess a path instead. */
 export const IMAGE_CLEARED_STUB = "was attached here but is no longer in context — open it again with view_image if you need to look at it, or ask me to re-attach it if that path is gone";
+
+/** Compaction appends "[<paths> was attached here but is no longer in context …]" to a
+ *  user message whose image it evicted (see IMAGE_CLEARED_STUB; older sessions carry an
+ *  earlier wording). That note is for the MODEL. Replay shows the person their own words,
+ *  plus which attachments have expired. */
+export const EXPIRED_IMAGE_NOTE = /\s*\[([^[\]]+?) was attached here but is no longer in context[^\]]*\]/g;
+export function splitExpiredImages(content: string): { text: string; expiredImages?: string[]; expiredPaths?: string[] } {
+  const expired: string[] = [];
+  const paths: string[] = [];
+  const text = content.replace(EXPIRED_IMAGE_NOTE, (_m, names: string) => {
+    for (const n of names.split(", ")) {
+      paths.push(n);
+      expired.push(n.split(/[\\/]/).pop() ?? n);
+    }
+    return "";
+  });
+  return expired.length ? { text: text.trimEnd(), expiredImages: expired, expiredPaths: paths } : { text: content };
+}
+
+/**
+ * A user message as the person sent it: its words and images from before anything was trimmed for the model, or as they
+ * are now for a message nothing was trimmed from. The one place the chat, a resumed session and a rewind read from.
+ */
+export function userAsSent(e: { content: string; images?: ImageRef[]; original?: { content: string; images?: ImageRef[] } }): {
+  content: string;
+  images?: ImageRef[];
+} {
+  const o = e.original;
+  if (o) return { content: o.content, ...(o.images?.length ? { images: o.images } : {}) };
+  return { content: e.content, ...(e.images?.length ? { images: e.images } : {}) };
+}
 
 /** Edit/write tools whose call INPUT carries bulky content (a whole file, a diff, a
  *  symbol body). The input is what the model WROTE, and it is the only record in the
@@ -460,13 +501,16 @@ export function microcompact(
       const att = clearAttachmentBodies(e.content);
       attachmentsCleared += att.count;
       const text = att.count > 0 ? att.content : e.content;
+      // What the person sent is kept on the entry the first time anything of it is trimmed, so the saved message is
+      // never only the shortened copy the model reads (see `original` on the user entry).
+      const original = e.original ?? { content: e.content, ...(e.images && e.images.length > 0 ? { images: e.images } : {}) };
       if (e.images && e.images.length > 0) {
         imagesCleared += e.images.length;
         const names = e.images.map((img) => img.path).join(", ");
         const { images: _dropped, ...rest } = e;
-        return { ...rest, content: `${text}\n\n[${names} ${IMAGE_CLEARED_STUB}]` };
+        return { ...rest, content: `${text}\n\n[${names} ${IMAGE_CLEARED_STUB}]`, original };
       }
-      return att.count > 0 ? { ...e, content: text } : e;
+      return att.count > 0 ? { ...e, content: text, original } : e;
     }
     return e;
   });
@@ -654,6 +698,19 @@ const HISTORY_PREFIX =
   "answer the user's newest message.]\n\n";
 
 /**
+ * What stands in for the rewrite while the rewrite cannot be afforded (see `settleSummaries`).
+ *
+ * The summary is the first message, so changing it makes the provider read the whole conversation
+ * again at full price, and the moment the user speaks is the worst time: the cache was filled a few
+ * seconds ago. Until the cache is gone anyway the summary is sent exactly as it was, and this line
+ * rides in the volatile tail, outside the cached prefix, saying what the rewrite would have said.
+ */
+export const SUMMARY_HISTORY_NOTE =
+  "The first message in this conversation is a summary of its earlier part. The user has written since " +
+  "it was made: its \"Next Step\" and any instruction in it to continue are out of date. Treat it as a " +
+  "record of what already happened, and answer the user's newest message.";
+
+/**
  * Has the user spoken since this summary was made (pure)?
  *
  * A summary is written as a hand-off: "here is where we were, here is the next step".
@@ -701,6 +758,52 @@ export function summaryForWire(content: string, isHistory: boolean): string {
   if (!isHistory) return content;
   const body = content.replace(RESUME_PREFIX_RE, "").replace(NEXT_STEP_RE, "").trimEnd();
   return HISTORY_PREFIX + body.replace(/\s+(?=<\/summary>$)/, "\n");
+}
+
+/**
+ * Whether a summary should be sent in its background form now, as opposed to in the note that
+ * stands in for it (pure). Only once it has been settled: see `settleSummaries`.
+ */
+export function summaryWireIsHistory(summary: Entry, after: readonly Entry[]): boolean {
+  return summary.role === "summary" && summary.settled === true && summaryIsHistory(summary, after);
+}
+
+/** Whether any summary is history for the user but still carries its hand-off (pure). */
+export function hasUnsettledHistory(entries: readonly Entry[]): boolean {
+  return entries.some((e, i) => e.role === "summary" && e.settled !== true && summaryIsHistory(e, entries.slice(i + 1)));
+}
+
+/**
+ * The transcript with every summary that is history rewritten into its background form for good
+ * (pure; the same array back when there is none).
+ *
+ * Called only where the provider's cached copy of the conversation is being discarded anyway: the
+ * cache has expired, or a clear that was judged worth its price is already rewriting the prefix. A
+ * summary is the FIRST message, so settling it on a warm cache would make the provider read the whole
+ * conversation again at full price; the note in the volatile tail does its job until then.
+ */
+export function settleSummaries(entries: Entry[]): Entry[] {
+  if (!hasUnsettledHistory(entries)) return entries;
+  return entries.map((e, i) =>
+    e.role === "summary" && e.settled !== true && summaryIsHistory(e, entries.slice(i + 1)) ? { ...e, settled: true as const } : e,
+  );
+}
+
+/**
+ * Index of the first entry that differs between two versions of a transcript, or the shorter
+ * length when one is a prefix of the other (pure). Entries a clear did not touch come back as the
+ * same object, so identity settles almost all of them; the rest are compared by what they say.
+ */
+export function firstChangedEntry(before: readonly Entry[], after: readonly Entry[]): number {
+  const n = Math.min(before.length, after.length);
+  for (let i = 0; i < n; i++) {
+    const a = before[i]!;
+    const b = after[i]!;
+    if (a === b) continue;
+    if (a.role !== b.role || a.content !== b.content) return i;
+    if (JSON.stringify(a) !== JSON.stringify(b)) return i;
+  }
+  return n;
 }
 
 /**

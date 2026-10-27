@@ -39,6 +39,11 @@ if (startup.kind === "print") {
   process.stdout.write(startup.text + "\n");
   process.exit(0);
 }
+// `-p` is routed by index.ts before this file is loaded; this only narrows the type for what follows.
+if (startup.kind === "headless") {
+  process.stderr.write("mindweave: -p must be started through the mindweave command.\n");
+  process.exit(2);
+}
 
 // Nothing below this point can run without a terminal to read from, and the failure
 // without one is a stack trace through React internals on a process that exits 0.

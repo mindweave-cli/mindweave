@@ -28,7 +28,7 @@ import { COMMAND_OFFER_AFTER_MS, offerBackground } from "../commandBackground.js
 import { registerExpandable, registerRowBox, itemHit } from "../expandHits.js";
 import { BAD, GOOD, USER_BG, USER_FG } from "../theme.js";
 import { visibleWidth, wrapAnsi } from "../wrap.js";
-import { FOLD_SEP, foldControls, plainLine, compactLine, isMcp, isRead, isSearch, isServerChange, isStep, isView, keepIndent, mcpReason, mcpVerdict, readRows, searchVerdict, serverReason, serverVerdict, viewSummary, wasDeclined, stepLabel, stepReason, workHeader } from "../workLines.js";
+import { FILE_HIT_BASE, FOLD_SEP, fileTextLines, foldControls, plainLine, compactLine, isMcp, isRead, isSearch, isServerChange, isStep, isView, keepIndent, mcpReason, mcpVerdict, readRows, searchVerdict, serverReason, serverVerdict, viewSummary, wasDeclined, stepLabel, stepReason, workHeader } from "../workLines.js";
 import type { WorkItem } from "../transcript.js";
 
 const DOT = "●";
@@ -254,21 +254,37 @@ function WorkList({ id, items, columns, live, hoveredItem }: { id: number; items
   // A row of ONE call opens straight onto what that call did: nothing is behind a second click.
   const single = items.length === 1;
   const rows = listRows(items, room);
-  const labelWidth = Math.min(room, Math.max(...rows.map((r) => r.label.length)) + 2);
+  // Reads and commands each size their name column to their own longest name. Sharing one made a long
+  // command push every file's range to the far edge, or onto a line of its own under the path.
+  const widthOf = (reads: boolean) => Math.min(room, Math.max(0, ...rows.filter((r) => isRead(r.item) === reads).map((r) => r.label.length)) + 2);
+  const readWidth = widthOf(true);
+  const otherWidth = widthOf(false);
+  // The rows of one call are one place to click, so a call that read two files is not half dead.
+  const calls = items.map((_, index) => rows.map((row, i) => ({ row, i })).filter((x) => x.row.index === index)).filter((c) => c.length > 0);
   // MCP lines (a tool call, a server change) share one shape and one name column of their own.
   const mcpLabels = rows.filter((r) => isMcp(r.item) || isServerChange(r.item)).map((r) => r.label.length);
   const compactWidth = Math.min(34, Math.max(0, ...mcpLabels) + 2);
   return (
     <Box flexDirection="column">
-      {rows.map((row, i) => {
+      {calls.map((call) => {
+        const first = call[0]!.row.item;
+        // A read that took several files has no click of its own: each file is its own line and its own click.
+        const clickable = !isServerChange(first) && !(isRead(first) && (first.status === "error" || call.length > 1));
+        return (
+          <Box key={first.toolId} flexDirection="column" ref={clickable ? (node: DOMElement | null) => registerExpandable(itemHit(id, call[0]!.row.index), node) : undefined}>
+            {call.map(({ row, i }) => {
         const it = row.item;
-        const last = i === rows.length - 1;
         const reading = isRead(it);
+        const labelWidth = reading ? readWidth : otherWidth;
+        const lastOfCall = call[call.length - 1]!.i === i;
         const step = isStep(it);
         // A read opens onto the text it took. A call that read several files has one such line, its first.
         const firstOfCall = rows.findIndex((r) => r.index === row.index) === i;
         const readOpens = reading && firstOfCall && it.status !== "error";
-        const hot = (!reading || readOpens) && hoveredItem === row.index;
+        const fileOfList = reading && call.length > 1 && it.status !== "error";
+        const fileNo = call.findIndex((x) => x.i === i);
+        const fileOpen = fileOfList && !!it.openFiles?.includes(fileNo);
+        const hot = fileOfList ? hoveredItem === FILE_HIT_BASE + i : (!reading || it.status !== "error") && hoveredItem === row.index;
         const running = it.status === "running";
         const mcp = isMcp(it);
         // A server change (add, enable, reconnect...) has a line and nothing behind it to open.
@@ -305,22 +321,25 @@ function WorkList({ id, items, columns, live, hoveredItem }: { id: number; items
         const outcomeOnly = !reading && (OUTCOME.test(shownRaw) || shown === "" || (setup && wasDeclined(it)));
         const beside = below ? "" : shown;
         const failedRead = reading && it.status === "error";
-        const body = readOpens
+        const body = fileOfList
+          ? fileOpen ? fileTextLines(it, fileNo) : []
+          : reading && it.status !== "error"
           ? it.open || single ? openedLines(it) : []
           : !reading && !setup && !(search && running) && (it.open || single) ? openedLines(it) : [];
         // The one being read stands out: bright, with its text on a shaded band under it. The ones
         // that are folded stay dim, so it is plain which is open.
         const isOpen = body.length > 0;
+        // What a read took sits under the last file of its call, not between two of them.
+        const bandHere = isOpen && (!reading || fileOfList || lastOfCall);
         const bodyWidth = Math.max(8, columns - 4);
-        const shade = isOpen ? shadeRows(body, columns - 4) : [];
+        const shade = bandHere ? shadeRows(body, columns - 4) : [];
         // The arrow is always in the last column of the line, so it is in the same place on every row, and the whole line is the click.
         // What an MCP line says at its right ("✓ connected · 170 tools") is longer than a command's.
         const verdictBox = setup ? Math.min(Math.max(VERDICT_WIDTH, room2), 34) : Math.max(VERDICT_WIDTH, room2);
         // A command, a search and a read open; a read only when it worked, and on its first line.
         // A row of one call opens onto that call, so its box is a place to click too: it folds the row (see toggleItem).
-        const registered = (reading && !readOpens) || setup ? undefined : (node: DOMElement | null) => registerExpandable(itemHit(id, row.index), node);
         return (
-          <Box key={row.key} flexDirection="column" ref={registered}>
+          <Box key={row.key} flexDirection="column" ref={fileOfList ? (node: DOMElement | null) => registerExpandable(itemHit(id, FILE_HIT_BASE + i), node) : undefined}>
             {/* A row whose only call is a batch of steps says "Tested 11 steps" in its header; the call's own
                 line ("Steps 11 steps") would say it again, so it is left out and what the steps did opens directly. */}
             {single && step && it.name === "Steps" ? null : compact ? (
@@ -360,7 +379,9 @@ function WorkList({ id, items, columns, live, hoveredItem }: { id: number; items
                   </Text>
                 )}
               </Box>
-              {(readOpens && !single) || !(reading || setup || single) ? <Text dimColor={!hot && !isOpen} bold={hot || isOpen}>{it.open ? " ▾" : " ▸"}</Text> : null}
+              {fileOfList ? (
+                <Text dimColor={!hot && !isOpen} bold={hot || isOpen}>{fileOpen ? " ▾" : " ▸"}</Text>
+              ) : (readOpens && !single) || !(reading || setup || single) ? <Text dimColor={!hot && !isOpen} bold={hot || isOpen}>{it.open ? " ▾" : " ▸"}</Text> : null}
             </Box>
             )}
             {below && !compact ? (
@@ -379,7 +400,7 @@ function WorkList({ id, items, columns, live, hoveredItem }: { id: number; items
                 </Box>
               </Box>
             ) : null}
-            {isOpen ? (
+            {bandHere ? (
               // What it printed sits on a shaded band, the way a message the user wrote does.
               <Box flexDirection="column" width={columns}>
                 {shade.map((r, j) => (
@@ -395,6 +416,9 @@ function WorkList({ id, items, columns, live, hoveredItem }: { id: number; items
                 ))}
               </Box>
             ) : null}
+          </Box>
+        );
+            })}
           </Box>
         );
       })}

@@ -6,7 +6,12 @@
  * message: asked "what should we do next?" three times, it answered with the summary's
  * next step ("report the test result and ask what they want next") three times. So the
  * summary is sent as background, without the next step, once the user has written
- * after it. These tests pin the rule, the rewrite, and that it is what reaches the wire.
+ * after it. These tests pin the rule, the rewrite, and what reaches the wire.
+ *
+ * The summary is the FIRST message of the conversation, so rewriting it makes the provider read
+ * everything after it again at full price. The moment the user writes is the worst time for that
+ * (the cache was filled seconds ago), so the rewrite waits until the cached copy is gone anyway
+ * (`settleSummaries`), and a line in the volatile tail says the same thing until then.
  */
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
@@ -14,7 +19,17 @@ import { mkdtempSync, realpathSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { summaryForWire, summaryIsHistory, spliceSummary, SUMMARY_REQUEST } from "./compaction.js";
+import {
+  summaryForWire,
+  summaryIsHistory,
+  summaryWireIsHistory,
+  hasUnsettledHistory,
+  settleSummaries,
+  firstChangedEntry,
+  SUMMARY_HISTORY_NOTE,
+  spliceSummary,
+  SUMMARY_REQUEST,
+} from "./compaction.js";
 import { respond } from "../dynamo/engine.js";
 import type { Entry, Session } from "./types.js";
 
@@ -139,18 +154,58 @@ function session(transcript: Entry[]): Session {
   } as unknown as Session;
 }
 
-test("the request carries the summary as history once the user has asked something new", async () => {
+const asked: Entry[] = [
+  { role: "assistant", content: "Test done.", ts: at + 1 },
+  { role: "user", content: "what should we do next? what do you suggest?", ts: at + 2 },
+];
+
+test("a summary is rewritten only once it is settled", () => {
+  assert.equal(summaryWireIsHistory(summary, asked), false, "the user has written, but the cache is still warm");
+  assert.equal(summaryWireIsHistory({ ...summary, settled: true }, asked), true);
+  assert.equal(summaryWireIsHistory({ ...summary, settled: true }, []), false, "nobody has written after it");
+});
+
+test("settling rewrites only the summaries that are history, and says nothing when there are none", () => {
+  const entries: Entry[] = [{ ...summary }, ...asked];
+  assert.equal(hasUnsettledHistory(entries), true);
+  const settled = settleSummaries(entries);
+  assert.equal((settled[0] as { settled?: true }).settled, true);
+  assert.equal(hasUnsettledHistory(settled), false);
+  assert.equal(entries[0]!.role === "summary" && entries[0]!.settled, undefined, "the original entry is not mutated");
+  // Nothing to do: the same array comes back, so nothing downstream sees a change.
+  const handOff: Entry[] = [{ ...summary }, { role: "user", content: "continue", synthetic: true, ts: at + 1 }];
+  assert.equal(settleSummaries(handOff), handOff);
+});
+
+test("the first changed entry is where the provider has to start reading again", () => {
+  const a: Entry = { role: "user", content: "a" };
+  const b: Entry = { role: "assistant", content: "b" };
+  const c: Entry = { role: "user", content: "c" };
+  assert.equal(firstChangedEntry([a, b, c], [a, b, c]), 3);
+  assert.equal(firstChangedEntry([a, b, c], [a, { ...b }, c]), 3, "an equal copy is not a change");
+  assert.equal(firstChangedEntry([a, b, c], [a, { ...b, content: "B" }, c]), 1);
+  assert.equal(firstChangedEntry([a, b, c], [a, b]), 2, "a dropped entry moves everything after it");
+});
+
+test("until the cache is gone the summary goes out as it was, and the note rides in the tail", async () => {
   requests = [];
-  await respond(
-    session([
-      { ...summary },
-      { role: "assistant", content: "Test done.", ts: at + 1 },
-      { role: "user", content: "what should we do next? what do you suggest?", ts: at + 2 },
-    ]),
-  );
+  await respond(session([{ ...summary }, ...asked]));
+  const wire = requests[0]!.messages;
+  const first = wire.find((m) => (m.content ?? "").includes("Earlier conversation summarized"))?.content ?? "";
+  assert.equal(first, SUMMARY, "the first message is byte-for-byte what it was, so the cached prefix is untouched");
+  const tail = wire.at(-1)!.content ?? "";
+  assert.match(tail, /<current_context>/);
+  assert.ok(tail.includes(SUMMARY_HISTORY_NOTE), "the stand-in for the rewrite is in the volatile tail");
+  assert.match(wire.map((m) => m.content ?? "").join("\n"), /what should we do next/);
+});
+
+test("once settled, the request carries the summary as history and no note", async () => {
+  requests = [];
+  await respond(session([{ ...summary, settled: true }, ...asked]));
   const wire = requests[0]!.messages.map((m) => m.content ?? "").join("\n");
   assert.doesNotMatch(wire, /Report the playtime test result/, "the stale next step reached the model");
   assert.match(wire, /answer the user's newest message/);
+  assert.ok(!wire.includes(SUMMARY_HISTORY_NOTE), "no note once the summary itself says it");
   assert.match(wire, /what should we do next/);
 });
 
@@ -159,4 +214,25 @@ test("a turn resuming straight across the break still gets the next step", async
   await respond(session([{ ...summary }, { role: "user", content: "continue", synthetic: true, ts: at + 1 }]));
   const wire = requests[0]!.messages.map((m) => m.content ?? "").join("\n");
   assert.match(wire, /Report the playtime test result/);
+});
+
+test("when the provider's cached copy is gone anyway, the summary is settled in that very request", async () => {
+  requests = [];
+  const s = session([{ ...summary }, ...asked]);
+  // The model was last called two hours ago: past any provider's cache lifetime.
+  s.lastCallByModel = { "gemini-3.7-flash": Date.now() - 2 * 60 * 60 * 1000 };
+  await respond(s);
+  const wire = requests[0]!.messages.map((m) => m.content ?? "").join("\n");
+  assert.doesNotMatch(wire, /Report the playtime test result/, "the stale next step is gone");
+  assert.match(wire, /answer the user's newest message/);
+  assert.ok(!wire.includes(SUMMARY_HISTORY_NOTE), "the rewrite itself says it, so no stand-in");
+  assert.equal((s.transcript[0] as { settled?: true }).settled, true, "and it stays that way for every later request");
+});
+
+test("while the cached copy is warm, asking again does not settle it", async () => {
+  requests = [];
+  const s = session([{ ...summary }, ...asked]);
+  s.lastCallByModel = { "gemini-3.7-flash": Date.now() - 60_000 };
+  await respond(s);
+  assert.equal((s.transcript[0] as { settled?: true }).settled, undefined);
 });

@@ -166,6 +166,44 @@ export function readRows(it: WorkItem): { label: string; range: string }[] {
   return files.map((f) => ({ label: f, range }));
 }
 
+/**
+ * Clicks on the files of a read that took several are numbered from here, after the places a call
+ * itself can be clicked, so the two never meet (see `itemHit`).
+ */
+export const FILE_HIT_BASE = 2048;
+
+/** Which call, and which of its files, the Nth line of an opened list is (pure), or undefined when that line is no file of a list. */
+export function fileRowAt(items: WorkItem[], row: number): { item: number; file: number } | undefined {
+  let at = 0;
+  for (let item = 0; item < items.length; item++) {
+    const it = items[item]!;
+    const size = isRead(it) ? readRows(it).length : 1;
+    if (row < at + size) return isRead(it) && size > 1 ? { item, file: row - at } : undefined;
+    at += size;
+  }
+  return undefined;
+}
+
+/**
+ * The text of one file of a read that took several, as lines (pure). The result is one block with a
+ * `===== name =====` line above each file; a read of one file has no such lines and is the whole text.
+ */
+export function fileTextLines(it: WorkItem, file: number): string[] {
+  const source = it.full ?? it.detail;
+  if (!source) return [];
+  // Tabs and control characters become spaces here, as for every other opened text: a tab left in the band
+  // moves the cursor instead of painting, and leaves a gap in the band's colour.
+  const lines = source.split("\n").map(plainLine);
+  const heads = lines.flatMap((l, i) => (/^===== .* =====$/.test(l) ? [i] : []));
+  if (heads.length === 0) return file === 0 ? lines : [];
+  const from = heads[file];
+  if (from === undefined) return ["(nothing was kept of this file)"];
+  const to = heads[file + 1] ?? lines.length;
+  const part = lines.slice(from + 1, to);
+  while (part.length > 0 && part[part.length - 1]!.trim() === "") part.pop();
+  return part.length > 0 ? part : ["(nothing was kept of this file)"];
+}
+
 /** What a step is called on its line: "Click \"Add Game\"", "Look port 9222" (pure). */
 export function stepLabel(it: WorkItem): string {
   return it.arg ? `${it.name} ${it.arg}` : it.name;

@@ -68,6 +68,25 @@ npm link
 `/help` lists every command. `shift+tab` switches modes. Type while it works and your
 message queues.
 
+## Run it from a script
+
+`mindweave -p "task"` does one task with no screen and prints the answer, so it works in a shell script or a CI job.
+Anything piped in is added as context, and `--output-format json` gives one result object with the session, the
+tokens and the cost. The exit code says whether it finished (0), failed (1), had no key (3) or stopped before it was
+done (4). Nobody can answer a question in this mode, so anything that would ask is refused. [docs/HEADLESS.md](docs/HEADLESS.md)
+
+```bash
+git diff | mindweave -p "review this change"
+mindweave -p "list the TODOs" --output-format json | jq -r .result
+```
+
+## Commits
+
+When the agent makes a commit it can add one line to the message, `Co-authored-by: mwcode <...>`, so the commit
+shows the agent beside you on GitHub. It asks once per project the first time, remembers the answer, and never adds
+the line to a commit you make yourself. `/coauthor` shows or changes the answer, and `/coauthor off all` turns it off
+everywhere.
+
 ## Your own rules and hooks
 
 Both live in your state folder (`~/.mindweave`, or `projects/<name>` inside it for one

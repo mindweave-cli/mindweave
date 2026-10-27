@@ -82,7 +82,7 @@ export const GUARD_REFUSAL =
  * Not the user declining: they were never asked, so the words say what actually happened.
  */
 export const GUARD_NO_ONE_TO_ASK =
-  "Not run: this session asks before it acts, and a sub-agent has nobody to ask. Only commands made " +
+  "Not run: this session asks before it acts, and nobody is here to ask (a sub-agent or an unattended run). Only commands made " +
   "of read-only parts run without a question. Say in your report what you could not check, and why.";
 
 /** A short, human-readable description of a mutating call, for the approval prompt. */

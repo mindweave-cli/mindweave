@@ -163,7 +163,9 @@ function oneLine(title: string): string {
 export function formatSearchDetail(result: SearchResult, engine?: string, elapsedMs?: number): string {
   if (result.sources.length === 0) return "";
   const lines = [searchSummaryLine(result.sources.length, engine, elapsedMs)];
-  for (const [i, source] of result.sources.slice(0, SEARCH_PREVIEW_SOURCES).entries()) lines.push(`${i + 1}. ${oneLine(source.title)}`);
+  // Numbered to the width the opened list uses, so opening it does not shift a title sideways.
+  const width = String(result.sources.length).length;
+  for (const [i, source] of result.sources.slice(0, SEARCH_PREVIEW_SOURCES).entries()) lines.push(`${String(i + 1).padStart(width)}. ${oneLine(source.title)}`);
   return outputDetail(lines.join("\n"));
 }
 

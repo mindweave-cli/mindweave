@@ -10,7 +10,7 @@
  * so a tool call reads the same way in every surface) with no Ink, no pacing, no
  * terminal assumptions. A GUI or a server can drive a session with just this file.
  */
-import { compactNow, effectiveAutoCompactThreshold, respond, type EngineEvent, type SteeredMessage } from "../dynamo/engine.js";
+import { compactNow, effectiveAutoCompactThreshold, respond, type EngineEvent, type PauseReason, type SteeredMessage } from "../dynamo/engine.js";
 import type { SubagentOutcome } from "../tools/subagentOutcome.js";
 import {
   startMarathon,
@@ -26,8 +26,8 @@ import {
 export { clearMarathon, describeMarathonEvent, MAX_MARATHON_VERIFY_FAILS, type MarathonEvent, type MarathonState, type MarathonStatus } from "../dynamo/marathon.js";
 /** How full the context is against the auto-compaction bar, for a context meter. */
 export { contextFill } from "../dynamo/engine.js";
-import { createSession, resumeSession, reloadProjectMemory } from "../memory/session.js";
-import { saveSession, listSessions as listSessionsRaw } from "../memory/store.js";
+import { createSession, resumeSession, reloadProjectMemory, repairToolCallOrder, reconcileInterruptedTools } from "../memory/session.js";
+import { saveSession, listSessions as listSessionsRaw, loadEarlier, loadMeta, loadTranscript } from "../memory/store.js";
 import type { Session, SessionMeta, ToolCallRecord } from "../memory/types.js";
 import { toolDisplay, isGroupable, narrationShown, noteReads } from "../cli/toolDisplay.js";
 import { accessRefusal, providerOutage, statusOf } from "../drivers/providerError.js";
@@ -44,6 +44,8 @@ export { attachedFiles, hideAttachedNames } from "../cli/attachments.js";
 // `!command`: a command the person runs themselves, as the CLI does it (see memory/localCommand.ts).
 export { runUserCommand } from "../tools/userCommand.js";
 export { saveSession };
+/** The co-author line on commits the agent makes: the answer for a project, and setting it (for a settings screen). */
+export { coauthorSetting, setCoauthor, type CoauthorSetting } from "../tools/coauthor.js";
 export { isUserCommandText, parseUserCommand } from "../memory/localCommand.js";
 import { isRewindPoint, reloadAgentState } from "../memory/rewind.js";
 import { relativize } from "../tools/paths.js";
@@ -52,13 +54,13 @@ export { rewindPoints, rewindTo, pasteSlot, type RewindPoint, type RewindResult,
 import { wrapPastedText, collapsePastes } from "../memory/pastedText.js";
 import { manifestForModel } from "../drivers/registry.js";
 import { stat, readFile } from "node:fs/promises";
-import { readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { compactSearchDetail, rebuildFull, writtenFromDisk } from "../tools/rebuildDetail.js";
 export { shellNote } from "../cli/shellNotes.js";
 import { NOTES_FILE } from "../memory/projectNotes.js";
 import { writeFileAtomic } from "../tools/atomicWrite.js";
-import { shownText, withoutClearedNote } from "../memory/compaction.js";
+import { shownText, splitExpiredImages, userAsSent, withoutClearedNote } from "../memory/compaction.js";
 import { stopChassis } from "../alternator/lane.js";
 import type { TodoItem, ToolContext, UiDisplay, UiLiveEvent, WebDisplay } from "../tools/types.js";
 import { stopUi } from "../tools/ui.js";
@@ -377,6 +379,9 @@ export interface TurnHandlers {
   /** Messages typed while the turn is already running (a chat "send" mid-stream). */
   steer?: () => Promise<SteeredMessage[]>;
   signal?: AbortSignal;
+  /** The turn stopped on purpose before it was done: a limit, a step budget, a repeated failure,
+   *  a reply cut off. A caller with nobody to say "continue" needs to know. */
+  onPause?: (reason: PauseReason) => void;
 }
 
 /** Start a brand-new session rooted at `cwd` — one per open project/window. */
@@ -387,6 +392,22 @@ export function startSession(cwd: string): Promise<Session> {
 /** Reopen a session that was saved earlier, so a chat window can be closed and reopened. */
 export function loadSession(cwd: string, sessionId: string): Promise<Session | null> {
   return resumeSession(cwd, sessionId);
+}
+
+/**
+ * A saved session's chat, drawn without opening the session. Opening one builds the engine's whole working state (its tools,
+ * the project's snapshot, servers, the undo history), which is what makes a switch take a moment; what the person looks at is
+ * only the saved conversation. This reads exactly that, the same way `replayHistory` draws an opened session, so a window can
+ * show it at once and open the session itself afterwards. Null when there is no such session.
+ */
+export async function previewSession(cwd: string, sessionId: string): Promise<ReplayEvent[] | null> {
+  const meta = await loadMeta(cwd, sessionId);
+  if (!meta) return null;
+  const loaded = await loadTranscript(cwd, meta.id);
+  if (!loaded || loaded.length === 0) return null;
+  const transcript = reconcileInterruptedTools(repairToolCallOrder(loaded));
+  const earlier = await loadEarlier(cwd, meta.id);
+  return replayHistory({ id: meta.id, cwd, transcript, earlier, modelConfig: { model: "" } } as unknown as Session);
 }
 
 /**
@@ -417,20 +438,6 @@ export type ReplayEvent =
   | { type: "toolReplay"; name: string; arg?: string; kind: string; ok: boolean; summary: string; detail?: string; detailFull?: string; detailKind?: "diff" | "text" | "shell"; images?: string[]; web?: WebDisplay; ui?: UiDisplay; tool?: string; /** The call's arguments, clipped as on a live toolStart: which file a row is about. */ args?: Record<string, unknown>; /** A quiet result (only searches are replayed quiet): not a row of its own. */ quiet?: true; /** A command the person ran with `!`, not the agent. */ byUser?: true }
   | { type: "compactionSummary"; text: string };
 
-/** Compaction appends "[<paths> was attached here but is no longer in context …]" to a
- *  user message whose image it evicted (see IMAGE_CLEARED_STUB; older sessions carry an
- *  earlier wording). That note is for the MODEL. Replay shows the person their own words,
- *  plus which attachments have expired. */
-const EXPIRED_IMAGE_NOTE = /\s*\[([^[\]]+?) was attached here but is no longer in context[^\]]*\]/g;
-function splitExpiredImages(content: string): { text: string; expiredImages?: string[] } {
-  const expired: string[] = [];
-  const text = content.replace(EXPIRED_IMAGE_NOTE, (_m, names: string) => {
-    for (const n of names.split(", ")) expired.push(n.split(/[\\/]/).pop() ?? n);
-    return "";
-  });
-  return expired.length ? { text: text.trimEnd(), expiredImages: expired } : { text: content };
-}
-
 /**
  * Turn a loaded session's stored transcript back into the same shape the live
  * TurnEvent stream uses, so a session switch in the UI can redraw the whole
@@ -450,13 +457,19 @@ export function replayHistory(session: Session): ReplayEvent[] {
       if (!entry.synthetic) readThisTurn.clear();
       // Shown as typed: file bodies hidden and pastes collapsed, the same as it looked live.
       if (!entry.synthetic) {
-        const paths = (entry.images ?? []).map((i) => i.path);
-        const files = attachedFiles(entry.content, session.cwd);
-        const shown = splitExpiredImages(displayText(entry.content));
+        // What the person sent, from before anything was trimmed for the model. A message from a session saved before that
+        // was kept carries the model's note instead; the pictures it names are still on disk, so they are shown.
+        const sent = userAsSent(entry);
+        const kept = (sent.images ?? []).map((i) => i.path);
+        const files = attachedFiles(sent.content, session.cwd);
+        const shown = splitExpiredImages(displayText(sent.content));
+        const back = (shown.expiredPaths ?? []).filter((p) => !kept.includes(p) && existsSync(p));
+        const paths = [...kept, ...back];
+        const gone = (shown.expiredPaths ?? []).filter((p) => !paths.includes(p)).map((p) => p.split(/[\\/]/).pop() ?? p);
         out.push({
-          ...shown,
           type: "userMessage",
           text: hideAttachedNames(shown.text, [...paths, ...files]),
+          ...(gone.length ? { expiredImages: gone } : {}),
           ...(paths.length ? { images: paths } : {}),
           ...(files.length ? { files } : {}),
           // Typed mid-turn, or from before messages were stamped: nothing to go back to.
@@ -846,7 +859,7 @@ function tryFailover(
 }
 
 async function streamTurn(session: Session, handlers: TurnHandlers): Promise<void> {
-  const { onEvent, steer, signal } = handlers;
+  const { onEvent, steer, signal, onPause } = handlers;
   // Keys already refused in THIS turn, so switching can't go round in a circle.
   const triedKeys = new Set<string>();
 
@@ -855,6 +868,7 @@ async function streamTurn(session: Session, handlers: TurnHandlers): Promise<voi
     await respond(session, {
       steer,
       signal,
+      ...(onPause ? { onPause } : {}),
       onActivity: (line, opts) => onEvent({ type: "activity", line, error: opts?.error }),
       onCompaction: (report) => onEvent({ type: "compaction", before: report.before, after: report.after, window: report.window }),
       onCompactionStart: () => onEvent({ type: "compactionStart" }),

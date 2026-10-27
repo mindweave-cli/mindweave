@@ -95,7 +95,7 @@ test("a resumed paste comes back as a chip, not as itself", async () => {
   // And collapsed on the way back to the chat, alongside the attachment strip.
   assert.match(
     app,
-    /collapsePastes\(stripAttachments\(e\.content\)\)/,
+    /collapsePastes\([^\n]*stripAttachments\(userAsSent\(e\)\.content\)/,
     "the resume path replays the paste body instead of its chip",
   );
 });

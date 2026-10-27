@@ -32,6 +32,7 @@ export const BASE_COMMANDS: CommandInfo[] = [
   { name: "/rules", description: "list rules, or add one: /rules <directive>" },
   { name: "/skills", description: "list skills, or make one: /skills <description>" },
   { name: "/forbidden", description: "list protected paths, or add: /forbidden <path>" },
+  { name: "/coauthor", description: "show or set the co-author line on commits the agent makes: /coauthor on|off" },
   { name: "/forbid-command", description: "list forbidden commands, or add: /forbid-command <command>" },
   { name: "/link", description: "pull in the rest of the project (monorepo / sibling repos)" },
   { name: "/include", description: "add a folder to the workspace: /include <path>" },

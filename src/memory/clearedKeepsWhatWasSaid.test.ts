@@ -10,10 +10,12 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { CLEARED_STUB, RECAP_STUB, microcompact, shownText, withoutClearedNote } from "./compaction.js";
+import { CLEARED_STUB, IMAGE_CLEARED_STUB, RECAP_STUB, isRecapStub, microcompact, splitExpiredImages, shownText, withoutClearedNote } from "./compaction.js";
 import type { Entry, Session } from "./types.js";
 import { replayHistory } from "../core/turnRunner.js";
 import { rebuildFull } from "../tools/rebuildDetail.js";
+import { stripAttachments } from "../cli/attachments.js";
+import { editableMessage } from "./rewind.js";
 
 const recap = "Session 6 delivered the folder tree, context menu, and SVG icons. ".repeat(6);
 const user = (text: string): Entry => ({ role: "user", content: text });
@@ -99,4 +101,34 @@ test("clearing old context never takes away what a row shows or can open", () =>
   assert.equal(row.detail, detail);
   assert.equal(row.detailFull, detailFull);
   assert.equal(row.summary, "rewrote a.ts");
+});
+
+test("a reply that is the placeholder itself is recognised, and a real one is not", () => {
+  assert.equal(isRecapStub(RECAP_STUB), true);
+  assert.equal(isRecapStub(`  ${RECAP_STUB}
+`), true);
+  assert.equal(isRecapStub("Here is what I think of the app."), false);
+  assert.equal(isRecapStub(""), false);
+});
+
+// A message whose image compaction dropped carries a note for the MODEL. The person must see only their own words, in the
+// replay, in the CLI's redraw of a resumed chat, and in the box a rewind puts the message back into.
+const shot = "C:/Users/someone/Pictures/Screenshots/shot.png";
+const evicted = `shot.png can you make this to open like long and not this way? it looks off.
+
+[Image source: ${shot}]
+
+[${shot} ${IMAGE_CLEARED_STUB}]`;
+
+test("the note for the model about a dropped image is not shown as the person's words", () => {
+  const shown = splitExpiredImages(stripAttachments(evicted)).text;
+  assert.equal(shown, "shot.png can you make this to open like long and not this way? it looks off.");
+  assert.doesNotMatch(shown, /no longer in context|view_image/);
+});
+
+test("a rewind puts back what was typed, not the note for the model", () => {
+  const { text, template } = editableMessage({ role: "user", content: evicted } as never, "C:\proj");
+  assert.doesNotMatch(text, /no longer in context|view_image|was attached here/);
+  assert.doesNotMatch(template, /no longer in context|view_image|was attached here/);
+  assert.match(text, /can you make this to open like long/);
 });

@@ -20,6 +20,7 @@ import { chassisForPath } from "./chassisMux.js";
 import { renderOutlineEntries } from "./codeIntel.js";
 import { estimateTokens } from "../memory/compaction.js";
 import { failQuietly } from "./results.js";
+import { missingFileHint } from "./missingPath.js";
 // Shared with the row that displays the call, so what is read and what is named can
 // never disagree about which files a call asked for. See pathList.ts.
 import { toPathList } from "./pathList.js";
@@ -243,7 +244,8 @@ async function readOne(
   try {
     stat = await fs.stat(filePath);
   } catch {
-    return bad(`File not found: ${trimmed}`);
+    const hint = await missingFileHint(ctx, filePath);
+    return bad(`File not found: ${trimmed}${hint ? `. ${hint}` : ""}`);
   }
   if (stat.isDirectory()) return bad(`${trimmed} is a directory, not a file.`);
 

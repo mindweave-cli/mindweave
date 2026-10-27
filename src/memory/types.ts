@@ -70,6 +70,14 @@ type EntryOf =
        *  array once the turn is old, leaving `content` naming the file so the model
        *  keeps the key to ask for it again. Absent on messages with no images. */
       images?: import("./images.js").ImageRef[];
+      /**
+       * What the person sent, kept whole when old context is trimmed for the model. Trimming shortens `content`
+       * (an old attached file's body, an image's payload) and drops `images` so the model's copy stays small, and
+       * that used to be the only copy: the saved message lost them for good. Now the first trim stores what was
+       * there, and everything that draws or restores the message (the chat, a resumed session, a rewind) reads this,
+       * while the model keeps reading `content`. Never sent to the model, never counted as context.
+       */
+      original?: { content: string; images?: import("./images.js").ImageRef[] };
       /** True when the engine wrote this, not the person: the verify, batching and
        *  narration nudges all arrive as `user` messages so the model reads them as
        *  instruction. They must never be mistaken for something the user typed —
@@ -162,7 +170,17 @@ type EntryOf =
        *  `fullPathsOf` rather than assuming an array. */
       fullContentOf?: string[] | string;
     }
-  | { role: "summary"; content: string };
+  | {
+      role: "summary";
+      content: string;
+      /**
+       * The summary has been rewritten, once, into its background form (see `summaryForWire`).
+       * Set at a moment the provider's cached copy of the conversation is being thrown away
+       * anyway, never while it is warm, because the summary is the first message and changing it
+       * makes the provider read everything after it again.
+       */
+      settled?: true;
+    };
 
 /**
  * The whole-file paths a tool entry carries, as a list.
@@ -488,6 +506,17 @@ export interface Session {
    * claim a match that cannot exist and suppress the one report worth making.
    */
   prefixPrint?: import("../dynamo/cacheBreak.js").PrefixPrint;
+  /**
+   * The last request this session sent to its model, and the transcript entries it carried, in
+   * order. In-memory only. The session-notes writer builds its own request on the same system prompt,
+   * tools and beginning of the conversation so the provider reads them from the cache the main work
+   * just filled instead of being sent them again at full price. `sent` is what makes that safe to
+   * claim: if every entry is still the same object at the same place, the provider's copy is still
+   * the beginning of this conversation.
+   */
+  lastRequest?: { request: import("../drivers/types.js").ModelRequest; sent: Entry[] };
+  /** The notes writer could not build on the main request with this model (in memory, this process). */
+  sharedNotesOff?: boolean;
   /** Per-call token usage, most recent last. See `CallUsage`. */
   callLog?: CallUsage[];
   /** State of a running or finished Marathon (goal-mode autonomy) — the objective,

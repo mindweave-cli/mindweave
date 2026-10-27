@@ -58,6 +58,8 @@ export interface WorkItem {
   kind?: ToolKind;
   /** How many files one read call took (`read_file` takes a list). */
   covers?: number;
+  /** Which of those files are opened, by place in the call: each file of a list is its own line and its own click. */
+  openFiles?: number[];
   /** The person ran this themselves, with `!`: the row says so, and it never shares a row with the agent's own calls. */
   byUser?: boolean;
   /** The call's one-line result, when there is no block of output ("Backgrounded as shell #1"). */
@@ -266,6 +268,7 @@ export type Action =
   | { type: "toggleExpand"; id: number } // a click on a row: show all of it, or fold it back
   | { type: "itemDetail"; toolId: string; detail: string } // the text behind a read, fetched when it is opened
   | { type: "toggleItem"; id: number; index: number } // a click on one command inside a commands row
+  | { type: "toggleFile"; id: number; item: number; file: number } // a click on one file of a read that took several
   | { type: "clear" }; // /clear — drop the visible conversation, keep the id counter
 
 export function initialState(): TranscriptState {
@@ -714,6 +717,20 @@ export function reduce(s: TranscriptState, a: Action): TranscriptState {
           ? ({ ...b, items: b.items.map((it) => (it.toolId === a.toolId ? { ...it, detail: a.detail, detailKind: "text" as const } : it)) } as Block)
           : b;
       return { ...s, committed: s.committed.map(fill), tail: s.tail.map(fill) };
+    }
+    case "toggleFile": {
+      const flip = (b: Block): Block =>
+        b.kind === "work" && b.id === a.id && b.items[a.item]
+          ? ({
+              ...b,
+              items: b.items.map((it, i) => {
+                if (i !== a.item) return it;
+                const open = it.openFiles ?? [];
+                return { ...it, openFiles: open.includes(a.file) ? open.filter((f) => f !== a.file) : [...open, a.file] };
+              }),
+            } as Block)
+          : b;
+      return { ...s, committed: s.committed.map(flip), tail: s.tail.map(flip) };
     }
     case "toggleItem": {
       const flip = (b: Block): Block =>

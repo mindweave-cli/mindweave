@@ -19,6 +19,15 @@
  */
 import { loadWithProductionEnv } from "./cli/prodEnv.js";
 import { registerInkSpeedups } from "./cli/inkSpeed.js";
+import { parseStartupArgs } from "./cli/startupArgs.js";
+
+// `-p` is one task with no screen. It is decided here, before the UI libraries are loaded or their
+// loader hook is installed, so a script never pays for React and Ink and never needs a terminal.
+const startup = parseStartupArgs(process.argv.slice(2));
+if (startup.kind === "headless") {
+  const { runHeadlessMain } = await import("./headless/main.js");
+  process.exit(await runHeadlessMain(startup.argv));
+}
 
 registerInkSpeedups();
 await loadWithProductionEnv();

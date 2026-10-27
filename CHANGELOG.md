@@ -2,6 +2,107 @@
 
 Notable changes to Mindweave. Dates are release dates.
 
+## Unreleased: run it from a script, credit on the agent's commits, a cache the notes no longer break
+
+- **Commits the agent makes can carry one line of credit.** The first time the agent runs `git commit` in a project it
+  asks once whether to add `Co-authored-by: mwcode <...>` to the message: yes for this project, yes for all projects,
+  or no. The answer is remembered, so that project is never asked again. Only a commit the agent runs gets the line,
+  never one you type yourself (`!git commit`). With nobody to ask (a script, a sub-agent) there is no question and no
+  line unless you already said yes. The line is added with git's own `--trailer` option, so it works with `-m`, `-F`
+  and `--amend`, and a command Mindweave cannot read with certainty is left exactly as written. `/coauthor` shows the
+  answer, `/coauthor on` or `off` changes it for the project, adding `all` changes it for every project, and
+  `/coauthor reset` makes it ask again.
+
+- **The agent commits on the branch you are on.** Its instructions used to say never to commit on `main`, so "push it"
+  produced a new branch you had to merge. It now commits and pushes the current branch, `main` included, and makes a
+  new branch only when you ask for one or the project's notes or rules say to.
+
+- **Trimming old context no longer takes anything out of your saved messages.** To keep the model's context small, an old
+  message's attached file body is shortened and an image's reference is dropped. That used to be done to the saved message
+  itself, so they were gone from the session for good, and the model's note about it ("no longer in context…") was printed
+  in the chat as if you had typed it. The saved message now keeps exactly what you sent; only the copy the model reads is
+  shortened. A resumed chat, `/continue` and `/rewind` all show your own words and pictures, and sessions saved before this
+  show the picture again when its file is still on disk.
+
+- **Reopening a saved session is faster.** Each reopen collected the project's snapshot again, which starts several `git`
+  processes (about a tenth of a second). It is now reused for twenty seconds when you switch between the sessions of one
+  project, and a new session always collects afresh.
+
+- **An empty search says what it covered.** "No matches found." now names the pattern and the place, and lists what a
+  search never looks in (what `.gitignore` excludes, `node_modules`, `.git` and build output, secrets and other agents'
+  data), so the agent no longer reads "nothing here" as "it does not exist". The same goes for a file-name match.
+
+- **A file-name search of a protected folder is refused**, the way a content search already was. It used to answer
+  "No files found." as if the folder were empty.
+
+- **`outline` reads documents and data files too.** Pointed at a markdown, JSON, YAML, TOML, ini or CSV file it lists the
+  headings or keys with line numbers (and what each value is), and pointed at a folder it adds a few of those files after
+  the code. Lock files, large files and protected folders are left out. The tool's description got shorter, not longer.
+
+- **A read of a missing file says where it may be.** "File not found" now names a near spelling beside it, the same file
+  name elsewhere in the project, or the nearest folder that does exist.
+
+- **The agent is told when an edit could not be checked.** After an edit, the language server's check runs on its own and
+  stays quiet when it finds nothing. When no language server covers an edited source file it now says so once per file
+  type, so a quiet result is no longer mistaken for a clean one.
+
+- **A reply that is only the placeholder for an older message is sent back once.** A long session leaves several such
+  placeholders in the history, and a model could copy one as its answer; it is now asked to answer in its own words.
+
+### Run it from a script
+
+`mindweave -p "task"` does one task with no screen and exits, so Mindweave can be used from a shell script, a
+pipeline or a CI job. [docs/HEADLESS.md](docs/HEADLESS.md) has the whole reference.
+
+- **The answer goes to stdout and nothing else does.** Progress is one line per tool call on stderr (`-q` hides it).
+  Anything piped in is added as context after the task, or is the task when none is typed.
+- **`--output-format json` or `stream-json`** gives a result object with the answer, the session id, the model, the
+  tokens and an estimated cost for the run, and the actions that were refused. The stream sends one JSON object per
+  line as the run goes, ending with the same result.
+- **The exit code says how it ended.** 0 done, 1 failed, 2 bad usage (an unknown option is an error, never ignored),
+  3 no API key, 4 stopped before it was done (a usage limit, the step budget, a step that kept failing, a reply cut
+  off), 130 and 143 for SIGINT and SIGTERM, after the session is saved and background commands are ended.
+- **It is the same agent.** It uses the project's saved provider and model, your hooks, command rules and usage
+  limits, and saves the run as a session that `--continue` and `--resume <id>` can carry on. `--model` and `--mode`
+  change one run without being saved. Lightning, the default, does the work directly.
+- **Nobody can answer, so nothing asks.** Sentinel refuses every action that would change something, Architect stays
+  read-only, questions to you are answered with "use your best judgment", the model is told the run is unattended so it
+  finishes the work and reports in full instead of ending on a question, and a project's own MCP servers do not
+  start unless you already approved them. It will not run in a home folder or a drive root.
+- **It starts faster than the interactive program**, because the screen libraries are never loaded.
+
+### A cache that the notes and the clearing no longer break
+
+A real session showed where the remaining misses came from: the session notes, a summary that was rewritten while the
+provider still held the old one, and one clear of old output while the cache was warm.
+
+- **The notes are updated as changes, not rewritten whole.** The writer answers with only the sections that changed, and
+  the rest of the notes are kept as they are. A refresh that wrote about 6,400 tokens now writes a few hundred, and a
+  large set of notes no longer runs into the output limit. A reply that is cut off keeps its finished sections, a refusal
+  keeps the old notes, and a rewrite that would empty most of a long section is refused.
+- **The notes are written on the same request as the conversation** while the cache is warm, so the provider reads the
+  conversation from its cache instead of billing it again. It is used only when reading the cache costs less than sending
+  the new part fresh, and it falls back to the separate request otherwise.
+- **Old output is cleared from a warm cache only when that pays.** A clear rewrites everything after it, so it now goes
+  ahead when what it frees over the next forty calls is worth more than the rewrite at the model's own cache prices.
+  When the cache is cold, or the context is close to compaction, it clears as before.
+- **A compaction summary is corrected only when it costs nothing.** After a compaction the summary is sent unchanged, with
+  a note in the part of the request that is not cached saying its "next step" may be out of date. It is rewritten once the
+  cache is cold or another clear is already rewriting that part.
+
+### Opening what the agent read
+
+- **A file's range sits beside its name.** A long command in the same row used to push "whole file · 9 lines" to the far
+  edge or onto a line of its own. Files and commands now size their name columns separately.
+- **Each file of a read that took several is its own line.** It has its own arrow and highlight, and a click opens
+  that file's text under it and folds it again, without touching the others.
+- **An opened file is one colour.** A tab in its text moved the cursor instead of painting, which left a gap between
+  the line numbers and the code; tabs are now spaces, as in every other opened text.
+- **A search's sources keep their layout when the list opens.** A long title wraps under its own text, folded and
+  opened alike, so opening adds the remaining sources underneath and nothing already on screen moves. Numbers share one
+  width, so ten or more sources no longer shift sideways. A search saved before full lists were kept can only show the
+  sources that were saved, and says so.
+
 ## v3.4.1 (2026-10-18): a faster start, tools that fail less, and a cache that is not rewritten for nothing
 
 Mindweave now loads about a third faster, and the tools the agent uses fail less often: a call with broken

@@ -143,10 +143,39 @@ export function formatRippleNote(
   );
 }
 
+/** Source files a language server could check, so an edit to one that nothing checked is worth saying so about.
+ *  Prose, data and markup are not here: nothing is expected to check those, and a note on every one would be noise. */
+const CHECKABLE = /\.(?:tsx?|jsx?|mjs|cjs|py|go|rs|java|kt|c|h|cc|cpp|hpp|cs|rb|php|swift|dart|lua|zig)$/i;
+
+/** The extensions already reported as unchecked, per session: said once, not after every edit. */
+const toldUnchecked = new WeakMap<ToolContext, Set<string>>();
+
+/**
+ * The note for edited source files that no language server covers, or "" when there is none to give.
+ *
+ * Silence after an edit is two different things: the check ran and found nothing, or no check ran at all. The
+ * first cannot be claimed as an all-clear, but the second can be stated, and a model that is not told it
+ * believes nothing is watching its edits or, worse, that something is and found them fine.
+ */
+export function uncheckedNote(ctx: ToolContext, edited: readonly string[], label: (abs: string) => string): string {
+  const told = toldUnchecked.get(ctx) ?? new Set<string>();
+  const fresh = edited.filter((abs) => CHECKABLE.test(abs) && !chassisForPath(ctx, abs) && !told.has(abs.slice(abs.lastIndexOf(".")).toLowerCase()));
+  if (fresh.length === 0) return "";
+  for (const abs of fresh) told.add(abs.slice(abs.lastIndexOf(".")).toLowerCase());
+  toldUnchecked.set(ctx, told);
+  const names = fresh.slice(0, 3).map(label).join(", ");
+  return (
+    `[Automatic check after your edit: no language server covers ${names}${fresh.length > 3 ? " and others" : ""}, ` +
+    `so nothing was checked and no errors were looked for. Run the project's own build, type check or tests to find out ` +
+    `whether the edit broke anything. This is said once per file type in a session.]`
+  );
+}
+
 /**
  * The whole pass: what did this round edit, what does that reach, and is anything broken.
  *
- * Returns "" whenever there is nothing to say — no edits, no chassis, no diagnostics.
+ * Returns "" whenever there is nothing to say — no edits, no diagnostics, and no edited source file left unchecked
+ * for want of a server that has not been mentioned yet.
  * Never throws: this runs inside the turn loop and a failure here must cost the user
  * nothing more than the check itself.
  */
@@ -171,7 +200,8 @@ export async function rippleCheck(
         }
       }),
     );
-    return formatRippleNote(all, new Set(edited), (abs) => relativize(ctx, abs));
+    const label = (abs: string) => relativize(ctx, abs);
+    return formatRippleNote(all, new Set(edited), label) || uncheckedNote(ctx, edited, label);
   } catch {
     return "";
   }

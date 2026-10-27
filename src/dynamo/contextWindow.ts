@@ -334,44 +334,31 @@ export const COLD_COMPACT_MIN_IDLE_MS = 15 * 60 * 1000;
 export const COLD_COMPACT_COOLDOWN_MS = 30 * 60 * 1000;
 
 /**
- * Fraction of the prefix a clear must reclaim to pay for the cache rewrite it causes.
+ * How many further calls a clear is assumed to keep paying off for.
  *
- * Clearing an old tool body is not free on a warm cache: it changes the cached prefix,
- * so the next request rewrites what remains at 1.25x instead of reading it at 0.1x.
- * Writing out the break-even, with P the prefix and R what the clear reclaims:
+ * Clearing an old tool body or image is not free on a warm cache: the provider holds the
+ * conversation as a prefix, a change inside it invalidates everything after the change, and
+ * the next request writes that tail again at the full input price (plus a write premium, where
+ * the provider charges one) where it would have read it at the cached price. Written out, with
+ * T the tokens from the first changed message to the end, R the tokens the clear reclaims, h the
+ * cached read price and w the write price:
  *
- *     keep for N steps   = N * 0.1P
- *     clear, then N-1    = 1.25(P-R) + (N-1) * 0.1(P-R)
- *     break-even at       N = 11.5 * (P - R) / R
+ *     paid once, on the next call   = T * (w - h)
+ *     saved on every later call     = R * h
+ *     worth it when                   R * h * horizon >= T * (w - h)
  *
- * which is brutal at small R: reclaiming 10% of a 40K prefix needs ~103 further steps
- * to pay off, 50% needs ~12, and 75% needs ~4. A turn does not have 103 steps. So a
- * clear that frees a little is not a small win, it is a real loss, and the only clears
- * worth making on a warm cache are the big ones.
+ * The prices decide it, and they differ by an order of magnitude between providers: a cached read
+ * costs 10% of input on one, 2% on another, 20% on a third. At 2% the saving per call is so
+ * small that a clear which rewrites a 25K tail to reclaim 26K needs about 47 further calls to
+ * break even; at 10% the same clear needs about 11. The same clear is right on one provider and
+ * a loss on another, which a fixed fraction of the prefix could not tell apart.
  *
- * 0.35 sits where the break-even (~21 steps) is still optimistic but no longer absurd,
- * and it is deliberately a FRACTION rather than a token count: the thing being paid for
- * is proportional to the prefix, so the threshold has to be too.
- *
- * MEASURED against the derivation above (61 real sessions, 2026-09-16), and it is too
- * pessimistic. Do not tighten this on the strength of the arithmetic:
- *
- *   - A clear does not rewrite the whole remaining prefix, only what follows the first
- *     cleared result. Real clears cost 6-12K extra uncached tokens on a ~45K prompt,
- *     not the ~43K that `1.25(P-R)` charges.
- *   - Sessions run far past one turn. Clears were followed by 37-82 more calls on
- *     average, so savings keep accruing long after the break-even horizon of one turn.
- *   - The 0.1 / 1.25 ratios are one provider's. DeepSeek reads cache at 2% of input
- *     with no write premium; GLM Flash at 20%.
- *
- * Net of cache rewrites AND the re-reads clearing causes (about 18% of file reads re-read
- * something that had been cleared), clearing saved 4.3% of spend on DeepSeek V4 Flash and
- * 10.3% on GLM 5.3 Flash, and 28 of 32 individual clears paid for themselves, including
- * most below this threshold. The policy is left as is because it is already net positive
- * and loosening it trades a few percent of saving for more re-reads, which is not yet
- * measured.
+ * A long run is 30 to 80 calls after a clear, so 40 is where it is still a fair bet. Past it
+ * the clear is declined and the context is allowed to fill: carrying the extra tokens is a
+ * cached read, cheap, and the clear is made anyway when the cache goes cold or the autocompact
+ * bar is close, both of which cost nothing extra.
  */
-const CLEAR_WORTH_FRACTION = 0.35;
+export const CLEAR_HORIZON_STEPS = 40;
 
 /**
  * Whether a proposed microcompaction should actually be committed.
@@ -382,8 +369,8 @@ const CLEAR_WORTH_FRACTION = 0.35;
  *    the rewrite is free. Any reclaim at all is profit.
  *  - `urgent`: context is close enough to the autocompact bar that FITTING matters more
  *    than cost. A request that does not fit cannot be sent at any price.
- *  - otherwise: only when the clear reclaims enough of the prefix to out-earn the cache
- *    write it forces, per the arithmetic above.
+ *  - otherwise: only when what it saves over the next calls out-earns the cache rewrite
+ *    it forces, at this provider's prices (see `CLEAR_HORIZON_STEPS`).
  *
  * Pure, because the alternative is discovering the economics were wrong from a bill.
  */
@@ -396,6 +383,16 @@ export function clearIsWorthIt(opts: {
   cold: boolean;
   /** The autocompact bar — past it, a summarization pass happens anyway. */
   autoBar: number;
+  /**
+   * Tokens from the first message the clear changes to the end of the conversation, as they
+   * would be after it: everything the provider has to write again. A clear of something old
+   * rewrites nearly all of it; one near the end rewrites almost nothing.
+   */
+  rewritten: number;
+  /** What the model's provider charges, per million tokens. */
+  price: { cacheHit: number; cacheMiss: number; cacheWrite?: number | null };
+  /** Calls the saving is assumed to last for. Defaults to `CLEAR_HORIZON_STEPS`. */
+  horizon?: number;
 }): boolean {
   const reclaimed = opts.before - opts.after;
   if (reclaimed <= 0) return false;
@@ -403,5 +400,9 @@ export function clearIsWorthIt(opts: {
   // Close to the bar, fitting beats saving: clearing here is what defers a far more
   // expensive summarization, and a prompt that overflows is not a cost question.
   if (opts.before >= opts.autoBar * 0.9) return true;
-  return reclaimed >= opts.before * CLEAR_WORTH_FRACTION;
+  const write = opts.price.cacheWrite ?? opts.price.cacheMiss;
+  const paidOnce = opts.rewritten * Math.max(0, write - opts.price.cacheHit);
+  // A provider that charges the same for a hit as for a miss has nothing to lose by a rewrite.
+  if (paidOnce <= 0) return true;
+  return reclaimed * opts.price.cacheHit * (opts.horizon ?? CLEAR_HORIZON_STEPS) >= paidOnce;
 }

@@ -127,18 +127,28 @@ function collectEnvironment(cwd: string): Environment {
 }
 
 async function collectGit(cwd: string): Promise<GitSnapshot | null> {
-  const inside = (await runGit(["rev-parse", "--is-inside-work-tree"], cwd))?.trim();
-  if (inside !== "true") return null;
+  // Every git process costs a spawn, so the ones that cannot run a program are started together: whether this is a
+  // repository, whether its own config defines filters, the branch and the log. Only `status` waits for the answers.
+  const insideP = runGit(["rev-parse", "--is-inside-work-tree"], cwd);
+  const filtersP = repoDefinesFilters(cwd);
+  const branchP = runGit(["rev-parse", "--abbrev-ref", "HEAD"], cwd);
+  const logP = runGit(["log", "--oneline", "--no-show-signature", "-n", String(GIT_LOG_COUNT)], cwd);
+  const inside = (await insideP)?.trim();
+  if (inside !== "true") {
+    await Promise.allSettled([filtersP, branchP, logP]);
+    return null;
+  }
 
   // `status` runs the repository's content filters, and a filter is a program named in
   // the repository's own config, which arrives with any folder that is copied together
   // with its .git directory. Filters cannot be switched off from the command line, so
-  // when the repository defines one, status is left out of the snapshot.
-  const filters = await repoDefinesFilters(cwd);
+  // when the repository defines one, status is left out of the snapshot, and it is not
+  // even started until that is known.
+  const filters = await filtersP;
   const [branchRaw, statusRaw, logRaw] = await Promise.all([
-    runGit(["rev-parse", "--abbrev-ref", "HEAD"], cwd),
+    branchP,
     filters ? Promise.resolve(null) : runGit(["status", "--short", "--ignore-submodules=all"], cwd),
-    runGit(["log", "--oneline", "--no-show-signature", "-n", String(GIT_LOG_COUNT)], cwd),
+    logP,
   ]);
 
   const branch = branchRaw?.trim() || "(detached)";
@@ -439,6 +449,26 @@ export function renderProjectContext(pc: ProjectContext): string {
 /** Convenience: collect + render in one call. "" when there's nothing useful. */
 export async function projectContextText(cwd: string): Promise<string> {
   return renderProjectContext(await collectProjectContext(cwd));
+}
+
+/** How long a project's context is reused when a saved session is reopened. */
+export const RECENT_CONTEXT_MS = 20_000;
+const recentContext = new Map<string, { at: number; text: Promise<string> }>();
+
+/**
+ * The same text, reused for a few seconds per project. Reopening a saved session collects the project's snapshot again,
+ * and its slowest part is starting several `git` processes: about a tenth of a second spent on each switch between
+ * the sessions of one project, for an answer that has not changed. A brand-new session always collects afresh
+ * (`projectContextText`), since the person may have just changed the project.
+ */
+export function projectContextTextRecent(cwd: string, now: number = Date.now()): Promise<string> {
+  const hit = recentContext.get(cwd);
+  if (hit && now - hit.at < RECENT_CONTEXT_MS) return hit.text;
+  const text = projectContextText(cwd);
+  recentContext.set(cwd, { at: now, text });
+  // A failed collection must not be remembered.
+  text.catch(() => recentContext.delete(cwd));
+  return text;
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────

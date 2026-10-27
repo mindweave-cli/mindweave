@@ -307,9 +307,11 @@ function BranchLines({
         }
         const style = errored ? { color: BAD } : diff ? diffStyle(line) : undefined;
         const dim = !errored && style === undefined;
-        // An opened numbered list (a search's sources): a title that does not fit carries on
-        // UNDER ITS TEXT, not under its number, so the numbers stay a column of their own.
-        const hang = wrap && !diff ? /^(\s*\d+\.\s)(.*)$/.exec(line) : null;
+        // A numbered list (a search's sources): a title that does not fit carries on UNDER ITS TEXT,
+        // not under its number, so the numbers stay a column of their own. It is laid out this way
+        // folded as well as opened, and nothing is cut, so opening the list adds sources underneath
+        // and never reflows the ones already on screen.
+        const hang = !diff ? /^(\s*\d+\.\s)(.*)$/.exec(line) : null;
         if (hang) {
           return (
             <Box key={i} flexDirection="row" width={columns}>

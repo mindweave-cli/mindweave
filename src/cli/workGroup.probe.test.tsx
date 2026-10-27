@@ -550,3 +550,57 @@ test("with two reads, each line waits for its own click", async () => {
   const one = await paint(items.map((it, i) => (i === 1 ? { ...it, open: true } : it)), { open: true });
   assert.ok(one.includes("other") && !one.includes("hello"), one);
 });
+
+test("a long command in the row does not push a read's range off its path", async () => {
+  const long = "git -C C:/Projects/app/web log --oneline --decorate --graph --all --since=2.weeks --author=someone";
+  const s = run([start("a", long), end("a"), ...read("r", "C:/Projects/app/.mindweave/mcp.json", "read x (9 lines)"), { type: "endTurn" }]);
+  const out = new FakeStdout();
+  out.columns = 100;
+  const app = render(<WorkGroup id={5} items={groups(s)[0]!.items} open columns={100} />, { stdout: out as unknown as NodeJS.WriteStream, stdin: fakeStdin(), debug: true, exitOnCtrlC: false, patchConsole: false });
+  const until = Date.now() + 5000;
+  while (out.frames.length === 0 && Date.now() < until) await new Promise((r) => setTimeout(r, 10));
+  const text = out.frames[out.frames.length - 1]!.replace(ANSI, "");
+  app.unmount();
+  const line = text.split("\n").find((l) => l.includes("mcp.json"))!;
+  assert.ok(line.includes("whole file · 9 lines"), "the range is on the path's own line: " + text);
+});
+
+test("each file of a read that took several opens on its own, with its own text", async () => {
+  const { fileRowAt, fileTextLines, FILE_HIT_BASE } = await import("./workLines.js");
+  const detail = "===== a.ts =====\n  1\talpha\n\n===== b.ts =====\n  1\tbeta";
+  let s = run([...read("r", "a.ts, b.ts", "read 2 files", 2), { type: "itemDetail", toolId: "r", detail }, { type: "endTurn" }]);
+  const g = () => groups(s)[0]!;
+  assert.deepEqual(fileRowAt(g().items, 1), { item: 0, file: 1 });
+  assert.equal(fileRowAt(g().items, 2), undefined);
+  assert.deepEqual(fileTextLines(g().items[0]!, 1), ["  1    beta"]);
+  assert.ok(FILE_HIT_BASE > 100);
+
+  s = run([{ type: "toggleFile", id: g().id, item: 0, file: 1 }], s);
+  const one = await paint(g().items, { open: true });
+  assert.ok(one.includes("beta") && !one.includes("alpha"), "only the file that was clicked: " + one);
+  s = run([{ type: "toggleFile", id: g().id, item: 0, file: 0 }], s);
+  const both = await paint(g().items, { open: true });
+  assert.ok(both.includes("beta") && both.includes("alpha"), both);
+  s = run([{ type: "toggleFile", id: g().id, item: 0, file: 1 }], s);
+  const first = await paint(g().items, { open: true });
+  assert.ok(first.includes("alpha") && !first.includes("beta"), "and it folds on its own: " + first);
+});
+
+test("an opened file never carries a tab into the band: a tab leaves a gap in its colour", async () => {
+  const detail = "===== a.ts =====\n  1\t# one\n\n===== b.ts =====\n  1\ttwo";
+  const s = run([...read("r", "a.ts, b.ts", "read 2 files", 2), { type: "itemDetail", toolId: "r", detail }, { type: "endTurn" }]);
+  const items = groups(s)[0]!.items.map((it) => ({ ...it, openFiles: [0, 1] }));
+  const text = await paint(items, { open: true });
+  assert.ok(!text.includes(String.fromCharCode(9)), "no tab on screen");
+  assert.ok(text.includes("1    # one") && text.includes("1    two"), text);
+});
+
+test("a file's text sits under its own line, not under the other file's", async () => {
+  const detail = "===== a.ts =====\n  1\thello\n\n===== b.ts =====\n  1\tother";
+  const s = run([...read("r", "a.ts, b.ts", "read 2 files", 2), { type: "itemDetail", toolId: "r", detail }, { type: "endTurn" }]);
+  const items = groups(s)[0]!.items.map((it) => ({ ...it, openFiles: [0] }));
+  const rows = (await paint(items, { open: true })).split("\n");
+  const at = (w: string) => rows.findIndex((r) => r.includes(w));
+  assert.ok(at("a.ts") < at("hello") && at("hello") < at("b.ts"), rows.join("\n"));
+  assert.equal(at("other"), -1);
+});

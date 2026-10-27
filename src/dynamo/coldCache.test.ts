@@ -147,44 +147,71 @@ test("the chat line says why, for an idle break and for a model switch", () => {
 /**
  * clearIsWorthIt — the cache economics of a microcompaction.
  *
- * Clearing rewrites the cached prefix, so it is only free when there is no cache to
- * lose. On a warm one the break-even is N = 11.5 * (P - R) / R steps, which is brutal
- * at small R: reclaiming a tenth of a 40K prefix needs ~103 further steps to pay off.
- * These pin the three ways a clear earns its keep.
+ * Clearing rewrites the cached prefix from the first message it changes, so it is only free
+ * when there is no cache to lose. On a warm one it pays when what it saves on the next calls, at
+ * the cached read price, is more than the rewrite costs at the full one: the prices decide, and
+ * they differ by an order of magnitude between providers. These pin the ways a clear earns its keep.
  */
 import { clearIsWorthIt } from "./contextWindow.js";
 
 const AUTO_BAR = 100_000;
+/** A cached read at 10% of input and a 25% write premium. */
+const READS_AT_10 = { cacheHit: 0.1, cacheMiss: 1, cacheWrite: 1.25 };
+/** A cached read at 2% of input, no write premium. */
+const READS_AT_2 = { cacheHit: 0.02, cacheMiss: 1 };
 
 test("a clear that reclaims almost nothing is refused on a warm cache", () => {
   // The defect: fire on the bar, clear 2K out of 40K, and pay to rewrite the other 38K
   // at 1.25x. That is a loss dressed as an optimization.
-  const worth = clearIsWorthIt({ before: 40_000, after: 38_000, cold: false, autoBar: AUTO_BAR });
+  const worth = clearIsWorthIt({ before: 40_000, after: 38_000, cold: false, autoBar: AUTO_BAR, rewritten: 38_000, price: READS_AT_10 });
   assert.equal(worth, false);
 });
 
 test("a clear that reclaims a large fraction is taken", () => {
-  const worth = clearIsWorthIt({ before: 40_000, after: 20_000, cold: false, autoBar: AUTO_BAR });
+  const worth = clearIsWorthIt({ before: 40_000, after: 20_000, cold: false, autoBar: AUTO_BAR, rewritten: 20_000, price: READS_AT_10 });
   assert.equal(worth, true);
 });
 
 test("any reclaim is worth it once the cache is cold", () => {
   // Nothing left to invalidate, so even a small clear is pure profit — and those tokens
   // never have to be paid for again.
-  const worth = clearIsWorthIt({ before: 40_000, after: 39_000, cold: true, autoBar: AUTO_BAR });
+  const worth = clearIsWorthIt({ before: 40_000, after: 39_000, cold: true, autoBar: AUTO_BAR, rewritten: 39_000, price: READS_AT_2 });
   assert.equal(worth, true);
 });
 
 test("near the autocompact bar, fitting beats saving", () => {
   // A request that does not fit cannot be sent at any price, and clearing here is what
   // defers a far more expensive summarization pass.
-  const worth = clearIsWorthIt({ before: 95_000, after: 94_000, cold: false, autoBar: AUTO_BAR });
+  const worth = clearIsWorthIt({ before: 95_000, after: 94_000, cold: false, autoBar: AUTO_BAR, rewritten: 94_000, price: READS_AT_2 });
   assert.equal(worth, true);
 });
 
 test("a clear that reclaims nothing is never taken", () => {
-  assert.equal(clearIsWorthIt({ before: 40_000, after: 40_000, cold: true, autoBar: AUTO_BAR }), false);
-  assert.equal(clearIsWorthIt({ before: 40_000, after: 41_000, cold: true, autoBar: AUTO_BAR }), false);
+  assert.equal(clearIsWorthIt({ before: 40_000, after: 40_000, cold: true, autoBar: AUTO_BAR, rewritten: 0, price: READS_AT_2 }), false);
+  assert.equal(clearIsWorthIt({ before: 40_000, after: 41_000, cold: true, autoBar: AUTO_BAR, rewritten: 0, price: READS_AT_2 }), false);
+});
+
+test("the same clear is right where a cached read is dear and wrong where it is nearly free", () => {
+  // A 74K prompt: clearing old material reclaims 26K and makes the provider write the 25K after the
+  // first change again. At a 10% read price that is about 11 calls to break even; at 2% it is about 47,
+  // longer than a run is assumed to last. A fixed fraction of the prefix cannot tell these apart.
+  const clear = { before: 74_000, after: 48_000, cold: false, autoBar: 150_000, rewritten: 25_000 };
+  assert.equal(clearIsWorthIt({ ...clear, price: READS_AT_10 }), true);
+  assert.equal(clearIsWorthIt({ ...clear, price: READS_AT_2 }), false);
+});
+
+test("what follows the first change is what is paid for, not the whole prefix", () => {
+  // The same reclaim, but near the end of the conversation: almost nothing is written again.
+  const clear = { before: 74_000, after: 70_000, cold: false, autoBar: 150_000, price: READS_AT_2 };
+  assert.equal(clearIsWorthIt({ ...clear, rewritten: 70_000 }), false, "a clear of something old rewrites everything after it");
+  assert.equal(clearIsWorthIt({ ...clear, rewritten: 1_000 }), true, "one at the very end rewrites next to nothing");
+});
+
+test("a provider that charges the same for a hit as a miss has nothing to lose by a clear", () => {
+  assert.equal(
+    clearIsWorthIt({ before: 40_000, after: 39_000, cold: false, autoBar: AUTO_BAR, rewritten: 39_000, price: { cacheHit: 1, cacheMiss: 1 } }),
+    true,
+  );
 });
 
 test("the assumed cache lifetime errs LONG, never short", () => {

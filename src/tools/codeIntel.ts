@@ -18,6 +18,22 @@ import { isSupported } from "../alternator/chassis/treesitter.js";
 import { isMarkupSupported } from "../alternator/chassis/markup.js";
 import type { Confidence, DirectorySummary, OutlineEntry } from "../alternator/chassis/types.js";
 import { fail, failQuietly } from "./results.js";
+import { DOC_MAX_BYTES, docOutline, isDocFile } from "./docOutline.js";
+
+/** Documents and data files outlined when a folder is: how many, and how many entries each. */
+const DIR_DOC_CAP = 12;
+const DIR_DOC_ENTRIES = 12;
+
+/** The outline lines of one document or data file, or null when it is not one, is too large, or cannot be read. */
+async function docLines(abs: string, limit?: number): Promise<string[] | null> {
+  if (!isDocFile(abs)) return null;
+  try {
+    if ((await fs.stat(abs)).size > DOC_MAX_BYTES) return null;
+    return docOutline(abs, await fs.readFile(abs, "utf8"), limit);
+  } catch {
+    return null;
+  }
+}
 
 const DIR_FILE_CAP = 40;
 const REF_CAP = 100;
@@ -49,9 +65,8 @@ const outlineDef: Tool = {
     "unfamiliar area, and it costs one call. " +
     `A directory outline covers at most ${DIR_FILE_CAP} files, so for anything larger ` +
     "treat it as a sample and narrow to a subfolder. Files with no symbols are left out. " +
-    "Works on HTML and CSS too: it lists a page's sections and ids, and a stylesheet's " +
-    "selectors, with line numbers, so you can navigate a big page instead of reading it " +
-    "top to bottom.",
+    "Works on HTML, CSS, markdown, JSON, YAML, TOML and CSV too: sections, selectors, " +
+    "headings and keys with line numbers, so you can navigate a big file without reading it.",
   parameters: {
     type: "object",
     additionalProperties: false,
@@ -73,11 +88,15 @@ const outlineDef: Tool = {
     }
 
     const groups: { file: string; entries: readonly OutlineEntry[] }[] = [];
+    const docGroups: { file: string; lines: string[] }[] = [];
+    let moreDocs = 0;
     let rollup = "";
     let dirTruncated: { shown: number; total: number } | null = null;
     if (stat.isFile()) {
       const entries = await (chassisForPath(ctx, abs)?.outline(abs) ?? Promise.resolve([]));
-      groups.push({ file: abs, entries });
+      const lines = entries.length === 0 ? await docLines(abs) : null;
+      if (lines) docGroups.push({ file: abs, lines });
+      else groups.push({ file: abs, entries });
     } else {
       // A directory: lead with a folder rollup (counts, central symbols, deps).
       const summary = await chassisForPath(ctx, abs)?.directorySummary(abs);
@@ -102,14 +121,19 @@ const outlineDef: Tool = {
         const entries = (await chassisForPath(ctx, f.abs)?.outline(f.abs)) ?? [];
         if (entries.length) groups.push({ file: f.abs, entries });
       }
+      // The folder's documents and data files after its code: headings and keys, a few per file.
+      const docs = files.filter((f) => !excludedFromSearch(f.abs) && isDocFile(f.abs));
+      for (const f of docs.slice(0, DIR_DOC_CAP)) {
+        const lines = await docLines(f.abs, DIR_DOC_ENTRIES);
+        if (lines) docGroups.push({ file: f.abs, lines });
+      }
+      moreDocs = Math.max(0, docs.length - DIR_DOC_CAP);
     }
 
-    const outlineBody = groups
-      .map((g) => {
-        const header = relativize(ctx, g.file);
-        return `${header}\n${renderOutlineEntries(g.entries).join("\n")}`;
-      })
-      .join("\n\n");
+    const outlineBody = [
+      ...groups.map((g) => `${relativize(ctx, g.file)}\n${renderOutlineEntries(g.entries).join("\n")}`),
+      ...docGroups.map((g) => `${relativize(ctx, g.file)}\n${g.lines.join("\n")}`),
+    ].join("\n\n") + (moreDocs ? `\n\n(${moreDocs} more document and data files not outlined)` : "");
     const truncNote = dirTruncated
       ? `\n\n(outlined ${dirTruncated.shown} of ${dirTruncated.total} files — this is a ` +
         `sample, not the whole folder; narrow to a subfolder to see the rest)`

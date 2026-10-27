@@ -11,7 +11,8 @@ import { join } from "node:path";
 import type { Tool, ToolContext, ToolResult } from "./types.js";
 import { relativize, searchUnits, type SearchUnit } from "./paths.js";
 import { DEFAULT_IGNORES, globToRegExp, walkFiles } from "./walk.js";
-import { SEARCH_EXCLUDE_GLOBS, excludedFromSearch } from "./guard.js";
+import { SEARCH_EXCLUDE_GLOBS, excludedFromSearch, guardedPathReason } from "./guard.js";
+import { noFiles } from "./emptyResult.js";
 import { ripgrepAvailable, runRipgrep } from "./ripgrep.js";
 import { fail, failQuietly } from "./results.js";
 
@@ -82,11 +83,18 @@ export const globDef: Tool = {
         if (rawPath) return fail(`directory not found: ${rawPath}`);
         continue; // a missing root in a multi-root sweep is skipped, not fatal
       }
+      // A directory named outright goes through the same guard grep applies. Without it the walk below
+      // leaves a protected folder's contents out and answers "No files found.", which reads as an empty
+      // folder where grep says it refuses.
+      if (rawPath) {
+        const blocked = await guardedPathReason(dir);
+        if (blocked) return fail(`Refusing to search ${rawPath}: it is ${blocked}.`);
+      }
       matched.push(...(haveRg ? await globViaRipgrep(pattern, unit, ctx) : await globViaWalk(pattern, unit, ctx)));
     }
 
     if (matched.length === 0) {
-      return { output: "No files found.", summary: `glob ${pattern} — no matches` };
+      return { output: noFiles(pattern, rawPath), summary: `glob ${pattern} — no matches` };
     }
 
     const truncated = matched.length > MAX_RESULTS;
