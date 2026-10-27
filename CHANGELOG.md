@@ -2,7 +2,7 @@
 
 Notable changes to Mindweave. Dates are release dates.
 
-## Unreleased: run it from a script, credit on the agent's commits, a cache the notes no longer break
+## v3.4.2 (2026-10-27): run it from a script, credit on the agent's commits, a cache the notes no longer break
 
 - **Commits the agent makes can carry one line of credit.** The first time the agent runs `git commit` in a project it
   asks once whether to add `Co-authored-by: mwcode <...>` to the message: yes for this project, yes for all projects,
@@ -102,6 +102,15 @@ provider still held the old one, and one clear of old output while the cache was
   opened alike, so opening adds the remaining sources underneath and nothing already on screen moves. Numbers share one
   width, so ten or more sources no longer shift sideways. A search saved before full lists were kept can only show the
   sources that were saved, and says so.
+
+### Help and documentation that agree
+
+- **`mindweave --help` no longer says "Windows only".** It says the program runs on Windows, macOS (Apple silicon) and
+  Linux, needs Node.js 24 or newer, and that the first launch asks for an API key and saves it in `~/.mindweave/.env`.
+- **The contributing guide matches what ships.** Ollama is listed as working (it was called a stub), the provider
+  count is sixteen, and the macOS and Linux item no longer describes a hang that was fixed.
+- **The README explains the two names:** Mindweave is the program and the npm package, mwcode is the desktop app with
+  its own repository. It also says what the app-testing tool can and cannot drive on each system.
 
 ## v3.4.1 (2026-10-18): a faster start, tools that fail less, and a cache that is not rewritten for nothing
 

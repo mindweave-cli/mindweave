@@ -67,7 +67,8 @@ export function helpText(): string {
     "stops that. It is safe to run at any time.",
     "",
     "Setup:",
-    "  Put your model API key in ~/.mindweave/.env, for example:",
+    "  Needs Node.js 24 or newer. On first launch it asks for a model API key and",
+    "  saves it in ~/.mindweave/.env. To set one up by hand, put it there:",
     "    DEEPSEEK_API_KEY=your-key-here",
     "    ANTHROPIC_API_KEY=your-key-here",
     "  A project .env or an exported shell variable works too.",
@@ -75,7 +76,7 @@ export function helpText(): string {
     "Once running, type /help for the commands available in a session,",
     "and press shift+tab to change how much rein the agent has.",
     "",
-    "Windows only for now. Docs and issues:",
+    "Runs on Windows, macOS (Apple silicon) and Linux. Docs and issues:",
     "  https://github.com/mindweave-cli/Mindweave",
   ].join("\n");
 }

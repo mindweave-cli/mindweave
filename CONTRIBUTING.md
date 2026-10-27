@@ -39,11 +39,12 @@ If you have hands-on experience optimizing for a specific backend, open an issue
 | Provider | Driver Lead | Status |
 | --- | --- | --- |
 | DeepSeek | [Niman](https://github.com/nimanni) (maintainer) | Reference driver, kept by the maintainer |
-| Anthropic, OpenAI, Gemini, xAI, Mistral, Groq, Cerebras, Qwen, Kimi, GLM, Meta, MiniMax | Unclaimed | **Shipped and working. Open to a lead** |
-| Ollama / local models | Unclaimed | **Not built.** A stub waiting for someone |
-| OpenRouter, anything else | Unclaimed | Open |
+| Anthropic, OpenAI, Gemini, xAI, Mistral, Groq, Cerebras, Qwen, Kimi, GLM, Meta, MiniMax, Tencent | Unclaimed | **Shipped and working. Open to a lead** |
+| OpenRouter | Unclaimed | **Shipped and working.** Uses OpenRouter's live catalogue. Open to a lead |
+| Ollama / local models | Unclaimed | **Shipped and working.** Lists the models you have pulled, no key. Open to a lead |
+| Any other backend | Unclaimed | Open |
 
-**Thirteen providers ship today and every one except DeepSeek is free to claim.** DeepSeek is the reference driver and the maintainer keeps it, because a multi-provider architecture needs one driver that is definitively correct to measure the others against. The rest already exist and work; none has a dedicated lead, so any of them is available to anyone who wants to own it properly. Ollama is the one that is genuinely unwritten.
+**Sixteen providers ship today (fourteen cloud providers, OpenRouter and Ollama) and every one except DeepSeek is free to claim.** DeepSeek is the reference driver and the maintainer keeps it, because a multi-provider architecture needs one driver that is definitively correct to measure the others against. The rest already exist and work; none has a dedicated lead, so any of them is available to anyone who wants to own it properly. Other local servers (LM Studio, llama.cpp) are not covered yet.
 
 To claim one, open an issue saying which provider and what you have actually run it against. Prior benchmarking or production experience with the backend matters far more than TypeScript polish; the wire code is the easy part.
 
@@ -92,14 +93,13 @@ of what turns up only appears when the thing is genuinely run.
 These are real, currently unowned, and roughly ordered by how much they would help. Say so
 in Discussions before starting so work does not collide.
 
-* **Make macOS or Linux work.** Windows is the supported platform today. The suite was
-  run on both in CI and it HANGS rather than failing: the test step passed fifteen
-  minutes with no end, against three minutes for the same suite on Windows. So this is
-  not a matter of confirming it works, there is a real defect to find, and the hang
-  points at process handling that has only ever been exercised on Windows (process
-  groups, signals, and how a spawned child is killed). Those CI jobs were removed until
-  someone owns this, and they should come back in the same change that fixes it. Either
-  platform is worth taking on its own.
+* **Try it on a real Mac or Linux desktop.** The whole suite runs on every change on
+  Linux and on an Apple silicon Mac, and passes. What it cannot tell is how the program
+  looks and feels in Terminal.app, iTerm2, GNOME Terminal or Konsole, or whether anything
+  differs on an Intel Mac. Driving another program's window and taking window screenshots
+  work on Windows only; doing it elsewhere needs accessibility and screen-recording
+  permissions and a helper program on macOS, and depends on the display server on Linux.
+  [KNOWN-ISSUES.md](KNOWN-ISSUES.md) has the detail.
 * **Reduce what the OCaml grammar costs.** Loading it can exhaust V8 when the machine is
   already under memory pressure, which showed up for a long time as an unexplained
   intermittent test failure. Runs now get heap headroom and the grammar-heavy files run
@@ -115,7 +115,7 @@ in Discussions before starting so work does not collide.
   unchanged. Partly model behaviour, partly prompt work.
   `scripts/narration.mjs` measures it against a real session, so a change here can be
   shown to have worked rather than argued about.
-* **A model driver.** Ollama is a stub and nothing else is written for local models. Twelve shipped providers have no dedicated lead either. See the table above.
+* **A model driver.** Local models work through Ollama only; other local servers (LM Studio, llama.cpp) have no driver. Fifteen shipped providers have no dedicated lead either. See the table above.
 
 Known MCP gaps, deliberately not being worked on right now:
 

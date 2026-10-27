@@ -21,8 +21,9 @@ ever go to the model provider you picked.
 Prompts are kept thin on purpose, so the context goes on your code rather than on
 scaffolding.
 
-Prefer a window to a terminal? [mwcode](https://github.com/mindweave-cli/mwcode) is the
-desktop app, built on the same engine, for Windows, macOS and Linux.
+**Names.** Mindweave is the program and the name of this repository and of the npm package (`mindweave`, or `mw` for
+short). [mwcode](https://github.com/mindweave-cli/mwcode) is the desktop app: a window around the same engine, for
+Windows, macOS and Linux, with its own repository and its own download files. The two share sessions and settings.
 
 ## Install
 
@@ -54,7 +55,10 @@ npm link
   Qwen, Kimi, GLM, Meta, MiniMax, Tencent, OpenRouter, and local models through Ollama
   with no key at all. [PROVIDERS.md](src/drivers/PROVIDERS.md)
 - **Real tools** — file reads and edits, search, a shell with background jobs,
-  sub-agents, web search, and a tool that tests your app by using it.
+  sub-agents, web search, and a tool that tests your app by using it: it opens a web page or
+  dev server in a browser, clicks through it and looks at the result. On Windows it can also
+  drive a desktop window and take a screenshot of that one window, never the whole screen. It
+  asks first unless you chose auto-accept.
 - **Code intelligence** — tree-sitter and language servers index the repo in the
   background, at no token cost, and every edit comes back with that file's errors.
 - **Goals that run on their own** — `/marathon` takes a goal and keeps going until it is

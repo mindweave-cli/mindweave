@@ -6,7 +6,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { disposeSession, loadSession, previewSession, replayHistory, startSession } from "./turnRunner.js";
@@ -14,7 +14,9 @@ import { saveSession } from "../memory/store.js";
 import type { Entry } from "../memory/types.js";
 
 async function savedSession(): Promise<{ cwd: string; id: string }> {
-  const cwd = mkdtempSync(join(tmpdir(), "mindweave-preview-"));
+  // The folder as the filesystem names it: a session is stored under its canonical root, and a temp folder is reached through a
+  // symlink on macOS and an 8.3 short name on a Windows runner, so the spelling tmpdir() returns would look in another place.
+  const cwd = realpathSync.native(mkdtempSync(join(tmpdir(), "mindweave-preview-")));
   const s = await startSession(cwd);
   const transcript: Entry[] = [
     { role: "user", content: "what is in this folder?" },
@@ -34,11 +36,15 @@ test("a preview draws exactly what the opened session draws", async () => {
   const { cwd, id } = await savedSession();
   const preview = await previewSession(cwd, id);
   const opened = await loadSession(cwd, id);
-  assert.ok(preview && opened);
-  assert.deepEqual(preview, replayHistory(opened));
-  assert.ok(preview.some((e) => e.type === "userMessage" && e.text === "what is in this folder?"));
-  assert.ok(preview.some((e) => e.type === "assistantMessage" && e.text === "Hello."));
-  await disposeSession(opened);
+  try {
+    assert.ok(preview && opened);
+    assert.deepEqual(preview, replayHistory(opened!));
+    assert.ok(preview!.some((e) => e.type === "userMessage" && e.text === "what is in this folder?"));
+    assert.ok(preview!.some((e) => e.type === "assistantMessage" && e.text === "Hello."));
+  } finally {
+    // Released whether the checks held or not: a session left running keeps the test process from ever exiting.
+    if (opened) await disposeSession(opened);
+  }
 });
 
 test("a session that does not exist, or has nothing in it, previews as null", async () => {
