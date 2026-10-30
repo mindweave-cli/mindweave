@@ -10,6 +10,7 @@
  * The one part that is genuinely Qwen's own is how reasoning is expressed — see
  * `reasoningFields` below.
  */
+import { endpointUrl } from "../endpoints.js";
 import type {
   ModelConfig,
   ModelRequest,
@@ -32,7 +33,6 @@ import { BUFFERED_OUTPUT_TOKENS, DEFAULT_MODEL } from "./manifest.js";
  * this is an override rather than a guess: a user on the Mainland account sets
  * `MINDWEAVE_QWEN_URL` and everything else works unchanged.
  */
-const BASE_URL = process.env.MINDWEAVE_QWEN_URL ?? "https://dashscope-intl.aliyuncs.com/compatible-mode/v1";
 
 /**
  * Thinking budgets, in tokens, for each shared effort rung.
@@ -102,7 +102,10 @@ export function extraStop(reason: string): StopReason | undefined {
 /** Everything the shared wire layer needs to talk to Qwen. */
 export const qwenProvider: CompatProvider = {
   label: "Qwen",
-  baseUrl: BASE_URL,
+  // Read on every request, so an address changed in the app counts at once (see endpoints.ts).
+  get baseUrl() {
+    return endpointUrl("qwen");
+  },
   apiKeyEnv: "DASHSCOPE_API_KEY",
   defaultModel: process.env.MINDWEAVE_MODEL ?? DEFAULT_MODEL,
   reasoningFields,

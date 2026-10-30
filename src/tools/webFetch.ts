@@ -29,6 +29,7 @@ import type { Tool, ToolContext, ToolResult, WebDisplay } from "./types.js";
 import { activeDriver } from "../drivers/registry.js";
 import { frameExternal } from "./untrusted.js";
 import { outputDetail } from "./detail.js";
+import { formatElapsed } from "./webSearch.js";
 import { estimateTokens } from "../memory/compaction.js";
 import { fail, failQuietly } from "./results.js";
 
@@ -96,8 +97,10 @@ const webFetchTool: Tool = {
     const blocked = ssrfReason(url);
     if (blocked) return fail(blocked);
 
+    const startedAt = Date.now();
     const fetched = await fetchUrl(url);
     if (typeof fetched === "string") return fail(fetched);
+    const took = Date.now() - startedAt;
 
     const { finalUrl, status, contentType, body } = fetched;
 
@@ -107,7 +110,7 @@ const webFetchTool: Tool = {
           `This is binary/non-text content, which web_fetch can't read. ` +
           `If you need it, download it with run_command.`,
         summary: `fetched ${hostOf(url)} (non-text)`,
-        detail: fetchDetail(finalUrl, status, [`Content-Type: ${contentType || "unknown"} — not text, not read`]),
+        ...fetchRows(finalUrl, status, [`Content-Type: ${contentType || "unknown"} — not text, not read`], byteSize(body), took),
         web: { kind: "fetch", url: String(url), finalUrl, status, bytes: byteSize(body), binary: true },
       };
     }
@@ -144,10 +147,10 @@ const webFetchTool: Tool = {
           ),
           summary: `fetched ${hostOf(url)} (summarized)`,
           web: webFacts(),
-          detail: fetchDetail(finalUrl, status, [
+          ...fetchRows(finalUrl, status, [
             `Condensed against: "${prompt}"`,
             ...(redirected ? [`Redirected from ${hostOf(url)}`] : []),
-          ]),
+          ], byteSize(body), took),
         };
       }
     }
@@ -169,11 +172,11 @@ const webFetchTool: Tool = {
       ),
       summary: `fetched ${hostOf(url)} (${out.length} chars${truncated ? ", truncated" : ""})`,
       web: webFacts(),
-      detail: fetchDetail(finalUrl, status, [
+      ...fetchRows(finalUrl, status, [
         `Extracted ${estimateTokens(out).toLocaleString("en-US")} tokens${truncated ? ", truncated" : ""}`,
         ...(pageTitle(body) ? [`Title: ${pageTitle(body)}`] : []),
         ...(redirected ? [`Redirected from ${hostOf(url)}`] : []),
-      ], byteSize(body)),
+      ], byteSize(body), took),
     };
   },
 };
@@ -184,6 +187,15 @@ const webFetchTool: Tool = {
 export function fetchDetail(finalUrl: string, status: number, extra: string[], bytes?: number): string {
   const lead = bytes === undefined ? `Received ${finalUrl}` : `Received ${formatBytes(bytes)} from ${finalUrl}`;
   return outputDetail([`${lead} (HTTP ${status})`, ...extra].join("\n"));
+}
+
+/**
+ * What a Fetch row shows (pure): ONE line when closed, the way a search row is, with how much came back, the status and how long it
+ * took; what the row used to say in full is behind the click. `detail` and `detailFull` are the closed and the opened text.
+ */
+export function fetchRows(finalUrl: string, status: number, extra: string[], bytes: number, ms: number): { detail: string; detailFull: string } {
+  const closed = [formatBytes(bytes), `HTTP ${status}`, formatElapsed(ms)].join(" · ");
+  return { detail: closed, detailFull: fetchDetail(finalUrl, status, extra, bytes) };
 }
 
 /** Bytes as a person reads them: `412 B`, `24.8 KB`, `1.3 MB`. */

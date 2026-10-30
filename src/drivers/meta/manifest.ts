@@ -7,9 +7,11 @@
  * "OpenAI-compatible" `/chat/completions` surface at `https://api.meta.ai/v1`.
  *
  * Meta retired its hosted Llama API in July 2026; Llama itself is not served here
- * at all any more. Muse Spark, a closed model from the newly formed Meta
- * Superintelligence Labs, is the only thing on this endpoint now. 1.1 is
- * deliberately not offered: 1.3 and 1.2 both supersede it at the same price, the
+ * at all any more. The text models on this endpoint are Muse Spark, a closed model from the newly
+ * formed Meta Superintelligence Labs, and above it Muse Wonder (`muse-wonder-1.0`, released on
+ * 12 October 2026 and still a preview). Muse Wonder Full is subscription-only inside Muse Code, and
+ * Muse Spark Open and Muse Glimmer are open weights with no API id, so none of those three is offered.
+ * 1.1 is deliberately not offered: 1.3 and 1.2 both supersede it at the same price, the
  * same superseded-tier rule every other driver here follows. 1.2 stays because a
  * saved config naming it must keep working and because its rates are unchanged.
  *
@@ -27,13 +29,14 @@
  * below for how that trade-off is worded to the person choosing it.
  *
  * `"max"` — reasoning beyond `xhigh` — exists on the wire too, but Meta's own docs
- * scope it to Standard-tier `muse-spark-1.3` only ("not available on Contributor-tier
- * models"); 1.2 is not mentioned either way, so it is not assumed there. `thinkLevels`
+ * scope it to `muse-wonder-1.0` and Standard-tier `muse-spark-1.3` ("not available on
+ * Contributor-tier models"); 1.2 is not mentioned either way, so it is not assumed there. `thinkLevels`
  * is the one function in this file that reads `model` rather than treating every id
  * the same, purely to gate this one rung.
  */
 import type { DriverManifest, Effort, ModelChoice, ModelConfig, ModelId, ModelPrice, ThinkLevel } from "../types.js";
 
+export const MUSE_WONDER = "muse-wonder-1.0";
 export const MUSE_SPARK_13 = "muse-spark-1.3";
 export const MUSE_SPARK_13_CONTRIBUTOR = "muse-spark-1.3-contributor";
 export const MUSE_SPARK_12 = "muse-spark-1.2";
@@ -58,6 +61,7 @@ export const MODELS: ModelChoice[] = [
     label: "Muse Spark 1.3 (Contributor)",
     description: "~12x cheaper input — in exchange, Meta trains on your prompts and completions",
   },
+  { id: MUSE_WONDER, label: "Muse Wonder", description: "Meta's newest and strongest here, in preview — about 3x the rate of Spark" },
   { id: MUSE_SPARK_12, label: "Muse Spark 1.2", description: "the previous Spark, at the same rate" },
   {
     id: MUSE_SPARK_12_CONTRIBUTOR,
@@ -85,8 +89,8 @@ export function thinkLevels(model: ModelId): ThinkLevel[] {
     { label: "Thinking", description: "think first, then answer", thinking: true, effort: "high" },
     { label: "Deep", description: "deeper reasoning budget", thinking: true, effort: "xhigh" },
   ];
-  if (model === MUSE_SPARK_13) {
-    levels.push({ label: "Maximum", description: "Meta's deepest reasoning tier (Standard 1.3 only)", thinking: true, effort: "max" });
+  if (model === MUSE_SPARK_13 || model === MUSE_WONDER) {
+    levels.push({ label: "Maximum", description: "Meta's deepest reasoning tier (Muse Wonder and Standard 1.3 only)", thinking: true, effort: "max" });
   }
   return levels;
 }
@@ -97,6 +101,8 @@ export function thinkLevels(model: ModelId): ThinkLevel[] {
  * volume deal.
  */
 const PRICES: Record<string, ModelPrice> = {
+  // Muse Wonder: $4 in / $0.20 cached / $20 out, Standard mode only (dev.meta.ai/docs/models, checked 2026-10-28).
+  [MUSE_WONDER]: { cacheHit: 0.2, cacheMiss: 4, output: 20 },
   // 1.3 ships at 1.2's rates, on both tiers.
   [MUSE_SPARK_13]: { cacheHit: 0.15, cacheMiss: 1.25, output: 4.25 },
   [MUSE_SPARK_13_CONTRIBUTOR]: { cacheHit: 0.002, cacheMiss: 0.1, output: 0.2 },

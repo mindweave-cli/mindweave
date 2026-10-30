@@ -36,12 +36,12 @@ const done = (id: string, detail = "whole file · 4 lines\n+ 1 │ a\n+ 2 │ b\
 const all = (s: TranscriptState): Block[] => [...s.committed, ...s.tail];
 const groups = (s: TranscriptState): Edits[] => all(s).filter((b): b is Edits => b.kind === "edits");
 
-test("edits that follow each other join one block, and the header counts the files", () => {
+test("edits that follow each other are held in one block, and the header (kept for later) counts the files", () => {
   const s = run([w("a", "src/a.ts"), done("a"), w("b", "src/b.ts"), done("b"), w("c", "src/c.ts"), done("c"), { type: "endTurn" }]);
   assert.equal(groups(s).length, 1);
   const g = groups(s)[0]!;
   assert.equal(g.items.length, 3);
-  assert.ok(isGrouped(g.items));
+  assert.equal(isGrouped(g.items), false, "the block holds them, but they are drawn as separate rows");
   assert.equal(editsHead(g.items, g.live), "Wrote 3 files");
 });
 
@@ -144,4 +144,11 @@ test("closed, a name's change shows under the row without the list, and the name
   assert.doesNotMatch(text, /src\/main\.ts/, "the other file is not listed");
   const many = Array.from({ length: 12 }, (_, i) => ({ toolId: `m${i}`, name: "Write", arg: `f${i}.ts`, status: "ok" as const, kind: "write" as const }));
   assert.ok(headerLayout(many, 90, false).names.length > 5, "more than five names when there is room");
+});
+
+test("edits are never one row: each stays its own row, however many follow each other", () => {
+  assert.equal(isGrouped([{}]), false);
+  assert.equal(isGrouped([{}, {}]), false);
+  assert.equal(isGrouped([{}, {}, {}]), false);
+  assert.equal(isGrouped(Array.from({ length: 40 }, () => ({}))), false);
 });

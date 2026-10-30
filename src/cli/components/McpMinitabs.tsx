@@ -464,9 +464,11 @@ export function McpMinitabs({
         return;
       }
 
-      if (isEscape) return onClose();
+      // In the add/edit form Esc goes back one step, and from the first step back to the list; on the list it closes the box.
+      if (isEscape && mode.kind !== "wizard") return onClose();
 
       if (mode.kind === "wizard") {
+        if (isEscape) return stepBack(mode);
         const steps = stepsFor(mode.draft.type);
         const kind = steps[mode.step]!;
 
@@ -492,8 +494,14 @@ export function McpMinitabs({
         }
 
         const current = fieldOf(mode.draft, kind);
-        if (current === null) return; // scope and review have nothing to type into
+        if (current === null) {
+          // scope and review have nothing to type into; Backspace still goes back.
+          if (key.backspace || key.delete) return stepBack(mode);
+          return;
+        }
         if (key.backspace || key.delete) {
+          // Nothing left to delete: Backspace goes back a step, like Esc.
+          if (current === "") return stepBack(mode);
           return setMode({ ...mode, draft: withField(mode.draft, kind, current.slice(0, -1)), error: null });
         }
         const typed = key.ctrl || key.meta || key.tab ? "" : stripMouse(input);
@@ -774,7 +782,8 @@ export function McpMinitabs({
     const from = windowStart(anchor, rows.length, win);
     const shown = rows.slice(from, from + win);
     return {
-      height: Math.max(0, shown.length * 2 - 1) + 1,
+      // One row each, close together: the list reads as a list, and the box keeps its size.
+      height: shown.length + 1,
       node: (
         <>
           <Box flexShrink={0}><Text> </Text></Box>
@@ -791,7 +800,6 @@ export function McpMinitabs({
                 right={paneW >= 46 ? r.detail : undefined}
                 width={paneW + 4}
               />
-              {i < shown.length - 1 ? <Box flexShrink={0}><Text> </Text></Box> : null}
             </Box>
           ))}
         </>

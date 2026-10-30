@@ -44,6 +44,7 @@ export async function loadRules(stateDir: string): Promise<Rule[]> {
       const globs = parseGlobs(data.globs);
       rules.push({
         name: data.name || basename(name, ".md"),
+        file: name,
         description: data.description || "",
         body,
         ...(data.origin ? { origin: data.origin } : {}),

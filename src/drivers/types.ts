@@ -346,6 +346,30 @@ export interface ModelPrice {
  * side effects at module load. Anything heavier belongs in the `Driver` below,
  * which is only loaded once its provider is actually selected.
  */
+/**
+ * How a provider that is set up by an ADDRESS is configured. A server on this machine or on the network (LM Studio,
+ * llama.cpp) and a custom endpoint have no fixed place a key is pasted: they are pointed at one. Every field names the
+ * variable a setting is kept in, so the terminal and the app read and write the same thing.
+ */
+export interface ProviderSetup {
+  /** Where the server is. Empty means the default (this computer) for a local server, and nothing set for a custom one. */
+  addressEnv: string;
+  /** The key, when the server may want one. Absent means it never asks for one. */
+  keyEnv?: string;
+  /** Model ids typed by hand, for a server that does not list its own. Absent means the list is only ever discovered. */
+  modelsEnv?: string;
+  /** What the server's models hold in tokens, when it does not say. Absent means it is measured, not assumed. */
+  windowEnv?: string;
+  /** The window assumed when none is set, for a provider that has `windowEnv`. */
+  defaultWindow?: number;
+  /** An example address, shown in the empty field. */
+  placeholder: string;
+  /** An address as typed, as it is kept; or null when it is not one. */
+  parse(input: string): string | null;
+  /** The address now, "" when none is set. */
+  current(): string;
+}
+
 export interface DriverManifest {
   /** Stable identifier, e.g. "deepseek". Used to route and to name the folder. */
   id: string;
@@ -426,6 +450,16 @@ export interface DriverManifest {
    * it can never take a model another provider actually serves.
    */
   ownsModel?(model: ModelId): boolean;
+
+  /**
+   * Optional: models offered only while this provider's address is set to one that serves them, such as a coding
+   * plan with its own model ids. Read each time the list is asked for, so changing the address changes the list, and
+   * listed BEFORE the provider's usual models: someone who pointed the provider at that address meant to use them.
+   */
+  extraModels?(): ModelChoice[];
+
+  /** Optional: this provider is set up by an address (and maybe a key) rather than by a key alone. See `ProviderSetup`. */
+  setup?: ProviderSetup;
 
   /** The reasoning levels `/think` offers for one of this provider's models. */
   thinkLevels(model: ModelId): ThinkLevel[];

@@ -53,7 +53,7 @@ test("dropping a rule that was never set says so instead of claiming a change", 
   try {
     const miss = await governor.execute({ action: "forget_rule", value: "no-such-rule" }, ctx);
     assert.equal(miss.isError, true);
-    assert.match(miss.output, /No rule named/);
+    assert.match(miss.output, /no standing rules|No rule matches/);
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
   }
@@ -104,7 +104,7 @@ test("deleting a skill that does not exist is reported, not invented", async () 
   try {
     const miss = await skillTool.execute({ action: "delete", name: "nothing-like-this" }, ctx);
     assert.equal(miss.isError, true);
-    assert.match(miss.output, /No skill named/);
+    assert.match(miss.output, /no skills to delete|No skill matches/);
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
   }

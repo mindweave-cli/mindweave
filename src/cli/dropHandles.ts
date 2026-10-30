@@ -6,7 +6,7 @@
  * into the middle of the line you are writing. It wraps, it buries the sentence around
  * it, and editing near it means stepping over sixty characters you did not type.
  *
- * So the path is swapped for a handle the moment it lands: `mwimg1`, `mwfile2`. The
+ * So the path is swapped for a handle the moment it lands: `[mwimg1]`, `[mwfile2]`. The
  * handle is what you see and edit; the real path is kept here and handed back at send
  * time, so nothing downstream has to know this happened.
  *
@@ -61,8 +61,13 @@ export function createDropHandles(resolveAbs: (path: string) => string): DropHan
       });
 
       let out = text;
-      for (const drop of assigned.reverse()) {
-        out = out.slice(0, drop.start) + drop.handle + out.slice(drop.end);
+      // Right to left, so a replacement never shifts the spans before it.
+      for (let i = assigned.length - 1; i >= 0; i--) {
+        const drop = assigned[i]!;
+        // Two files dropped together arrive with nothing between them. Their handles must not run together ("mwimg1mwimg2"): one
+        // word is not two handles, and the images behind it were never attached.
+        const touchesNext = i + 1 < assigned.length && assigned[i + 1]!.start === drop.end;
+        out = out.slice(0, drop.start) + `[${drop.handle}]` + (touchesNext ? " " : "") + out.slice(drop.end);
       }
       return out;
     },
@@ -77,8 +82,9 @@ export function createDropHandles(resolveAbs: (path: string) => string): DropHan
   };
 }
 
-// A handle as it appears in text: the prefix, a kind, a number, and nothing glued on.
-const HANDLE_RE = /\bmw(?:img|file)\d+\b/g;
+// A handle as it appears in text: shown in square brackets ("[mwimg1]"), so two dropped side by side read as two. Bare ("mwimg1") is
+// still understood, for one that was typed. Not part of a longer word or number, and another may follow with nothing between.
+const HANDLE_RE = /(?<![A-Za-z_])\[?(mw(?:img|file)\d+)\]?(?!\d)/g;
 
 /**
  * Put the real paths back before the text is resolved against the disk.
@@ -87,8 +93,8 @@ const HANDLE_RE = /\bmw(?:img|file)\d+\b/g;
  * expands came from a drop, so it is always absolute and always quotable.
  */
 export function expandHandles(text: string, handles: DropHandles): string {
-  return text.replace(HANDLE_RE, (handle) => {
+  return text.replace(HANDLE_RE, (shown, handle: string) => {
     const path = handles.pathFor(handle);
-    return path ? `"${path}"` : handle;
+    return path ? `"${path}"` : shown;
   });
 }

@@ -58,6 +58,11 @@ export type Entry = EntryOf & {
    * reading it treats an absent stamp as unknown, never as zero.
    */
   ts?: number;
+  /**
+   * What the screen said when the turn that ended on this entry failed: the provider's notice (a refusal, an outage) or the
+   * error line. Display only, never sent to the model, so a session reopened later shows the same ending it showed live.
+   */
+  failure?: { kind: "notice" | "error"; title?: string; body: string };
 };
 
 type EntryOf =
@@ -236,6 +241,8 @@ export interface SessionMeta {
   spend?: SessionSpend;
   /** Per-call token usage for this session, most recent last. See `CallUsage`. */
   callLog?: CallUsage[];
+  /** How the last turn went, for the line the screen shows when it ends ("Worked for 1m 28s · done 3:06 PM"): kept so it is there when the session is opened again. */
+  lastTurn?: { ms: number; at: number; outputTokens?: number };
   /**
    * The measured size of everything sent besides the transcript (Session.contextOverhead),
    * so a reopened session knows how full its context is before its first call. Stored
@@ -519,6 +526,8 @@ export interface Session {
   sharedNotesOff?: boolean;
   /** Per-call token usage, most recent last. See `CallUsage`. */
   callLog?: CallUsage[];
+  /** How the last turn went (see SessionMeta.lastTurn). */
+  lastTurn?: { ms: number; at: number; outputTokens?: number };
   /** State of a running or finished Marathon (goal-mode autonomy) — the objective,
    *  how far it's gotten, and how it ended, if it has. See `dynamo/marathon.ts`.
    *  Persisted so a goal survives a restart instead of vanishing mid-run. */

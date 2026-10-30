@@ -165,7 +165,7 @@ export function noteReads(calls: { name: string; args: Record<string, unknown> }
  * now appear while a call works, so these are left out from the start instead of flashing up and
  * disappearing.
  */
-const NEVER_SHOWN = new Set(["outline", "definition", "references", "relevant", "todo_write", "find_tools"]);
+const NEVER_SHOWN = new Set(["outline", "definition", "references", "relevant", "todo_write", "find_tools", "view_image"]);
 
 /** Whether a tool's calls are never drawn in the conversation. */
 export function neverShown(name: string): boolean {
@@ -407,7 +407,7 @@ function base(p: string): string {
 
 /**
  * A path as the row names it. The terminal passes the project folder and gets the whole path,
- * forward slashes, so it can be found and copied (`C:/Projects/Cutio/src/app.ts`); a relative
+ * forward slashes, so it can be found and copied (`C:/Projects/myapp/src/app.ts`); a relative
  * path is resolved against that folder. A caller without one (the desktop app draws its own
  * rows) keeps the short form, the file's name.
  */

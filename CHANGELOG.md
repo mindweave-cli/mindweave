@@ -2,6 +2,76 @@
 
 Notable changes to Mindweave. Dates are release dates.
 
+## v3.4.3 (2026-10-30): more providers, workers that run side by side, a compaction you can watch
+
+### More places to run it
+
+- **LM Studio and llama.cpp work with no key.** Both are found on their usual ports while they run (1234 for LM Studio, 8080
+  or 9931 for llama.cpp) and count as set up, the way Ollama does. `MINDWEAVE_LMSTUDIO_URL` and `MINDWEAVE_LLAMACPP_URL`
+  name a server that is elsewhere or on another port.
+- **A Custom endpoint takes any server that speaks the OpenAI chat wire**, such as a hosted gateway or your own vLLM.
+  `/endpoint custom` opens a box for the address, the key (typed masked, never as command text), the model names when the
+  server has no list, the context window, a check, and removal.
+- **A provider can have its own address.** `MINDWEAVE_<PROVIDER>_URL` changes it, and a changed address is used on the next
+  request. Coding plans that have their own address (GLM, Alibaba's Qwen plan, Kimi Code) are offered as presets, and a key
+  for one works only at that address.
+- **The model lists were refreshed.** MiniMax M3.1 Flash, Kimi K3.1 Pro, GPT-6.1 Terra, Gemini 4 Argon, Mistral Large 4
+  and Muse Wonder were added. Mindweave now lists 19 providers and 68 models.
+- **`/provider` and `/key` are one screen with two tabs**, Providers and Keys. Enter on a provider with no key opens a
+  field for it and switches to that provider once the key is saved. Custom endpoint, LM Studio and llama.cpp settings are
+  a second tab. Esc, Backspace and the left arrow step back instead of closing the screen.
+
+### Sub-agents that work side by side
+
+- **Up to 10 run at once**, where it was 5, with limits so a task that needs one does not start ten: at most 12 workers
+  and 300 steps in one turn, a short unique `slice` name for each, and a refusal for a task that is too short to be worth a
+  worker or that repeats one already given. Each result says how much of the turn's allowance is left.
+- **A worker can edit files** when it is given a `write_scope`, the files or folders it may change. Each scope is locked
+  while the worker runs, a second worker asking for an overlapping one is refused, and an edit outside the scope is refused
+  with the reason. The result lists the files the worker changed. Workers without a scope stay read-only.
+- **You can read and write to a running worker.** While workers run, a row under the chat lists them (`Main  #1  #2`).
+  Left and right switch between them when the message box is empty, with text in the box they move the cursor as before. A
+  worker's screen is drawn like the main chat, what you type while viewing it goes to that worker, and the view returns to
+  the main chat when the worker finishes.
+
+### Compaction you can see
+
+- **A compaction shows a live row.** A dot that pulses and "Compacting the conversation…" while it runs, then the same row
+  settles into "Compaction complete · context 35% → 14%, 39K tokens freed", or "Compaction complete, continuing" when the
+  agent goes on afterwards. The three-line bar block is gone. A compaction that fails removes the row and says why.
+- **A session reopened after its cache expired is compacted at once.** When the provider's cache ran out while the session
+  was closed, `/continue` compacts it as it opens and shows the line, instead of waiting for your next message. It uses the
+  session notes and never makes a model call.
+- **A failed `/compact` says what to do.** It no longer reads "attempt 1 of 3", which only applies to automatic
+  compaction. A manual try is one try, tells you to type `/compact` again, and does not count toward the automatic stop.
+- **The line that ends a turn comes back with the session.** "Worked for 1m 28s · ↓ 5.1k tokens · done 3:06 PM" is saved
+  and shown again after `/continue` or a restart. Sessions saved before this get a duration worked out from their own
+  timestamps.
+
+### Fixes
+
+- **A reply that a check set aside is no longer lost.** When the finish check turned a reply down and the turn then ended
+  before the replacement, the saved history kept a reply that had never been on screen, and `/continue` showed it with its
+  work rows. It is now shown and kept last, and sessions saved this way are repaired when opened.
+- **Notices and errors come back after `/continue`.** A provider notice or a failed turn is saved with the session and drawn
+  where it happened.
+- **Deleting a rule, skill, MCP server or forbidden entry works by name or by text**, in the project's list and in your own
+  that apply everywhere. A miss lists what exists, says which kind it searched, and is shown on screen. A change you asked
+  for that did not happen is always visible, and a tool failing quietly twice in a turn is shown on the second.
+- **Two files dropped together are both attached.** They ran together as one word, so neither was found. They now show as
+  `[mwimg1] [mwimg2]` and expand correctly.
+- **Ctrl+F sends now even during a long model call.** It cuts the model request and sends your message. It does not stop a
+  command that is running.
+- **The session list lines up.** The time and the message count each have their own column, and the whole selected row
+  turns green, details included.
+- **`/continue` no longer prints the "continuing: …" line.**
+- **Web searches and fetches are one line**, with a pulsing dot while they run, the engine and seconds as they go, and the
+  number of sources when done. A click opens the list, and every saved source is kept.
+- **Edits are never folded into "Edited N files".** Each stays its own row.
+- **The `view_image` row is hidden**, and a finished work row (Ran, Searched, Tested) no longer keeps its dot.
+- **MCP prompts in the `/` menu are one row per server**, and the MCP list is tighter. Esc and Backspace step back in the
+  add form.
+
 ## v3.4.2 (2026-10-27): run it from a script, credit on the agent's commits, a cache the notes no longer break
 
 - **Commits the agent makes can carry one line of credit.** The first time the agent runs `git commit` in a project it

@@ -1,7 +1,7 @@
 /**
  * editGroup.ts — what a row of several edits says (pure).
  *
- * Edits that follow each other, with nothing between them but more edits, are ONE row from the second on:
+ * Edits that follow each other, with nothing between them but more edits, are ONE row from the third on:
  *
  *   ● Wrote 7 files  +492  tsconfig.main.json, tsconfig.json, vite.config.ts, …  ▸
  *
@@ -10,8 +10,12 @@
  */
 import type { WorkItem } from "./transcript.js";
 
-/** The fewest edits that make one row: two. */
-export const GROUP_FROM = 2;
+/**
+ * The fewest edits that make one row. There is none: every edit is its own row, however many follow each other, so the single
+ * "Edited 3 files ▸" row is never drawn. The grouped layout below stays for a time it is wanted again; raising this to a number
+ * brings it back.
+ */
+export const GROUP_FROM = Number.POSITIVE_INFINITY;
 
 /** Whether this block's items are drawn as one row (and not as the separate rows of one or two edits). */
 export const isGrouped = (items: readonly unknown[]): boolean => items.length >= GROUP_FROM;

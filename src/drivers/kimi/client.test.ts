@@ -16,7 +16,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { buildBody } from "../openaiCompat/wire.js";
 import { cacheSplit, kimiProvider, reasoningFields } from "./client.js";
-import { K26, K27_CODE, K27_CODE_HIGHSPEED, K3, MODELS, normalize, surfaceOf, thinkLevels } from "./manifest.js";
+import { DEFAULT_MODEL, K26, K27_CODE, K27_CODE_HIGHSPEED, K3, K31P, K31P_HIGHSPEED, MODELS, normalize, surfaceOf, thinkLevels } from "./manifest.js";
 import type { Effort, ModelRequest } from "../types.js";
 
 const base: ModelRequest = { system: "SYSTEM", messages: [] };
@@ -150,8 +150,20 @@ test("switching between any two models leaves a config the target accepts", () =
 });
 
 test("an unknown model id falls back rather than reaching the wire", () => {
-  assert.equal(normalize({ model: "kimi-imaginary", thinking: true, effort: "high" }).model, K26);
+  assert.equal(normalize({ model: "kimi-imaginary", thinking: true, effort: "high" }).model, DEFAULT_MODEL);
   for (const model of ALL) {
     assert.equal(normalize({ model, thinking: true, effort: "high" }).model, model, `${model} was coerced away`);
+  }
+});
+
+test("K3.1 Pro and its HighSpeed tier take K3's three rungs and no thinking parameter", () => {
+  assert.equal(DEFAULT_MODEL, K31P);
+  for (const model of [K31P, K31P_HIGHSPEED]) {
+    const fields = reasoningFields({ model, thinking: true, effort: "max" });
+    assert.equal(fields.reasoning_effort, "max", model);
+    assert.ok(!("thinking" in fields), `${model} does not know the \`thinking\` parameter`);
+    assert.deepEqual(thinkLevels(model).map((l) => l.effort), ["low", "high", "max"], model);
+    assert.equal(normalize({ model, thinking: false, effort: "medium" }).thinking, true, `${model} cannot stop reasoning`);
+    assert.ok(["low", "high"].includes(normalize({ model, thinking: true, effort: "medium" }).effort), `${model}: medium is not a rung it accepts`);
   }
 });

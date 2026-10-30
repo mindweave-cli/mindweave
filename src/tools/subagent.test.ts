@@ -174,7 +174,7 @@ test("a sub-agent cannot spawn a sub-agent, and the description says so", async 
 
 test("the stated concurrency and budget are the real constants", () => {
   // Numbers in prose drift from the code they describe unless something checks.
-  assert.match(spawnSubagent.description, /Up to 5 run at once/i);
+  assert.match(spawnSubagent.description, /Up to 10 run at once/i);
   assert.match(spawnSubagent.description, /20 tool rounds by default/i);
 });
 
@@ -199,16 +199,17 @@ test("a worker is ALWAYS given an explicit step budget", async () => {
   assert.match(options, /maxSteps:/, "a worker is being started without a step budget");
 });
 
-test("a worker is never handed the user's messages", async () => {
-  // The queue belongs to the person at the prompt and to the turn they are watching. A
-  // worker runs on a task it was given; a message typed at the main turn arriving in its
-  // context would steer the wrong agent, and the main turn would never see it at all.
-  // The isolation is structural: `steer` is simply not passed here.
+test("a worker is handed only the messages written to IT, never the main turn's queue", async () => {
+  // The main queue belongs to the person at the prompt and to the turn they are watching. A message typed there arriving in a
+  // worker's context would steer the wrong agent, and the main turn would never see it at all. A worker has an inbox of its own
+  // (delegation.ts): what the person writes while viewing THAT worker goes there, and `steer` reads only that.
   const { readFile } = await import("node:fs/promises");
   const source = await readFile(new URL("./subagent.ts", import.meta.url), "utf8");
   const call = source.indexOf("respond(child, {");
   assert.ok(call > 0, "the worker no longer runs through respond()");
-  assert.ok(!/\bsteer:/.test(source.slice(call, call + 600)), "a worker is being given the user's message queue");
+  const options = source.slice(call, call + 1200);
+  assert.match(options, /steer: async \(\) => takeInbox\(agentId\)/, "a worker reads its own inbox between steps");
+  assert.ok(!/ctx\.steer|steerRunningTurn|options\.steer/.test(options), "a worker is being given the user's message queue");
 });
 
 test("a verifier runs alone even when it was also marked read-only: it runs commands, and two would see each other's output", () => {

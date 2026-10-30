@@ -642,11 +642,13 @@ test("Sonnet 5.5 is the default, offered first, with Sonnet 5 still available", 
   assert.equal(normalize({ model: "claude-retired-9", thinking: false, effort: "high" }).model, SONNET_55);
 });
 
-test("Sonnet 5.5 costs what Sonnet 5 costs, cache read included", () => {
-  assert.deepEqual(price(SONNET_55), price(SONNET));
+test("Sonnet 5.5 costs what Sonnet 5 costs on input and output, but reads its cache at 5%", () => {
+  const { cacheHit: _a, ...now } = price(SONNET_55);
+  const { cacheHit: _b, ...before } = price(SONNET);
+  assert.deepEqual(now, before);
   assert.deepEqual(
     { hit: price(SONNET_55).cacheHit, miss: price(SONNET_55).cacheMiss, out: price(SONNET_55).output, write: price(SONNET_55).cacheWrite },
-    { hit: 0.2, miss: 2, out: 10, write: 2.5 },
+    { hit: 0.1, miss: 2, out: 10, write: 2.5 },
   );
 });
 

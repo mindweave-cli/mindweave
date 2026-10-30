@@ -8,11 +8,11 @@
  * for Meta that is the reasoning dial: Muse Spark always reasons, and how deeply is
  * the one thing a request gets to say (see the manifest header).
  */
+import { endpointUrl } from "../endpoints.js";
 import type { ModelConfig, ModelRequest, StreamOptions, StreamResult, Turn, TurnOptions } from "../types.js";
 import { compatStreamTurn, compatToolTurn, standardCacheSplit, type CompatProvider } from "../openaiCompat/wire.js";
 import { BUFFERED_OUTPUT_TOKENS, DEFAULT_MODEL } from "./manifest.js";
 
-const BASE_URL = process.env.MINDWEAVE_META_URL ?? "https://api.meta.ai/v1";
 
 /**
  * Meta's reasoning field.
@@ -38,7 +38,10 @@ export const cacheSplit = standardCacheSplit;
 /** Everything the shared wire layer needs to talk to Meta. */
 export const metaProvider: CompatProvider = {
   label: "Meta",
-  baseUrl: BASE_URL,
+  // Read on every request, so an address changed in the app counts at once (see endpoints.ts).
+  get baseUrl() {
+    return endpointUrl("meta");
+  },
   apiKeyEnv: "MODEL_API_KEY",
   defaultModel: process.env.MINDWEAVE_MODEL ?? DEFAULT_MODEL,
   reasoningFields,

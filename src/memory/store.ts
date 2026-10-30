@@ -217,6 +217,7 @@ async function writeSession(session: Session): Promise<boolean> {
       // totals above are identical whether a turn made one expensive call or six cheap
       // ones, and that difference is the whole answer.
       ...(session.callLog && session.callLog.length > 0 ? { callLog: session.callLog } : {}),
+      ...(session.lastTurn ? { lastTurn: session.lastTurn } : {}),
       ...(session.contextOverhead ? { contextOverhead: session.contextOverhead } : {}),
       // Deferred tools the model surfaced this session, so a resume re-advertises them
       // instead of stripping a tool it was mid-use of (see registry.toolSchemas).

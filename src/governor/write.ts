@@ -245,6 +245,26 @@ export async function removeRule(cwd: string, name: string): Promise<boolean> {
   }
 }
 
+/** Delete one rule file from the rules folder of a scope: this project's, or the user's own that apply to every project. */
+export async function removeRuleFile(cwd: string, scope: GovernanceScope, file: string): Promise<boolean> {
+  try {
+    await fs.rm(join(governanceDir(cwd, scope), "rules", file));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Delete a skill by its directory, wherever it is (the catalog holds the real path). False when it is not there. */
+export async function removeSkillDir(dir: string): Promise<boolean> {
+  try {
+    await fs.rm(dir, { recursive: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Delete a skill directory (`skills/<slug>/`). False when there was no such skill. */
 export async function removeSkill(cwd: string, name: string): Promise<boolean> {
   const dir = join(projectDir(cwd), "skills", slugify(name));

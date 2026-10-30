@@ -17,6 +17,7 @@ import {
   MUSE_SPARK_12_CONTRIBUTOR,
   MUSE_SPARK_13,
   MUSE_SPARK_13_CONTRIBUTOR,
+  MUSE_WONDER,
   normalize,
   price,
   thinkLevels,
@@ -113,4 +114,12 @@ test("Meta's buffered ceiling is actually sent", () => {
 test("the base URL points at Meta's Model API by default", () => {
   assert.equal(metaProvider.baseUrl, "https://api.meta.ai/v1");
   assert.equal(metaProvider.apiKeyEnv, "MODEL_API_KEY");
+});
+
+test("Muse Wonder is offered, takes the max rung, and is priced at its published rate", () => {
+  assert.ok(MODELS.some((m) => m.id === MUSE_WONDER));
+  assert.equal(DEFAULT_MODEL, MUSE_SPARK_13, "the cheaper Spark stays the default");
+  assert.equal(normalize({ model: MUSE_WONDER, thinking: true, effort: "max" }).effort, "max");
+  assert.equal(normalize({ model: MUSE_WONDER, thinking: false, effort: "high" }).thinking, true, "none is refused, so thinking is forced on");
+  assert.deepEqual(price(MUSE_WONDER), { cacheHit: 0.2, cacheMiss: 4, output: 20 });
 });

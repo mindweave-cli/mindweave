@@ -23,7 +23,7 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { isAbsolute, resolve } from "node:path";
 import { Box, Static, Text, measureElement, useApp, useInput, useStdout, type DOMElement } from "ink";
-import { compactNow, contextUsed, effectiveAutoCompactThreshold, respond } from "../dynamo/engine.js";
+import { compactNow, compactWhenIdle, contextUsed, effectiveAutoCompactThreshold, respond } from "../dynamo/engine.js";
 import type { RespondOptions, SteeredMessage } from "../dynamo/engine.js";
 import type { MarathonOptions } from "../dynamo/marathon.js";
 import { contextPressure, sharpContextWindow } from "../dynamo/contextWindow.js";
@@ -45,7 +45,7 @@ import { KeySetup } from "./components/KeySetup.js";
 import { setupView } from "./keySetup.js";
 import { KeyManager } from "./components/KeyManager.js";
 import { McpMinitabs } from "./components/McpMinitabs.js";
-import { providerRows, keyRowsFor, nextSlotFor } from "./keyManager.js";
+import { providerRows, providerChoices, keyRowsFor, nextSlotFor } from "./keyManager.js";
 import { keysFor } from "./keyStore.js";
 import { TrustGate } from "./components/TrustGate.js";
 import { rootBreadth, breadthWarning, trustPersists, isTrusted, rememberTrust } from "./trust.js";
@@ -54,6 +54,8 @@ import { parseUndoArg, undoNotice } from "../tools/checkpoints.js";
 import { rewindPoints, rewindTo, pasteSlot, reloadAgentState, type RewindMode, type RewindPoint, type RewindResult } from "../memory/rewind.js";
 import { DEFAULT_MODEL_CONFIG, thinkLevels, thinkLabel, modelLabel, modelsOfProvider, providerOf, usableFallback, needsKeySetup, withModel, saveModelConfig, refreshModels, DISCOVERY_TTL_MS, type ModelConfig } from "../dynamo/model.js";
 import { allProviders, manifestForModel, modelsOf } from "../drivers/registry.js";
+import { providerEndpoint, providerSetup, setProviderEndpoint, setProviderSetup, type SetupPatch } from "../core/providerSetup.js";
+import { EndpointBox, type EndpointFields, type EndpointResult } from "./components/EndpointBox.js";
 import { orderProviders, orderModels } from "./pickerOrder.js";
 import { accessRefusal, providerOutage } from "../drivers/providerError.js";
 import { resolveAttachments, stripAttachments } from "./attachments.js";
@@ -76,7 +78,9 @@ import { Picker } from "./components/Picker.js";
 import { ApprovalBox } from "./components/ApprovalBox.js";
 import { approvalAnswer, approvalBlock, workedSeconds } from "./approvalText.js";
 import { BlockView } from "./components/BlockView.js";
-import { initialState, lastExpandable, reduce, trimNarration, type Action, type Block, type TranscriptState, type WorkItem } from "./transcript.js";
+import { initialState, lastExpandable, reduce, trimNarration, type Action, type AgentEntry, type Block, type TranscriptState, type WorkItem } from "./transcript.js";
+import { agentTranscript, cycleView, turnAgents } from "./agentView.js";
+import { AgentTabs } from "./components/AgentTabs.js";
 import { isTight } from "./blockSpacing.js";
 import { INLINE_AVAILABLE, INLINE_UNAVAILABLE, parseScreenArg, screenChoices, screenNotice, startupMode, type ScreenMode } from "./screenMode.js";
 import { applyScreenMode } from "./screenShell.js";
@@ -93,7 +97,7 @@ import { isUserShell, runUserCommand } from "../tools/userCommand.js";
 import { isUserCommandText, parseUserCommand } from "../memory/localCommand.js";
 import { shownText, splitExpiredImages, userAsSent } from "../memory/compaction.js";
 import { BASE_COMMANDS } from "./commands.js";
-import { attachmentBudget, dismissMarathon } from "../core/turnRunner.js";
+import { attachmentBudget, dismissMarathon, recordFailure, sendToSubagent } from "../core/turnRunner.js";
 import { describeMarathonEvent, resumeMarathon, startMarathon, type MarathonEvent } from "../dynamo/marathon.js";
 import { MarathonBox } from "./components/MarathonBox.js";
 import { isFinished, isLive, marathonBoxHeight, marathonUiReduce, type MarathonUi } from "./marathonUi.js";
@@ -117,7 +121,7 @@ import { countNewReplies, hitsPill, pillBounds, scrollPill, type PillBounds } fr
 import { SCROLLBACK_BLOCKS, virtualWindow } from "./virtualWindow.js";
 import { perf, perfEnabled } from "./perfLog.js";
 import { newPacer, nextHoldAt, nextMove, takeImmediate, takePaced, type Pacer, type PaceFlags } from "./revealQueue.js";
-import { drain as drainQueue, popAll as popAllQueued, queueMessage, takeSteerable, type Queued } from "./messageQueue.js";
+import { drain as drainQueue, popAll as popAllQueued, forceSendPlan, queueMessage, takeSteerable, type Queued } from "./messageQueue.js";
 import { routeCommand, parseCommandLine, unknownCommandMessage } from "./commandRoute.js";
 import { resolveChoice, splitModelArg } from "./commandArgs.js";
 import { carryAcrossFreshSession } from "./sessionCarry.js";
@@ -193,10 +197,6 @@ function missingKeyFor(model: string): KeyNeed | null {
  * selection handler and the initial-cursor lookup, so all three index the same order —
  * see pickerOrder.
  */
-function orderedProviderList() {
-  return orderProviders(allProviders(), (p) => hasApiKey(p.apiKeyEnv), providerOf(DEFAULT_MODEL_CONFIG.model).id);
-}
-
 /** One provider's models in display order: its default first, the rest alphabetical. */
 function orderedModelList(model: string) {
   return orderModels(modelsOfProvider(model));
@@ -218,7 +218,6 @@ function orderedModelsOf(providerId: string) {
 type Overlay =
   | { kind: "sessions"; items: SessionMeta[] }
   | { kind: "resumeMode"; meta: SessionMeta }
-  | { kind: "provider" }
   /** `providerId` absent means the provider in use; `filter` pre-fills the picker's filter. */
   | { kind: "model"; providerId?: string; filter?: string }
   | { kind: "think" }
@@ -448,6 +447,14 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
   // the row draws from. Only set when it CHANGES, so a pointer crossing the screen is not
   // a redraw per cell.
   const [hoverId, setHoverId] = useState<number | null>(null);
+  // Which sub-agent the chat's place is showing (null: the main agent), and the current turn's sub-agents, kept where the key
+  // handler can read them.
+  const [viewAgent, setViewAgent] = useState<string | null>(null);
+  const agentsRef = useRef<AgentEntry[]>([]);
+  const viewAgentRef = useRef<string | null>(null);
+  const closedAgents = useRef(new Set<string>());
+  const watchedWorking = useRef<{ id: string; working: boolean } | null>(null);
+  const [, bumpAgentView] = useState(0);
   // Set when a row is opened or folded, read once by the height effect.
   const rowToggled = useRef(false);
   // Which place was pressed, and where the view stood before it was opened and after the view
@@ -480,6 +487,8 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
   // Turn timing for the status line: when the current turn started, how long the
   // last one took, the token count, and which whimsical verb-pair this turn uses.
   const [lastMs, setLastMs] = useState<number | null>(null);
+  // When the last turn ended and what it generated, for the end-of-turn line. Kept with the session, so it comes back on /continue.
+  const [lastTurn, setLastTurn] = useState<{ at: number; outputTokens?: number } | null>(null);
   const [taskUsage, setTaskUsage] = useState<TaskUsage | null>(null);
   const turnStart = useRef<number | null>(null);
   // Time spent waiting for the person to answer a question, which is not time the agent worked: the working
@@ -551,6 +560,10 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
   // Opened by /mcp — the minitabs manager: a server list, and picking one drops into
   // everything you can do to it. Its own footer overlay, same shape as /key's.
   const [mcpOpen, setMcpOpen] = useState(false);
+  // Opened by /endpoint custom: the custom endpoint's settings as a short list, a field to type into for each. The id of the
+  // provider it is for, or null when closed; the tick redraws it after a change so it shows what is stored.
+  const [endpointOpen, setEndpointOpen] = useState<string | null>(null);
+  const [endpointTick, setEndpointTick] = useState(0);
   /** Which MCP servers we hold a stored credential for. Read when the box opens rather
    *  than kept live: it changes only when someone signs in or out, both of which close
    *  the box, and each entry is a file read that has no business on a render path. */
@@ -803,13 +816,43 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
   // stops being true again.
   // What compaction took out is drawn too (memory/earlier.ts), so a resumed chat is the whole conversation.
   const withEarlier = (session: Session): Entry[] => [...(session.earlier ?? []), ...session.transcript];
+  /** The end-of-turn line of a session being opened again: how long its last turn took, and when it ended. */
+  function restoreLastTurn(s: Session) {
+    const kept = s.lastTurn ?? lastTurnFromEntries(s.transcript);
+    if (!kept) return;
+    setLastMs(kept.ms);
+    setLastTurn({ at: kept.at, ...(kept.outputTokens ? { outputTokens: kept.outputTokens } : {}) });
+  }
+  /** A session opened after the provider's cache expired is compacted now and shown, not on the next message. */
+  async function compactIfIdle(s: Session) {
+    try {
+      const did = await compactWhenIdle(s, {
+        onActivity: (line, opts) => note(line, opts),
+        onCompactionStart: () => dispatch({ type: "compactionStart" }),
+        onCompaction: (report) => dispatch({ type: "compaction", report }),
+        onCompactionEnd: () => dispatch({ type: "compactionEnd" }),
+      });
+      if (did) await saveSession(s);
+    } catch {
+      // The next message tries again on its own path, and says so if that fails too.
+    }
+  }
   function showResumed(transcript: Entry[]) {
     const readThisTurn = new Set<string>(); // for narrationShown, as live
     // Each call's name and arguments by id, so a result from a session saved before the uncut
     // text was kept can have it put back together (see rebuildDetail.ts).
     const callsById = new Map<string, { name: string; args: Record<string, unknown> }>();
     let userRows = 0; // commands the person ran with `!`, to give each replayed row its own id
+    // What a failed turn showed, drawn after the entry it followed: carried to the top of the next one (or the end), because
+    // the loop skips some entries.
+    let failed: Entry["failure"] | undefined;
+    const drawFailure = () => {
+      if (failed) dispatch(failed.kind === "notice" ? { type: "notice", title: failed.title ?? "", body: failed.body } : { type: "error", text: `⚠ ${failed.body}` });
+      failed = undefined;
+    };
     for (const e of transcript) {
+      drawFailure();
+      failed = e.failure;
       if (e.role === "user") {
         if (!e.synthetic) readThisTurn.clear();
         // Engine nudges ride as `user` messages so the model reads them as instruction,
@@ -885,7 +928,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
             }
             // A web search saved before it became a short row that opens on a click comes back as one.
             if ((call?.name === "web_search" || call?.name === "web") && !e.detailFull) {
-              const compact = compactSearchDetail(e.detail);
+              const compact = compactSearchDetail(e.detail, e.web);
               if (compact) return { detail: compact.detail, ...(compact.detailFull ? { detailFull: compact.detailFull } : {}) };
             }
             // A search saved before it had a row has no block of its own: what it printed is what the model was given.
@@ -913,6 +956,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
         });
       }
     }
+    drawFailure();
     // Close any discovery group left open at the end so it commits to scrollback.
     dispatch({ type: "sealNarration" });
     // Every replayed row belongs to a turn that finished long ago, so settle the
@@ -1084,7 +1128,9 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
       setReady(true);
       if (resumeSessionId && s.id === resumeSessionId) {
         showResumed(withEarlier(s));
+        restoreLastTurn(s);
         note(`— updated to v${appVersion()}, continuing —`);
+        void compactIfIdle(s);
       }
       // The project may have a model saved from a different provider than the
       // default, so re-check against what we're actually about to run.
@@ -1139,7 +1185,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
   // When a background shell finishes and Mindweave is idle, react to it automatically.
   // `modalOpen` is a dependency on purpose: an open menu holds the wake back, and closing
   // it has to re-run this check or the finished command waits for some unrelated render.
-  const modalOpen = overlay !== null || mcpOpen || trustOpen || needsKey;
+  const modalOpen = overlay !== null || mcpOpen || endpointOpen !== null || trustOpen || needsKey;
   useEffect(() => {
     const mgr = session.current?.toolContext.backgroundShells;
     const wake = shouldReactToBackground({
@@ -1327,6 +1373,18 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
     },
     { isActive: !busy && overlay === null && marathonUi?.phase === "armed" },
   );
+
+  // ← and → step through the main agent and the sub-agents it started, while the message box is empty (with text in it they move the
+  // caret as always; ↑ and ↓ stay for the history and the messages). The chat's place shows the one selected.
+  function stepAgentView(dir: 1 | -1): boolean {
+    // Only the fullscreen shell has a place to show one: inline prints into the terminal's own scrollback.
+    if (agentsRef.current.length === 0 || shell !== "fullscreen") return false;
+    const next = cycleView(viewAgentRef.current, agentsRef.current, dir);
+    if (next !== null) closedAgents.current.delete(next);
+    setViewAgent(next);
+    bumpAgentView((n) => n + 1);
+    return true;
+  }
 
   // shift-tab cycles the interaction mode (Lightning ⇄ Architect). Active whenever
   // the input owns the keyboard (no overlay); takes effect from the next turn.
@@ -2128,6 +2186,8 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
 
   /** Open or fold a row, keeping it where the reader pressed it. See the height effect. */
   function toggleRow(hit: number) {
+    // A sub-agent's screen is over the transcript: a click or ctrl+O must not open a row hidden under it.
+    if (viewAgentRef.current !== null) return;
     rowToggled.current = true;
     toggledHit.current = hit;
     toggledNewest.current = lastExpandable(stateRef.current) === hitBlock(hit);
@@ -2162,7 +2222,19 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
   function endTurn() {
     releaseLiveGates();
     // A `!` command is not the agent working: no "Worked for" receipt for it.
-    if (turnStart.current != null && !userTurn.current) setLastMs(Date.now() - turnStart.current);
+    if (turnStart.current != null && !userTurn.current) {
+      const ms = Date.now() - turnStart.current;
+      const at = Date.now();
+      const s = session.current;
+      const outputTokens = s ? summarizeTask(usageSamples.current, s.modelConfig.model)?.outputTokens : undefined;
+      setLastMs(ms);
+      setLastTurn({ at, ...(outputTokens ? { outputTokens } : {}) });
+      // Written into the session as well, so "Worked for 1m 28s · done 3:06 PM" is still there when the session is opened again.
+      if (s) {
+        s.lastTurn = { ms, at, ...(outputTokens ? { outputTokens } : {}) };
+        void saveSession(s);
+      }
+    }
     userTurn.current = false;
     // Settle every tool row this turn produced into its past-tense verb. The single
     // funnel for a turn ending (normal completion, error, interrupt), so no row is
@@ -2585,7 +2657,9 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
           ),
         // An AUTOMATIC compaction, mid-turn. Queued like everything else so it appears
         // in the order it happened, rather than jumping ahead of the rows around it.
+        onCompactionStart: () => enqueueReveal({ type: "compactionStart", auto: true }),
         onCompaction: (report) => enqueueReveal({ type: "compaction", report }),
+        onCompactionEnd: () => enqueueReveal({ type: "compactionEnd" }),
         onEvent: (e) => {
           if (e.type === "text") {
             meter.current = meterDelta(meter.current, e.delta.length);
@@ -2609,6 +2683,11 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
               enqueueReveal({ type: "subToolStart", agentId: e.agent, toolId: e.id, name: d.name, arg: d.arg, action: d.kind });
             } else {
               enqueueReveal({ type: "toolStart", toolId: e.id, name: d.name, arg: d.arg, meta: d.meta, action: d.kind, group: isGroupable(e.name), at: Date.now(), ...(d.covers ? { covers: d.covers } : {}) });
+              // A search or a fetch is one line under its title while it runs: who is doing it, and the seconds, counting.
+              // The row draws the seconds itself (ToolLine); this is the words before them.
+              if (d.kind === "websearch") {
+                enqueueReveal({ type: "toolProgress", toolId: e.id, text: d.name === "WebFetch" ? "fetching" : providerOf(session.current?.modelConfig.model ?? DEFAULT_MODEL_CONFIG.model).label });
+              }
             }
           } else if (e.type === "tool" && e.phase === "progress") {
             // A worker's own calls fold into its rail, which has no room for output.
@@ -2643,7 +2722,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
             }
             if (gov) gov.notices = [];
           } else if (e.type === "subagent" && e.phase === "start") {
-            enqueueReveal({ type: "subagentStart", agentId: e.id, task: e.task, readOnly: e.readOnly, ...(e.taskFull ? { full: e.taskFull } : {}) });
+            enqueueReveal({ type: "subagentStart", agentId: e.id, task: e.task, readOnly: e.readOnly, ...(e.scope ? { scope: e.scope } : {}), ...(e.taskFull ? { full: e.taskFull } : {}) });
           } else if (e.type === "subagent" && e.phase === "end") {
             enqueueReveal({ type: "subagentEnd", agentId: e.id, ok: !e.error, summary: e.summary, ...(e.headline ? { headline: e.headline } : {}), ...(e.verdict ? { verdict: e.verdict } : {}), ...(e.steps !== undefined ? { steps: e.steps } : {}) });
           } else if (e.type === "todos") {
@@ -2700,8 +2779,14 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
       const refusal =
         accessRefusal(error, providerOf(s.modelConfig.model).label, otherProviderHasKey(s.modelConfig.model)) ??
         providerOutage(error, providerOf(s.modelConfig.model).label, modelLabel(s.modelConfig.model));
-      if (refusal) enqueueReveal({ type: "notice", title: refusal.title, body: refusal.body });
-      else enqueueReveal({ type: "error", text: `⚠ ${errText(error)}` });
+      // Kept with the conversation as well, so the session reopened later ends the way this one does.
+      if (refusal) {
+        recordFailure(s, { kind: "notice", title: refusal.title, body: refusal.body });
+        enqueueReveal({ type: "notice", title: refusal.title, body: refusal.body });
+      } else {
+        recordFailure(s, { kind: "error", body: errText(error) });
+        enqueueReveal({ type: "error", text: `⚠ ${errText(error)}` });
+      }
     } finally {
       await saveSession(s);
       streamDone.current = true;
@@ -2818,11 +2903,12 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
 
     if (compactFirst) {
       startTurn();
-      note("compacting the old conversation so it fits…");
       try {
         await compactNow(resumed, {
           onActivity: (line, opts) => note(line, opts),
+          onCompactionStart: () => dispatch({ type: "compactionStart" }),
           onCompaction: (report) => dispatch({ type: "compaction", report }),
+          onCompactionEnd: () => dispatch({ type: "compactionEnd" }),
         });
         await saveSession(resumed);
       } catch (error) {
@@ -2832,8 +2918,9 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
       }
     }
 
-    note(`— continuing${compactFirst ? " (compacted)" : ""}: ${sessionTitle(meta)} —`);
     showResumed(withEarlier(resumed));
+    restoreLastTurn(resumed);
+    await compactIfIdle(resumed);
   }
 
   /**
@@ -2902,6 +2989,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
     // on screen or in the model's context.
     setTaskUsage(null);
     setLastMs(null);
+    setLastTurn(null);
     dispatch({ type: "clear" });
   }
 
@@ -2956,6 +3044,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
     if (mode !== "files") {
       wipeChat();
       showResumed(withEarlier(s));
+        restoreLastTurn(s);
     }
     reportRewind(s, r);
     if (mode !== "files") setFill({ text: refillText(r) });
@@ -3023,28 +3112,172 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
     note(`model → ${modelLabel(s.modelConfig.model)} · ${thinkLabel(s.modelConfig)}`);
   }
 
+  /** What the custom endpoint's box shows, read from where it is kept. */
+  function endpointFields(providerId: string): EndpointFields {
+    const p = allProviders().find((x) => x.id === providerId);
+    const s = providerSetup(providerId);
+    return {
+      address: s?.address ?? "",
+      hasKey: s?.hasKey ?? false,
+      models: s?.models ?? "",
+      window: s?.window ?? "",
+      defaultWindow: s?.defaultWindow ?? 128000,
+      connected: p ? hasApiKey(p.apiKeyEnv) : false,
+      modelCount: p ? modelsOf(p).length : 0,
+      keyed: s?.keyed ?? true,
+      usesModels: s?.usesModels ?? true,
+      usesWindow: s?.usesWindow ?? true,
+      ...(p?.local
+        ? {
+            emptyAddress: "this computer, the usual port",
+            addressExample: s?.placeholder,
+            addressHelp: `only if ${p.label} runs on another computer, like ${s?.placeholder ?? "192.168.1.20"}: it is found by itself on this one`,
+          }
+        : {}),
+    };
+  }
+
+  /** Ask the server again, and say what it answered. */
+  async function endpointCheck(providerId: string): Promise<EndpointResult> {
+    await refreshModels().catch(() => []);
+    setEndpointTick((n) => n + 1);
+    const f = endpointFields(providerId);
+    if (!f.address && f.modelCount === 0) return { ok: false, message: "no address is set yet" };
+    return f.connected
+      ? { ok: true, message: `connected: ${f.modelCount} model${f.modelCount === 1 ? "" : "s"}` }
+      : { ok: false, message: "the server did not answer with a model: check the address and the key" };
+  }
+
+  /** Apply a change from the box, then look at the server. */
+  async function endpointSave(providerId: string, patch: SetupPatch): Promise<EndpointResult> {
+    const r = setProviderSetup(providerId, patch);
+    if (!r.ok) return { ok: false, message: r.error };
+    const out = await endpointCheck(providerId);
+    return { ok: out.ok, message: `saved · ${out.message}` };
+  }
+
+  async function endpointForget(providerId: string): Promise<EndpointResult> {
+    const local = !!allProviders().find((p) => p.id === providerId)?.local;
+    // A server found by itself only has an address to forget; the custom endpoint has everything.
+    const r = setProviderSetup(providerId, local ? { address: null } : { address: null, key: null, models: null, window: null });
+    if (!r.ok) return { ok: false, message: r.error };
+    await refreshModels().catch(() => []);
+    setEndpointTick((n) => n + 1);
+    return { ok: true, message: local ? "looking on this computer again" : "removed" };
+  }
+
+  /**
+   * /endpoint — where each provider is reached. Bare, it lists them. Naming a provider shows its address and presets, and
+   * a value changes it: a full address, a preset's id (a coding plan), or `reset` for the usual one. The providers set up by
+   * an address (LM Studio, llama.cpp, the custom endpoint) take the address the same way, and the custom endpoint also takes
+   * `models` and `window`. A KEY is never taken here: what is typed in the prompt is kept in the conversation.
+   */
+  async function runEndpoint(arg: string) {
+    const normal = (text: string) => text.toLowerCase().replace(/[^a-z0-9]/g, "");
+    const providers = allProviders().filter((p) => providerEndpoint(p.id) || p.setup);
+    const describe = (p: (typeof providers)[number]): string => {
+      const e = providerEndpoint(p.id);
+      if (e) {
+        const preset = e.presets.find((x) => x.id === e.preset);
+        return `${p.label}: ${e.url}${preset ? ` (${preset.label})` : e.changed ? " (changed)" : ""}`;
+      }
+      const s = providerSetup(p.id);
+      return `${p.label}: ${s?.address || (p.local ? "this computer, the usual port" : "not set")}`;
+    };
+    const words = arg.trim().split(/\s+/).filter(Boolean);
+    if (words.length === 0) {
+      note("where each provider is reached. /endpoint <provider> <address|preset|reset> changes one:");
+      say(providers.map(describe).join("\n"));
+      return;
+    }
+    const provider = providers.find((p) => p.id === normal(words[0]!) || normal(p.label) === normal(words[0]!));
+    if (!provider) {
+      say(`No provider named '${words[0]}' has an address to change. /endpoint lists the ones that do.`);
+      return;
+    }
+    const rest = words.slice(1);
+    const e = providerEndpoint(provider.id);
+    const s = providerSetup(provider.id);
+    // A provider set up by an address opens as a box, like /key: the custom endpoint has an address, a key, model ids and a window,
+    // and LM Studio and llama.cpp (found by themselves) have an address for a server that is somewhere else.
+    if (rest.length === 0 && provider.setup) {
+      setEndpointOpen(provider.id);
+      return;
+    }
+    if (rest.length === 0) {
+      const lines = [describe(provider)];
+      if (e) {
+        lines.push(`usual address: ${e.defaultUrl}`);
+        for (const x of e.presets) lines.push(`  ${x.id} — ${x.label}: ${x.url}\n    ${x.note}`);
+      } else if (s) {
+        lines.push(`an address looks like ${s.placeholder}`);
+        if (s.keyed) lines.push(s.hasKey ? "a key is saved" : "no key is saved: if the server wants one, put MINDWEAVE_CUSTOM_API_KEY=... in ~/.mindweave/.env");
+        if (s.usesModels) lines.push(`typed model ids: ${s.models || "none"} (/endpoint ${provider.id} models a,b)`);
+        if (s.usesWindow) lines.push(`window assumed for models that do not say: ${s.window || "128000"} tokens (/endpoint ${provider.id} window 64000)`);
+      }
+      say(lines.join("\n"));
+      return;
+    }
+    const verb = rest[0]!.toLowerCase();
+    const reset = verb === "reset" || verb === "default";
+    let result;
+    if (s && (verb === "models" || verb === "window")) {
+      const value = rest.slice(1).join(" ");
+      if (!s.usesModels && verb === "models") return say(`${provider.label} lists its own models.`);
+      if (!s.usesWindow && verb === "window") return say(`${provider.label} reports its own window.`);
+      result = setProviderSetup(provider.id, verb === "models" ? { models: value || null } : { window: value || null });
+    } else if (s) {
+      result = setProviderSetup(provider.id, { address: reset ? null : rest.join(" ") });
+    } else {
+      result = setProviderEndpoint(provider.id, reset ? null : rest.join(" "));
+    }
+    if (!result.ok) {
+      say(`⚠ ${result.error}`);
+      return;
+    }
+    // The new address is tried at once, so the answer below is what will happen on the next message.
+    await refreshModels().catch(() => []);
+    note(`${describe(provider)}`);
+    if (s) {
+      const n = modelsOf(provider).length;
+      note(hasApiKey(provider.apiKeyEnv) ? `${n} model${n === 1 ? "" : "s"} available. /provider ${provider.label} moves to ${provider.label}.` : `${provider.label} did not answer with a model yet.`);
+    } else if (e) {
+      const preset = providerEndpoint(provider.id)?.presets.find((x) => x.id === providerEndpoint(provider.id)?.preset);
+      if (preset) note(preset.note);
+    }
+  }
+
   /**
    * Apply a /provider pick: move to that provider's first model, since a provider is
    * only reachable through one of its models. Staying put when the pick is the
    * provider already in use matters — otherwise re-selecting it would quietly reset a
    * model the user chose deliberately.
    */
-  async function applyProvider(index: number) {
+  async function applyProvider(provider: ReturnType<typeof allProviders>[number]) {
     const s = session.current;
-    // The display-ordered list, matching what the picker rendered and its cursor.
-    const provider = orderedProviderList()[index];
     if (!s || !provider) return;
     if (providerOf(s.modelConfig.model).id === provider.id) {
       note(`already on ${provider.label} · ${modelLabel(s.modelConfig.model)}`);
       return;
     }
-    // A local runtime (Ollama) has no key to ask for: it has to be running, with a model pulled.
+    // A local runtime (Ollama, LM Studio, llama.cpp) has no key to ask for: it has to be running, with a model ready.
     if (provider.local && !hasApiKey(provider.apiKeyEnv)) {
-      note(`${provider.label} isn't running here, or has no models yet. Start it and pull a model, then pick it again. ${provider.keysUrl}`);
+      note(`${provider.label} isn't running here, or has no models yet. Start it and load a model, then pick it again. ${provider.keysUrl}`);
+      // A server that is somewhere else is pointed at from a box, so the way to that is open too.
+      if (provider.setup) setEndpointOpen(provider.id);
+      return;
+    }
+    // The custom endpoint has to be pointed somewhere first: its box opens, and picking it again works once it answers.
+    if (provider.setup && !provider.local && !hasApiKey(provider.apiKeyEnv)) {
+      note(`${provider.label} isn't set up yet. Give it an address (and a key if the server wants one), then pick it again.`);
+      setEndpointOpen(provider.id);
       return;
     }
     const target = modelsOf(provider)[0];
-    if (!target) return;
+    if (!target) {
+      note(`${provider.label} has no models yet.`);
+      return;
+    }
 
     // Do NOT move onto — let alone SAVE — a provider we can't run. Persisting first is
     // what turned a wrong pick into a project that reopened straight into the key
@@ -3132,7 +3365,6 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
     if (o.kind === "app") {
       note(openInBrowser(APP_PAGE_URL) ? "Opened the download page in your browser." : `Could not open a browser. The page is ${APP_PAGE_URL}`);
     } else if (o.kind === "resumeMode") void applyResume(o.meta, index);
-    else if (o.kind === "provider") void applyProvider(index);
     else if (o.kind === "model") void applyModel(index, o.providerId);
     else if (o.kind === "think") void applyThink(index);
     else if (o.kind === "screen") {
@@ -3390,7 +3622,9 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
         // than three rows arriving separately around it.
         await compactNow(s, {
           onActivity: (line, opts) => note(line, opts),
+          onCompactionStart: () => dispatch({ type: "compactionStart" }),
           onCompaction: (report) => dispatch({ type: "compaction", report }),
+          onCompactionEnd: () => dispatch({ type: "compactionEnd" }),
           // `/compact focus on the auth work` — the person compacting usually knows
           // which thread they are about to keep working on. Additive: it ranks detail
           // inside the summary, it never narrows what the summary must cover.
@@ -3667,9 +3901,10 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
     // served model appears without a restart. Awaited rather than fired off: the
     // picker renders from the list, and opening on a stale one that then changes
     // under the cursor is the exact "two-stage reveal" the UI work removed.
+    // /provider and /key are one screen: the providers, and the keys of the one highlighted.
     if (name === "/provider") {
       await refreshModels({ maxAgeMs: DISCOVERY_TTL_MS });
-      setOverlay({ kind: "provider" });
+      setKeysOpen(true);
       return;
     }
     // The same screen the first run uses, reopened. A key that is wrong — a typo, or one
@@ -3845,6 +4080,12 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
       } else {
         say(`'${result.pattern}' was already forbidden.`);
       }
+      return;
+    }
+
+    // /endpoint — where each provider is reached: a coding plan's address, a gateway, a local server, the custom endpoint.
+    if (name === "/endpoint") {
+      await runEndpoint(arg);
       return;
     }
 
@@ -4134,6 +4375,14 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
     // above where you are scrolled to, reads as the app having ignored you.
     setScrollUp(0);
     setHistory((h) => (h[h.length - 1] === text ? h : [...h, text]));
+    // Watching a sub-agent: what is typed goes to IT, between its steps, and shows in its conversation. A command (/ or !) is still the
+    // main agent's, and a worker that has finished cannot be written to.
+    const watching = viewAgentRef.current;
+    if (watching !== null && !text.startsWith("/") && !text.startsWith("!")) {
+      if (sendToSubagent(watching, text) === "queued") dispatch({ type: "subagentSaid", agentId: watching, text });
+      else note("That sub-agent has finished, so it cannot be written to.");
+      return;
+    }
     // Also when something is already queued, busy or not: a turn ends, the next queued message is
     // about to be sent, and for one render `busy` reads false. A message typed in that moment used to
     // go straight out and arrive BEFORE the ones that had been waiting.
@@ -4146,18 +4395,18 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
   }
 
   /**
-   * ctrl+F: send NOW, the way the queue sends, at the first moment that loses nothing.
+   * ctrl+F: send NOW, at the first moment that loses nothing, and make that moment come at once.
    *
-   * It is the queue, not a second mechanism: the message goes in the same queue and reaches the agent
-   * by the same road (handed to the running turn when its step ends). What it adds is a way to make
-   * that moment come SOONER, and the only thing that holds a step up for long without anyone's
-   * leave is a command the turn is waiting on. That is moved to the background, as ctrl+X moves it:
-   * it keeps running, the step ends at once, the message arrives, and the agent is told the command
-   * is still going and hears when it ends. Nothing is stopped, killed or thrown away; only Esc, or
-   * the person asking, does that.
+   * The message goes in the queue and reaches the agent by the same road as any queued message (handed to the running turn when its
+   * step ends). What this key adds is that the step ENDS NOW, whatever the turn was doing:
    *
-   * A reply being written, a compaction or a sub-agent has no such handle and is left alone: the
-   * message arrives the moment it ends, exactly as it would have through Enter.
+   *  - a command the turn is waiting on is moved to the background, as ctrl+X moves it: it keeps running, the step ends, the message
+   *    arrives and the agent is told the command is still going;
+   *  - sub-agents at work are NOT cut: they are expensive and the person has not asked to stop them. The message arrives the moment
+   *    they are back, and the screen says so instead of leaving the key looking dead (Esc is what stops them);
+   *  - otherwise the model is writing (a long answer, a whole file in one call) and nothing but its own end would release the step,
+   *    sometimes half a minute away. That one request is stopped, the work already done is kept, and the message goes out at once as
+   *    the next turn, the way a message typed after Esc does, but without Esc's other effects (it stops no background shell, no app).
    */
   function forceSend(text: string) {
     if (!busy && queueRef.current.length === 0) {
@@ -4165,13 +4414,28 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
       if (text) onSend(text);
       return;
     }
+    const moved = busy ? pressBackground(session.current?.toolContext.foregroundCommands) : "none";
+    const workersAtWork = agentsRef.current.some((a) => a.status === "running");
+    // A person's own `!` command is theirs to stop; a held question is answered where it is asked.
+    const plan = forceSendPlan({ busy, movedCommand: moved, workersAtWork, userCommandRunning: userCommandRunning.current });
+    const cutShort = plan === "cut";
     if (text) {
       setScrollUp(0);
       setHistory((h) => (h[h.length - 1] === text ? h : [...h, text]));
-      queueRef.current.push(queueMessage(text, { interrupting: interrupting.current }));
+      queueRef.current.push(queueMessage(text, { interrupting: cutShort || interrupting.current }));
       setQueued([...queueRef.current]);
     }
-    if (busy) pressBackground(session.current?.toolContext.foregroundCommands);
+    if (!busy) return;
+    if (cutShort) {
+      // The request the model is writing is stopped and the turn ends; the queue is sent the moment it has (see the drain above).
+      interrupting.current = true;
+      abortRef.current?.abort();
+      approvals.current.dismissWaiting(APPROVAL_DISMISSED);
+      flush.current = true;
+      pump();
+      return;
+    }
+    if (plan === "wait") note("The sub-agents are still working: your message arrives when they are back. Esc stops them.");
   }
 
   // Autocomplete entries: the built-in slash commands, this project's skills, and any
@@ -4196,7 +4460,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
       return (
         <KeyManager
           key={keysTick}
-          providers={providerRows()}
+          providers={providerChoices(providerOf(session.current?.modelConfig.model ?? DEFAULT_MODEL_CONFIG.model).id, hasApiKey)}
           keysOf={(p) => keyRowsFor(p)}
           nextSlot={(p) => nextSlotFor(p)}
           startProvider={
@@ -4227,12 +4491,52 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
             note(`removed ${row.label} key ${row.slot} ${row.hint}.`);
             setKeysTick((n) => n + 1);
           }}
+          onUse={(p) => {
+            pendingSwitch.current = null;
+            setKeysOpen(false);
+            const provider = allProviders().find((x) => x.id === p.id);
+            if (provider) void applyProvider(provider);
+          }}
+          setupTab={(p, back, tabs, titleWidth) =>
+            allProviders().find((x) => x.id === p.id)?.setup ? (
+              <EndpointBox
+                key={`${p.id}${endpointTick}`}
+                title={p.label}
+                read={() => endpointFields(p.id)}
+                onSave={(patch) => endpointSave(p.id, patch)}
+                onCheck={() => endpointCheck(p.id)}
+                onForget={() => endpointForget(p.id)}
+                onClose={back}
+                width={width}
+                maxRows={maxRows}
+                tabs={tabs}
+                titleWidth={titleWidth}
+                backWord="← or Esc  providers"
+              />
+            ) : null
+          }
           onClose={() => {
             // Closing without saving abandons any provider switch that was waiting on a
             // key, so it cannot finish later when an unrelated key is added.
             pendingSwitch.current = null;
             setKeysOpen(false);
           }}
+        />
+      );
+    }
+    if (endpointOpen !== null) {
+      const provider = allProviders().find((p) => p.id === endpointOpen);
+      return (
+        <EndpointBox
+          key={endpointTick}
+          title={provider?.label ?? "Endpoint"}
+          read={() => endpointFields(endpointOpen)}
+          onSave={(patch) => endpointSave(endpointOpen, patch)}
+          onCheck={() => endpointCheck(endpointOpen)}
+          onForget={() => endpointForget(endpointOpen)}
+          onClose={() => setEndpointOpen(null)}
+          width={width}
+          maxRows={maxRows}
         />
       );
     }
@@ -4326,38 +4630,6 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
       }));
       return (
         <Picker key={overlay.kind} title="Background shells" items={items} width={width} maxRows={maxRows} onSelect={onOverlaySelect} onCancel={onOverlayCancel} />
-      );
-    }
-    if (overlay.kind === "provider") {
-      const activeModel = cur?.modelConfig.model ?? DEFAULT_MODEL_CONFIG.model;
-      const active = providerOf(activeModel).id;
-      // The model actually running, by the name the model list calls it. The row for the
-      // provider you are already on otherwise says no more than any other row, leaving the
-      // one thing you came to check — what you are on right now — off the screen.
-      const activeLabel = modelLabel(activeModel);
-      const providers = orderedProviderList();
-      const items = providers.map((p) => {
-        const n = modelsOf(p).length;
-        const models = `${n} model${n === 1 ? "" : "s"}`;
-        // Say up front which ones you can actually run — finding out at the next
-        // request is the worse place to learn it. A local runtime has no key: it runs or not.
-        const key = p.local
-          ? hasApiKey(p.apiKeyEnv) ? "running on this machine" : n > 0 ? "not running" : "not running, or no models pulled"
-          : hasApiKey(p.apiKeyEnv) ? "key set" : `needs ${p.apiKeyEnv}`;
-        const here = p.id === active ? ` · on ${activeLabel}` : "";
-        return { label: p.label + (p.id === active ? "  ✓" : ""), description: `${models} · ${key}${here}` };
-      });
-      return (
-        <Picker key={overlay.kind}
-          title="Choose a provider"
-          items={items}
-          width={width}
-          maxRows={maxRows}
-          searchBox={providerSearch}
-          initialIndex={Math.max(0, providers.findIndex((p) => p.id === active))}
-          onSelect={onOverlaySelect}
-          onCancel={onOverlayCancel}
-        />
       );
     }
     if (overlay.kind === "model") {
@@ -4477,6 +4749,23 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
   const committed = stateRef.current.committed;
   const tail = stateRef.current.tail;
   const allBlocks: Block[] = [...committed, ...tail];
+  // The row exists only while a sub-agent is working. Once they are all back it goes, and the chat carries on as normal.
+  const turnList = turnAgents(allBlocks);
+  const agents = turnList.some((a) => a.status === "running") ? turnList : [];
+  agentsRef.current = agents;
+  const viewIndex = viewAgent === null ? -1 : agents.findIndex((a) => a.agentId === viewAgent);
+  let viewing = viewIndex >= 0 ? agents[viewIndex]! : null;
+  // The sub-agent being watched finishes: its screen closes and the chat is back on the main agent. One opened after it had
+  // finished (to read what it did) stays until the person leaves it. Worked out here, from refs, because hooks cannot be
+  // declared below the first-run gates.
+  const was = watchedWorking.current;
+  if (viewing && was && was.id === viewing.agentId && was.working && viewing.status !== "running") {
+    closedAgents.current.add(viewing.agentId);
+    viewing = null;
+  } else if (viewing && closedAgents.current.has(viewing.agentId)) viewing = null;
+  watchedWorking.current = viewing ? { id: viewing.agentId, working: viewing.status === "running" } : null;
+  viewAgentRef.current = viewing ? viewing.agentId : null;
+  const agentBlocks: Block[] = viewing && shell === "fullscreen" ? agentTranscript(viewing, Date.now()) : [];
 
   // The terminal's height RIGHT NOW, by live syscall — see liveTerminalSize. The SOLE
   // authority for the frame: no min or max against the polled state, which can lag a
@@ -4549,12 +4838,10 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
         providerOf(session.current?.modelConfig.model ?? DEFAULT_MODEL_CONFIG.model).label
       : undefined;
   const modelSearch = modelSearchLabel !== undefined;
-  // The provider list is searched the same way.
-  const providerSearch = overlay?.kind === "provider";
   // The keys manager opens on its provider list, which is searched the same way, unless it was
   // reached by picking a provider that has no key (it opens on that provider's key field).
   const keysSearch = keysOpen && !pendingSwitch.current;
-  const searchPlaceholder = modelSearch ? `Search ${modelSearchLabel} models…` : providerSearch || keysSearch ? "Search providers…" : undefined;
+  const searchPlaceholder = modelSearch ? `Search ${modelSearchLabel} models…` : keysSearch ? "Search providers…" : undefined;
   const overlayView = buildOverlayView(maxMenuItems);
   const runningShells = session.current?.toolContext.backgroundShells?.running() ?? [];
   // Where the transcript sits in the viewport, and how far it can travel. Extracted
@@ -4725,8 +5012,11 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
         {/* Persistent status line: spinner + timer while working,
             "● Cooked for 1m 23s · N tokens" once finished. */}
         <Box flexShrink={0}>
-          <StatusLine busy={busy} userCommand={busy && userTurn.current} startedAt={turnStart.current} lastMs={lastMs} usage={taskUsage} received={liveTokens} advance={advanceTokens} waiting={overlay?.kind === "approval"} waited={() => waitedMs.current + (waitSince.current != null ? Date.now() - waitSince.current : 0)} />
+          <StatusLine busy={busy} userCommand={busy && userTurn.current} startedAt={turnStart.current} lastMs={lastMs} lastTurn={lastTurn} usage={taskUsage} received={liveTokens} advance={advanceTokens} waiting={overlay?.kind === "approval"} waited={() => waitedMs.current + (waitSince.current != null ? Date.now() - waitSince.current : 0)} />
         </Box>
+
+        {/* The main agent and the sub-agents it started this turn: one row, only while there are some. */}
+        {agents.length > 0 && shell === "fullscreen" ? <AgentTabs agents={agents} viewing={viewing ? viewing.agentId : null} width={width} /> : null}
 
         {/* The Marathon panel: pinned right above the input, passive (it never takes a key),
             and part of the measured footer so the chat is sized around it. */}
@@ -4747,7 +5037,9 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
               opening={opening}
               disabled={false}
               placeholder={
-                marathonUi?.phase === "armed" ? "describe the goal…" : busy ? "type to queue a message…" : "say something…"
+                viewing
+                  ? `write to sub-agent #${viewIndex + 1}…`
+                  : marathonUi?.phase === "armed" ? "describe the goal…" : busy ? "type to queue a message…" : "say something…"
               }
               width={width}
               history={history}
@@ -4770,6 +5062,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
               onMenuChange={onMenuChange}
               placeCursor={shell === "inline"}
               onQueuePop={popQueue}
+              onEmptyArrow={stepAgentView}
               overlay={overlayView}
               {...(searchPlaceholder ? { searchPlaceholder } : {})}
               fill={fill}
@@ -4830,9 +5123,15 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
         {/* The ref sits on a box with NO margin of its own, so the measured
             height is the content's alone and cannot drift as it scrolls. */}
         <Box ref={contentRef} flexDirection="column" flexShrink={0}>
+          {/* A sub-agent being watched: its conversation, drawn by the same rows as the main chat, in the same place. */}
+          {agentBlocks.map((b, i) => (
+            <Box key={b.id} flexShrink={0} flexDirection="column">
+              <BlockView block={b} columns={width} tightTop={isTight(agentBlocks, i)} />
+            </Box>
+          ))}
           {/* Blocks scrolled off the top, as one box of exactly their height. */}
-          {win.padTop > 0 ? <Box flexShrink={0} height={win.padTop} /> : null}
-          {rendered.slice(win.start, win.end).map((b, i) => {
+          {!viewing && win.padTop > 0 ? <Box flexShrink={0} height={win.padTop} /> : null}
+          {(viewing ? [] : rendered.slice(win.start, win.end)).map((b, i) => {
             const idx = win.start + i;
             return (
               // flexShrink:0 is load-bearing — without it Yoga compresses an
@@ -4851,11 +5150,11 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
             );
           })}
           {/* Measured blocks between the window and the unmeasured tail. */}
-          {padMiddle > 0 ? <Box flexShrink={0} height={padMiddle} /> : null}
+          {!viewing && padMiddle > 0 ? <Box flexShrink={0} height={padMiddle} /> : null}
           {/* The unmeasured tail. Rendered in full because there is no honest
               spacer height for a block nobody has measured yet — and rendering it
               is what produces the measurement. */}
-          {rendered.slice(known).map((b, i) => {
+          {(viewing ? [] : rendered.slice(known)).map((b, i) => {
             const idx = known + i;
             return (
               <Box
@@ -5436,6 +5735,22 @@ function parsePaths(arg: string): string[] {
 }
 
 /** A short, human title for a session row: its opening prompt, or a fallback. */
+/**
+ * How the last turn went, worked out from the times on the entries, for a session saved before that was kept (pure): from the last
+ * message the person sent to the last thing written, when the conversation ends on a reply. Nothing is made up: no such times, no line.
+ */
+export function lastTurnFromEntries(entries: readonly Entry[]): { ms: number; at: number; outputTokens?: number } | undefined {
+  const last = entries[entries.length - 1];
+  if (!last || last.role !== "assistant" || last.ts === undefined) return undefined;
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const e = entries[i]!;
+    if (e.role === "user" && !(e as { synthetic?: boolean }).synthetic) {
+      return e.ts !== undefined && last.ts > e.ts ? { ms: last.ts - e.ts, at: last.ts } : undefined;
+    }
+  }
+  return undefined;
+}
+
 function sessionTitle(meta: SessionMeta): string {
   const t = (meta.firstPrompt || meta.lastPrompt || "").trim();
   if (!t) return "(untitled session)";
@@ -5468,6 +5783,7 @@ function StatusLine({
   userCommand,
   startedAt,
   lastMs,
+  lastTurn,
   usage,
   received,
   advance,
@@ -5483,6 +5799,8 @@ function StatusLine({
   busy: boolean;
   startedAt: number | null;
   lastMs: number | null;
+  /** When the last turn ended and what it generated: the line's tail ("done 3:06 PM"), kept across a session being opened again. */
+  lastTurn: { at: number; outputTokens?: number } | null;
   /** The task's measured summary. Non-null as soon as the first call reports, but only
    *  rendered once the turn settles: while busy the line shows the live figure, which
    *  includes the in-flight call this one cannot yet see. */
@@ -5563,8 +5881,11 @@ function StatusLine({
     // work, and showing it made an ordinary turn look like a runaway one. How full the
     // context is (and when compaction fires) is a separate measure — the last prompt's
     // size — not this.
-    const meter = usage ? ` · ↓ ${formatTokens(usage.outputTokens)} tokens` : "";
-    label = <Text bold> Worked for {fmtElapsed(Math.round(lastMs / 1000))}{meter}</Text>;
+    const generated = usage ? usage.outputTokens : lastTurn?.outputTokens;
+    const meter = generated ? ` · ↓ ${formatTokens(generated)} tokens` : "";
+    // When it ended, as the person's own clock reads it: "done 3:06 PM".
+    const done = lastTurn ? ` · done ${new Date(lastTurn.at).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}` : "";
+    label = <Text bold> Worked for {fmtElapsed(Math.round(lastMs / 1000))}{meter}{done}</Text>;
   }
 
   // A fresh session that has never run a turn has nothing to report — no dot,

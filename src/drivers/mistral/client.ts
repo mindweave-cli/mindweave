@@ -5,12 +5,12 @@
  * shape, SSE framing and fragmented tool-call arguments are handled by the shared
  * layer in `../openaiCompat/wire.js`. This file supplies only what differs.
  */
+import { endpointUrl } from "../endpoints.js";
 import type { ModelConfig, ModelRequest, StreamOptions, StreamResult, Turn, TurnOptions } from "../types.js";
 import { compatStreamTurn, compatToolTurn, standardCacheSplit, type CompatProvider } from "../openaiCompat/wire.js";
 import { BUFFERED_OUTPUT_TOKENS, DEFAULT_MODEL, takesEffort } from "./manifest.js";
 
 /** La Plateforme, which runs in EU data centres. */
-const BASE_URL = process.env.MINDWEAVE_MISTRAL_URL ?? "https://api.mistral.ai/v1";
 
 /** The model a request runs on, matching the shared layer's own fallback so the
  *  reasoning fields can never be built for a different model than is being called. */
@@ -47,7 +47,10 @@ export function reasoningFields(config: ModelConfig | undefined): Record<string,
  */
 export const mistralProvider: CompatProvider = {
   label: "Mistral",
-  baseUrl: BASE_URL,
+  // Read on every request, so an address changed in the app counts at once (see endpoints.ts).
+  get baseUrl() {
+    return endpointUrl("mistral");
+  },
   apiKeyEnv: "MISTRAL_API_KEY",
   defaultModel: process.env.MINDWEAVE_MODEL ?? DEFAULT_MODEL,
   reasoningFields,

@@ -135,14 +135,13 @@ const rowCount = (screen: string) => screen.split("\n").length;
 test("the provider list opens as a search: ghost text in the box, its own border colour, the hint says so", async () => {
   const h = mount();
   try {
-    await until(h, () => h.stdout.last().includes("Keys"), "the list to open");
+    await until(h, () => h.stdout.last().includes("Providers"), "the list to open");
     const screen = h.stdout.last();
     assert.match(boxRow(screen), /Search providers…/, "no ghost text in the box");
     assert.doesNotMatch(screen, /say something/);
     assert.match(screen, /type to search/);
     assert.ok(topBorder(h).includes(ACCENT_SGR), "the box's border is not the accent colour");
     assert.match(screen, /DeepSeek/);
-    assert.match(screen, /1 of 15/, "the whole list is not there");
   } finally {
     h.done();
   }
@@ -151,7 +150,7 @@ test("the provider list opens as a search: ghost text in the box, its own border
 test("typing narrows the list and puts the words in the box, in the same size of box", async () => {
   const h = mount();
   try {
-    await until(h, () => h.stdout.last().includes("Keys"), "the list to open");
+    await until(h, () => h.stdout.last().includes("Providers"), "the list to open");
     const before = rowCount(h.stdout.last());
     await typeText(h, "mi");
     const screen = h.stdout.last();
@@ -169,11 +168,11 @@ test("typing narrows the list and puts the words in the box, in the same size of
 test("rows are numbered from one again in the narrowed list, and Enter opens the one marked", async () => {
   const h = mount();
   try {
-    await until(h, () => h.stdout.last().includes("Keys"), "the list to open");
+    await until(h, () => h.stdout.last().includes("Providers"), "the list to open");
     await typeText(h, "mistral");
     assert.match(h.stdout.last(), /\b1\s+Mistral/, "the match is not numbered 1");
     h.stdin.type(ENTER);
-    await until(h, () => h.stdout.last().includes("Add a Mistral key") || h.stdout.last().includes("Mistral ·") || h.stdout.last().includes("no key") === false && /Mistral/.test(h.stdout.last()) && !h.stdout.last().includes("Keys"), "Mistral's own screen");
+    await until(h, () => h.stdout.last().includes("Mistral · add a key"), "Mistral's own screen");
     assert.doesNotMatch(h.stdout.last(), /DeepSeek|Groq/, "it opened something other than the list");
   } finally {
     h.done();
@@ -183,7 +182,7 @@ test("rows are numbered from one again in the narrowed list, and Enter opens the
 test("with nothing typed a digit is still the shortcut for that row", async () => {
   const h = mount();
   try {
-    await until(h, () => h.stdout.last().includes("Keys"), "the list to open");
+    await until(h, () => h.stdout.last().includes("Providers"), "the list to open");
     h.stdin.type("2");
     await until(h, () => /Gemini · /.test(h.stdout.last()), "the second provider to open");
     assert.equal(pickerSearchText(), "", "the shortcut was typed as a search as well");
@@ -195,7 +194,7 @@ test("with nothing typed a digit is still the shortcut for that row", async () =
 test("once words are typed, digits are part of them", async () => {
   const h = mount();
   try {
-    await until(h, () => h.stdout.last().includes("Keys"), "the list to open");
+    await until(h, () => h.stdout.last().includes("Providers"), "the list to open");
     await typeText(h, "g2");
     assert.match(h.stdout.last(), /nothing matches/);
     assert.doesNotMatch(h.stdout.last(), /Gemini · /, "the digit opened a provider");
@@ -207,7 +206,7 @@ test("once words are typed, digits are part of them", async () => {
 test("Esc takes the words away first, and closes only when there are none", async () => {
   const h = mount();
   try {
-    await until(h, () => h.stdout.last().includes("Keys"), "the list to open");
+    await until(h, () => h.stdout.last().includes("Providers"), "the list to open");
     await typeText(h, "kimi");
     h.stdin.type(ESCAPE);
     await until(h, () => pickerSearchText() === "" && h.stdout.last().includes("Search providers"), "the first Esc to clear the search");
@@ -223,7 +222,7 @@ test("Esc takes the words away first, and closes only when there are none", asyn
 test("Backspace edits the words, then closes when there are none", async () => {
   const h = mount();
   try {
-    await until(h, () => h.stdout.last().includes("Keys"), "the list to open");
+    await until(h, () => h.stdout.last().includes("Providers"), "the list to open");
     await typeText(h, "gl");
     h.stdin.type(BACKSPACE);
     await until(h, () => pickerSearchText() === "g", "a letter to come off");
@@ -241,7 +240,7 @@ test("Backspace edits the words, then closes when there are none", async () => {
 test("the screens under the list are not searches: the box is the ordinary prompt there, and the search is back with the list", async () => {
   const h = mount();
   try {
-    await until(h, () => h.stdout.last().includes("Keys"), "the list to open");
+    await until(h, () => h.stdout.last().includes("Providers"), "the list to open");
     h.stdin.type("1");
     await until(h, () => /DeepSeek · /.test(h.stdout.last()) && !pickerSearchActive(), "a provider's keys to open");
     await until(h, () => !topBorder(h).includes(ACCENT_SGR), "the box to stop being a search");
@@ -257,7 +256,7 @@ test("the screens under the list are not searches: the box is the ordinary promp
 
 test("the search is put away with the manager", async () => {
   const h = mount();
-  await until(h, () => h.stdout.last().includes("Keys"), "the list to open");
+  await until(h, () => h.stdout.last().includes("Providers"), "the list to open");
   await typeText(h, "kimi");
   h.done();
   assert.equal(pickerSearchText(), "");

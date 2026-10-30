@@ -5,7 +5,7 @@
  * data and pure functions. The wire code (and the SDK) live in `client.ts`, which
  * only loads once a GPT model is actually selected.
  *
- * The GPT-5.6 family — Sol, Terra and Luna — plus the newer GPT-6 flagship, Astra. They
+ * The GPT-6.1 and GPT-6 families (Astra, Sol, Terra, Luna) and the earlier GPT-5.6 tiers. They
  * share one request surface: the same context window, output ceiling and reasoning
  * ladder, so unlike the Anthropic manifest, which has to carry a table of per-model wire
  * rules, this one needs a single set of facts and a price row per model. Astra sits above
@@ -20,6 +20,7 @@
 import type { DriverManifest, Effort, ModelChoice, ModelConfig, ModelId, ModelPrice, ThinkLevel } from "../types.js";
 
 export const ASTRA = "gpt-6-astra";
+export const TERRA_61 = "gpt-6.1-terra";
 export const SOL_61 = "gpt-6.1-sol";
 export const SOL_6 = "gpt-6-sol";
 export const LUNA_6 = "gpt-6-luna";
@@ -28,17 +29,19 @@ export const TERRA = "gpt-5.6-terra";
 export const LUNA = "gpt-5.6-luna";
 
 /** The model used when nothing is saved and no env override is set. */
-export const DEFAULT_MODEL = TERRA;
+export const DEFAULT_MODEL = TERRA_61;
 
 /**
  * The models offered by `/model`. First entry is this provider's default, which is
  * also where `/provider` lands when someone switches to OpenAI.
  *
- * Terra leads because it is the balanced tier — Sol is roughly 2.5x its rate and
- * Luna a tenth of it, so Terra is the one that is rarely the wrong answer.
+ * GPT-6.1 Terra leads: it is the newest balanced tier and the cheaper one, at $1 / $5
+ * against GPT-5.6 Terra's $2 / $12, so it is the one that is rarely the wrong answer.
+ * Sol is twice its rate and Luna a tenth of it.
  */
 export const MODELS: ModelChoice[] = [
-  { id: TERRA, label: "GPT-5.6 Terra", description: "balanced intelligence and cost — the default" },
+  { id: TERRA_61, label: "GPT-6.1 Terra", description: "the newest balanced tier, fast and efficient — the default" },
+  { id: TERRA, label: "GPT-5.6 Terra", description: "the previous balanced tier" },
   { id: ASTRA, label: "GPT-6 Astra", description: "the GPT-6 flagship — the most capable, and the priciest" },
   { id: SOL_61, label: "GPT-6.1 Sol", description: "the newest Sol, at GPT-6 Sol's rate" },
   { id: SOL_6, label: "GPT-6 Sol", description: "GPT-6 at Terra's input rate, with cheaper output" },
@@ -118,6 +121,9 @@ const PRICES: Record<string, ModelPrice> = {
   // whole request bills at 2x input and cache and 1.5x output; the usable window here is far
   // below that, so it is not modelled.
   [SOL_61]: { cacheHit: 0.1, cacheMiss: 2, output: 10 },
+  // GPT-6.1 Terra: $1 / $5 with a $0.05 cache read (developers.openai.com/api/docs/pricing, checked
+  // 2026-10-28); over 272K input tokens the whole request doubles, which the usable window stays below.
+  [TERRA_61]: { cacheHit: 0.05, cacheMiss: 1, output: 5 },
   [LUNA_6]: { cacheHit: 0.01, cacheMiss: 0.1, output: 0.5 },
   [SOL]: { cacheHit: 0.4, cacheMiss: 4, output: 20 },
   [TERRA]: { cacheHit: 0.2, cacheMiss: 2, output: 12 },

@@ -6,6 +6,7 @@
  * (MINDWEAVE.md, a saved transcript); the engine receives a ready Session and never
  * touches the filesystem itself.
  */
+import { findUnsettledDrafts, settleUnansweredDraft } from "./unsettled.js";
 import { promises as fs, existsSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
@@ -183,7 +184,7 @@ const SUBAGENT_PREAMBLE =
  * approval channel, session permission grants, and the parent's approved plan all stop
  * here. Only the child's final reply crosses back to the parent, through the spawn tool.
  */
-export function forkSession(parent: Session, task: string, opts: { readOnly?: boolean; agentPrompt?: string; verifier?: boolean } = {}): Session {
+export function forkSession(parent: Session, task: string, opts: { readOnly?: boolean; agentPrompt?: string; verifier?: boolean; writeScope?: string[] } = {}): Session {
   const p = parent.toolContext;
   const id = randomUUID();
   const childContext: ToolContext = {
@@ -202,6 +203,11 @@ export function forkSession(parent: Session, task: string, opts: { readOnly?: bo
     readOnlyTools: opts.readOnly === true ? true : p.readOnlyTools,
     // A verifier runs what it checks. Not inherited: a child of a verifier is a plain worker.
     verifierTools: opts.verifier === true,
+    // The files this worker alone may change, when it edits beside others. Not inherited either way: the parent's own scope (it has
+    // none, being the lead) is not a child's, and a child of a scoped worker cannot exist (depth is capped).
+    writeScope: opts.writeScope,
+    // A child hands nothing on to others; only the lead keeps the turn's ledger.
+    delegation: undefined,
     // A ROLE for this child, appended to its system prompt. Not inherited: a nested child
     // of a verifier is not itself a verifier, and silently carrying the persona down would
     // make every descendant refuse to write.
@@ -447,6 +453,8 @@ export async function resumeSession(
   // Order first, then fill gaps: reconcile inserts results right after their assistant
   // message, so it must see a group that is already contiguous.
   const transcript = reconcileInterruptedTools(repairToolCallOrder(loaded));
+  // A reply a gate set aside and the turn never got past, from before the engine settled those itself.
+  settleUnansweredDraft({ transcript }, findUnsettledDrafts(transcript));
 
   const [projectMemory, memoryIndex, projectContext, governance, stamp, modelConfig, sessionMemory, saved, earlier] =
     await Promise.all([
@@ -528,6 +536,7 @@ export async function resumeSession(
     // what happened, and what happened does not stop being true.
     ...(meta.spend ? { spend: meta.spend } : {}),
     ...(meta.callLog ? { callLog: meta.callLog } : {}),
+    ...(meta.lastTurn ? { lastTurn: meta.lastTurn } : {}),
     // What the session did so far, so the counts of a continued session are the whole session's.
     ...(meta.counters ? { counters: meta.counters } : {}),
     // A measurement of this session, true after a resume as long as the model is the

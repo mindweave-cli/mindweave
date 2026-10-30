@@ -17,6 +17,7 @@
  * has to be laid out in full again to get it back.
  */
 
+import { compactionLine, compactingLine } from "./compaction.js";
 import { SCROLLBACK_BLOCKS } from "./virtualWindow.js";
 import type { Block } from "./transcript.js";
 
@@ -140,7 +141,7 @@ export function estimateHeight(block: Block, columns: number): number {
       for (const ag of block.agents) rows += 3 + (ag.open ? 4 + ag.items.length : 0);
       break;
     case "compaction":
-      rows = 6;
+      rows = textRows(block.report ? compactionLine(block.report, block.auto) : compactingLine(block.auto === true), columns - 2);
       break;
   }
   // The blank row that separates one block from the next.

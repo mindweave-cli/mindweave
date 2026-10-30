@@ -19,15 +19,20 @@ import {
   deriveRuleName,
   slugify,
   writeSkill,
-  removeRule,
-  removeSkill,
+  removeRuleFile,
+  removeSkillDir,
   removeForbiddenPath,
   removeForbiddenCommand,
   removeForbiddenMcpTool,
 } from "../governor/write.js";
 import { rescope } from "../governor/scope.js";
 import { parseGlobs } from "../governor/rules.js";
-import { failQuietly } from "./results.js";
+import { fail, failQuietly } from "./results.js";
+import { resolveEntry } from "./resolveName.js";
+import { loadRules } from "../governor/rules.js";
+import { loadSkillCatalog } from "../governor/skills.js";
+import { loadPermissionLists, type GovernanceScope } from "../governor/index.js";
+import { projectDir, stateRoot } from "../memory/store.js";
 
 /** The project root for state files: the fixed session root, carried on the
  *  governance config (cwd may have moved via `cd`; the root never does). */
@@ -203,72 +208,132 @@ async function doForbidMcpTool(args: Record<string, unknown>, ctx: Ctx): Promise
 // hand. Each of these reports a MISS as a miss: lifting something that was never
 // recorded says so, rather than claiming a change that did not happen.
 
+/** A line for a list of rules the model can pick from: the name, which scope it is in, and the start of its text. */
+const ruleLine = (r: { name: string; body: string }, scope: GovernanceScope): string =>
+  `  - ${r.name} (${scope === "global" ? "yours, for every project" : "this project"}): ${r.body.replace(/\s+/g, " ").slice(0, 90)}`;
+
+/** Every rule on disk, the user's own for every project and this project's, each with where it lives. */
+async function rulesOnDisk(ctx: Ctx) {
+  const cwd = projectRoot(ctx);
+  const [mine, here] = await Promise.all([loadRules(stateRoot()), loadRules(projectDir(cwd))]);
+  return [...mine.map((rule) => ({ rule, scope: "global" as GovernanceScope })), ...here.map((rule) => ({ rule, scope: "project" as GovernanceScope }))];
+}
+
 async function doForgetRule(args: Record<string, unknown>, ctx: Ctx): Promise<ToolResult> {
-  const name = typeof args.value === "string" ? args.value.trim() : "";
-  if (!name) return failQuietly("`value` is required — the rule's name.");
-  const declined = await confirmStanding(ctx, `Drop the standing rule '${name}' for this project?`, name);
+  const asked = typeof args.value === "string" ? args.value.trim() : "";
+  if (!asked) return failQuietly("`value` is required — the rule's name, or its text.");
+  // Found by its name or by what it says, in this project's rules and in the user's own. The rules block shows a rule's TEXT, so
+  // asking for an exact name the model was never given is what used to fail, three times in a row.
+  const all = await rulesOnDisk(ctx);
+  const found = resolveEntry(all, asked, (x) => [x.rule.name, x.rule.description, x.rule.body]);
+  if (found.kind === "none") {
+    return fail(
+      all.length === 0
+        ? "There are no standing rules to drop."
+        : `No rule matches that. The rules that exist:\n${all.map((x) => ruleLine(x.rule, x.scope)).join("\n")}\nUse one of these names.`,
+    );
+  }
+  if (found.kind === "many") {
+    return fail(`That matches more than one rule; say which by its name:\n${found.items.map((x) => ruleLine(x.rule, x.scope)).join("\n")}`);
+  }
+  const { rule, scope } = found.item;
+  const where = scope === "global" ? "one of your own, which applies in EVERY project" : "this project's";
+  const declined = await confirmStanding(ctx, `Drop the standing rule '${rule.name}' (${where})?`, rule.body);
   if (declined) return declined;
-  const gone = await removeRule(projectRoot(ctx), name);
+  const gone = rule.file ? await removeRuleFile(projectRoot(ctx), scope, rule.file) : false;
   // The live session drops it too, so the very next turn is built without it.
   if (ctx.governance && gone) {
-    const slug = slugify(name);
-    ctx.governance.rules = ctx.governance.rules.filter((r) => slugify(r.name) !== slug);
+    ctx.governance.rules = ctx.governance.rules.filter((r) => r.name !== rule.name || r.body !== rule.body);
     if (ctx.ruleScope) rescope(ctx.ruleScope, ctx.governance.rules);
   }
   return gone
-    ? { output: `Dropped rule '${name}'. It no longer applies, from this turn on.`, summary: `dropped rule '${name}'` }
-    : failQuietly(`No rule named '${name}'. The rules in force are in your context; use the name shown there.`);
+    ? {
+        output: `Dropped rule '${rule.name}'${scope === "global" ? " (it applied in every project, and no longer does anywhere)" : ""}. It no longer applies, from this turn on.`,
+        summary: `dropped rule '${rule.name}'`,
+      }
+    : fail(`The rule '${rule.name}' could not be removed (its file is gone or cannot be deleted).`);
 }
 
+/** What one lifting action works on: which list it is, how it is said, and how it is taken out of the live session. */
+type Lift = {
+  noun: string;
+  list: (l: Awaited<ReturnType<typeof loadPermissionLists>>) => string[];
+  remove: (cwd: string, entry: string, scope: GovernanceScope) => Promise<boolean>;
+  question: (entry: string, scope: GovernanceScope) => string;
+  forget: (ctx: Ctx, entry: string) => void;
+  done: (entry: string) => ToolResult;
+};
+
+/**
+ * Take one thing back from a deny-list (impure). The entry is found by what the person would call it, in this project's list and in
+ * the user's own that applies everywhere, and removed from the list it is in: lifting something the user forbade for every project
+ * used to report "not in the list" because only the project's was looked at.
+ */
+async function liftEntry(args: Record<string, unknown>, ctx: Ctx, how: Lift): Promise<ToolResult> {
+  const asked = typeof args.value === "string" ? args.value.trim() : "";
+  if (!asked) return failQuietly(`\`value\` is required — the ${how.noun} to lift.`);
+  // Nobody to ask: refused before anything is looked up, so a message that is not the person's cannot lift a protection by itself.
+  if (!ctx.requestApproval) return (await confirmStanding(ctx, "", asked))!;
+  const cwd = projectRoot(ctx);
+  const [here, mine] = await Promise.all([loadPermissionLists(cwd, "project"), loadPermissionLists(cwd, "global")]);
+  const all = [
+    ...how.list(mine).map((entry) => ({ entry, scope: "global" as GovernanceScope })),
+    ...how.list(here).map((entry) => ({ entry, scope: "project" as GovernanceScope })),
+  ];
+  const listed = all.map((x) => `  - ${x.entry} (${x.scope === "global" ? "yours, for every project" : "this project"})`).join("\n");
+  const found = resolveEntry(all, asked, (x) => [x.entry]);
+  if (found.kind === "none") return fail(all.length === 0 ? `Nothing is recorded as a ${how.noun}, so there was nothing to lift.` : `No ${how.noun} matches that. The ones recorded:\n${listed}`);
+  if (found.kind === "many") return fail(`That matches more than one ${how.noun}; give the exact one:\n${found.items.map((x) => `  - ${x.entry}`).join("\n")}`);
+  const { entry, scope } = found.item;
+  const declined = await confirmStanding(ctx, how.question(entry, scope), entry);
+  if (declined) return declined;
+  const gone = await how.remove(cwd, entry, scope);
+  if (gone) how.forget(ctx, entry);
+  return gone ? how.done(entry) : fail(`'${entry}' could not be removed from the list.`);
+}
+
+const scopeNote = (scope: GovernanceScope): string => (scope === "global" ? " (your own, for every project)" : "");
+
 async function doUnforbidPath(args: Record<string, unknown>, ctx: Ctx): Promise<ToolResult> {
-  const pattern = typeof args.value === "string" ? args.value.trim() : "";
-  if (!pattern) return failQuietly("`value` is required — the forbidden path pattern to lift.");
-  const declinedPath = await confirmStanding(ctx, `Lift the protection on '${pattern}', so it can be edited again?`, pattern);
-  if (declinedPath) return declinedPath;
-  const normalized = pattern.replace(/^\.\//, "").replace(/\/$/, "");
-  const gone = await removeForbiddenPath(projectRoot(ctx), pattern);
-  if (ctx.governance && gone) {
-    ctx.governance.forbidden = {
-      ...ctx.governance.forbidden,
-      patterns: ctx.governance.forbidden.patterns.filter((p) => p !== normalized),
-    };
-  }
-  return gone
-    ? { output: `'${normalized}' is no longer protected — I can edit it again.`, summary: `unforbade '${normalized}'` }
-    : failQuietly(`'${pattern}' is not in the forbidden list, so there was nothing to lift.`);
+  return liftEntry(args, ctx, {
+    noun: "protected path",
+    list: (l) => l.paths,
+    remove: removeForbiddenPath,
+    question: (e, s) => `Lift the protection on '${e}'${scopeNote(s)}, so it can be edited again?`,
+    forget: (c, e) => {
+      if (c.governance) c.governance.forbidden = { ...c.governance.forbidden, patterns: c.governance.forbidden.patterns.filter((p) => p !== e) };
+    },
+    done: (e) => ({ output: `'${e}' is no longer protected — I can edit it again.`, summary: `unforbade '${e}'` }),
+  });
 }
 
 async function doUnforbidCommand(args: Record<string, unknown>, ctx: Ctx): Promise<ToolResult> {
-  const pattern = typeof args.value === "string" ? args.value.trim() : "";
-  if (!pattern) return failQuietly("`value` is required — the forbidden command to lift.");
-  const declined = await confirmStanding(ctx, `Allow the forbidden command '${pattern}' to run again?`, pattern);
-  if (declined) return declined;
-  const gone = await removeForbiddenCommand(projectRoot(ctx), pattern);
-  if (ctx.governance && gone) {
-    ctx.governance.forbidden = {
-      ...ctx.governance.forbidden,
-      commands: (ctx.governance.forbidden.commands ?? []).filter((c) => c !== pattern),
-    };
-  }
-  return gone
-    ? { output: `'${pattern}' is no longer forbidden — I can run it again.`, summary: `unforbade command '${pattern}'` }
-    : failQuietly(`'${pattern}' is not in the forbidden commands, so there was nothing to lift.`);
+  return liftEntry(args, ctx, {
+    noun: "forbidden command",
+    list: (l) => l.commands,
+    remove: removeForbiddenCommand,
+    question: (e, s) => `Allow the forbidden command '${e}'${scopeNote(s)} to run again?`,
+    forget: (c, e) => {
+      if (c.governance) c.governance.forbidden = { ...c.governance.forbidden, commands: (c.governance.forbidden.commands ?? []).filter((x) => x !== e) };
+    },
+    done: (e) => ({ output: `'${e}' is no longer forbidden — I can run it again.`, summary: `unforbade command '${e}'` }),
+  });
 }
 
 async function doUnforbidMcpTool(args: Record<string, unknown>, ctx: Ctx): Promise<ToolResult> {
-  const name = typeof args.value === "string" ? args.value.trim() : "";
-  if (!name) return failQuietly("`value` is required — the full MCP tool name to lift.");
-  const declined = await confirmStanding(ctx, `Make the forbidden MCP tool '${name}' available again?`, name);
-  if (declined) return declined;
-  const gone = await removeForbiddenMcpTool(projectRoot(ctx), name);
-  if (ctx.governance && gone) {
-    const mcpTools = (ctx.governance.forbidden.mcpTools ?? []).filter((t) => t !== name);
-    ctx.governance.forbidden = { ...ctx.governance.forbidden, mcpTools };
-    ctx.mcp?.setForbidden(mcpTools);
-  }
-  return gone
-    ? { output: `'${name}' is available to me again.`, summary: `unforbade '${name}'` }
-    : failQuietly(`'${name}' is not in the forbidden MCP tools, so there was nothing to lift.`);
+  return liftEntry(args, ctx, {
+    noun: "forbidden MCP tool",
+    list: (l) => l.mcpTools,
+    remove: removeForbiddenMcpTool,
+    question: (e, s) => `Make the forbidden MCP tool '${e}'${scopeNote(s)} available again?`,
+    forget: (c, e) => {
+      if (!c.governance) return;
+      const mcpTools = (c.governance.forbidden.mcpTools ?? []).filter((x) => x !== e);
+      c.governance.forbidden = { ...c.governance.forbidden, mcpTools };
+      c.mcp?.setForbidden(mcpTools);
+    },
+    done: (e) => ({ output: `'${e}' is available to me again.`, summary: `unforbade '${e}'` }),
+  });
 }
 
 const ACTIONS = {
@@ -310,9 +375,11 @@ export const governor: Tool = {
     "name is rejected rather than silently matching nothing.\n" +
     "Each of those can be TAKEN BACK, which is what the user means by 'forget that rule', " +
     "'you can edit that again', 'you can run that now', 'unban that tool': forget_rule takes " +
-    "the rule's name, and unforbid_path / unforbid_command / unforbid_mcp_tool take the exact " +
-    "entry being lifted. Lifting something that was never recorded says so rather than " +
-    "pretending it was there.\n" +
+    "the rule's name OR its text (you are shown the text: pass it as it reads, or a distinctive part of it), and " +
+    "unforbid_path / unforbid_command / unforbid_mcp_tool take the entry being lifted, or a distinctive part of it. " +
+    "They are found among this project's and the user's own that apply everywhere, the user is asked first and told " +
+    "which it is, and if nothing matches the answer lists what exists, by name: use one of those. " +
+    "Lifting something that was never recorded says so rather than pretending it was there.\n" +
     "Use it when the user states a durable preference, says not to touch or run something, " +
     "or takes one of those back — not for a one-off instruction about the task in hand.",
   parameters: {
@@ -436,17 +503,30 @@ export const skillTool: Tool = {
     if (!name) return failQuietly("`name` is required.");
 
     if (args.action === "delete") {
-      const declinedDelete = await confirmStanding(ctx, `Delete the skill '${slugify(name)}' from this project?`, name);
-      if (declinedDelete) return declinedDelete;
-      const gone = await removeSkill(projectRoot(ctx), name);
-      // Out of the live catalog too, so /name stops offering it immediately.
-      if (ctx.governance && gone) {
-        const slug = slugify(name);
-        ctx.governance.skills = ctx.governance.skills.filter((s) => slugify(s.name) !== slug);
+      // By name or by what it says, among this project's skills and the user's own for every project.
+      const cwd = projectRoot(ctx);
+      const [mine, here] = await Promise.all([loadSkillCatalog(stateRoot()), loadSkillCatalog(projectDir(cwd))]);
+      const all = [...mine.map((skill) => ({ skill, scope: "global" as GovernanceScope })), ...here.map((skill) => ({ skill, scope: "project" as GovernanceScope }))];
+      const line = (x: { skill: { name: string; description: string }; scope: GovernanceScope }) =>
+        `  - ${x.skill.name} (${x.scope === "global" ? "yours, for every project" : "this project"}): ${x.skill.description.slice(0, 80)}`;
+      const found = resolveEntry(all, name, (x) => [x.skill.name, x.skill.description]);
+      if (found.kind === "none") {
+        return fail(all.length === 0 ? "There are no skills to delete." : `No skill matches that. The skills that exist:\n${all.map(line).join("\n")}\nUse one of these names.`);
       }
+      if (found.kind === "many") return fail(`That matches more than one skill; say which by its name:\n${found.items.map(line).join("\n")}`);
+      const { skill, scope } = found.item;
+      const declinedDelete = await confirmStanding(
+        ctx,
+        `Delete the skill '${skill.name}' (${scope === "global" ? "one of your own, available in EVERY project" : "this project's"})?`,
+        skill.name,
+      );
+      if (declinedDelete) return declinedDelete;
+      const gone = await removeSkillDir(skill.dir);
+      // Out of the live catalog too, so /name stops offering it immediately.
+      if (ctx.governance && gone) ctx.governance.skills = ctx.governance.skills.filter((s) => s.name !== skill.name);
       return gone
-        ? { output: `Deleted skill '${slugify(name)}'.`, summary: `deleted skill '${slugify(name)}'` }
-        : failQuietly(`No skill named '${name}'. Your available skills are listed in your context.`);
+        ? { output: `Deleted skill '${skill.name}'${scope === "global" ? " (it was available in every project, and no longer is anywhere)" : ""}.`, summary: `deleted skill '${skill.name}'` }
+        : fail(`The skill '${skill.name}' could not be deleted (its folder is gone or cannot be removed).`);
     }
 
     if (!body) return failQuietly("`steps` is required — the skill needs a body.");

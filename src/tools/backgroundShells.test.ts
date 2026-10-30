@@ -912,7 +912,7 @@ test("a shell blocked on a prompt is flagged once, with the prompt reason", asyn
 });
 
 test("a finish-expecting command gone silent is flagged, even with no prompt", async () => {
-  // Silent threshold 200ms; prompt path off. The Cutio case: output froze mid-run.
+  // Silent threshold 200ms; prompt path off. The myapp case: output froze mid-run.
   const mgr = new BackgroundShells(50, 50, 60_000, 200);
   const child = fakeChild();
   mgr.adopt(child, { command: "cargo run --release", cwd: process.cwd(), notify: "on_finish" });

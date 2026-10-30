@@ -283,7 +283,11 @@ const GLOBAL_ENV_TEMPLATE = [
   // A local runtime (Ollama) has no key line: it counts as set up while it runs, which the
   // file still says, so a reader learns it is there.
   ...allProviders().flatMap((p) =>
-    p.local ? [`# ${p.label}: models on this machine, no key. Start it and pull a model; nothing to fill in.`] : [`# ${p.label}`, `${p.apiKeyEnv}=`],
+    p.local
+      ? [`# ${p.label}: models on this machine, no key. Start it and load a model; nothing to fill in.`]
+      : p.setup
+        ? [`# ${p.label}: a server you point at. /endpoint ${p.id} <address> in Mindweave, or set ${p.setup.addressEnv} (and ${p.setup.keyEnv ?? "a key"} if it wants one).`]
+        : [`# ${p.label}`, `${p.apiKeyEnv}=`],
   ),
   "",
   "# Optional:",

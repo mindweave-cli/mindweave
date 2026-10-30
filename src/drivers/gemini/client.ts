@@ -7,11 +7,11 @@
  * handled by the shared layer in `../openaiCompat/wire.js`. This file supplies
  * only the facts that differ.
  */
+import { endpointUrl } from "../endpoints.js";
 import type { ModelConfig, ModelRequest, StreamOptions, StreamResult, Turn, TurnOptions } from "../types.js";
 import { compatStreamTurn, compatToolTurn, standardCacheSplit, type CompatProvider } from "../openaiCompat/wire.js";
 import { BUFFERED_OUTPUT_TOKENS, DEFAULT_MODEL } from "./manifest.js";
 
-const BASE_URL = process.env.MINDWEAVE_GEMINI_URL ?? "https://generativelanguage.googleapis.com/v1beta/openai";
 
 /**
  * Gemini's reasoning field.
@@ -34,7 +34,10 @@ export const cacheSplit = standardCacheSplit;
 /** Everything the shared wire layer needs to talk to Gemini. */
 export const geminiProvider: CompatProvider = {
   label: "Gemini",
-  baseUrl: BASE_URL,
+  // Read on every request, so an address changed in the app counts at once (see endpoints.ts).
+  get baseUrl() {
+    return endpointUrl("gemini");
+  },
   apiKeyEnv: "GEMINI_API_KEY",
   defaultModel: process.env.MINDWEAVE_MODEL ?? DEFAULT_MODEL,
   reasoningFields,

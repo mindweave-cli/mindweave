@@ -50,6 +50,10 @@ import { archiveCleared } from "../memory/clearedArchive.js";
 import { relativize, resolvePath, rootLabel, rootsOf } from "../tools/paths.js";
 import { renderRules, renderSkillCatalog, reloadGovernance, governanceStamp, rescope } from "../governor/index.js";
 import type { Session, Entry, ToolCallRecord } from "../memory/types.js";
+import { settleUnansweredDraft } from "../memory/unsettled.js";
+import { SCOPED_EDIT_TOOLS, scopeRefusal } from "../tools/delegation.js";
+
+export { settleUnansweredDraft };
 import { writesAgentState, snapshotAgentState, recordAgentStateChanges } from "../tools/stateCheckpoint.js";
 import type { ImageRef } from "../memory/images.js";
 import { forkSession, reconcileInterruptedTools, reloadProjectMemory, repairToolCallOrder } from "../memory/session.js";
@@ -100,6 +104,7 @@ import {
   cacheIsDiscounted,
   shouldCompactForCold,
   coldCompactionLine,
+  coldReason,
   type CacheStatus,
   clearIsWorthIt,
   measuredOverhead,
@@ -526,7 +531,7 @@ export type EngineEvent =
   // A spawned sub-agent's lifecycle: `start` when it's dispatched (with its task +
   // read-only flag), `end` when it reports back. Between them, its own tool events
   // arrive tagged with this `id`, so the UI can render a live nested rail per worker.
-  | { type: "subagent"; phase: "start"; id: string; task: string; readOnly: boolean; /** The task in full (up to 600 characters), for a front end that opens it. `task` stays the short label. */ taskFull?: string }
+  | { type: "subagent"; phase: "start"; id: string; task: string; readOnly: boolean; /** The files it may change, when it edits beside others. */ scope?: string[]; /** The part of the work it owns. */ slice?: string; /** The task in full (up to 600 characters), for a front end that opens it. `task` stays the short label. */ taskFull?: string }
   | { type: "subagent"; phase: "end"; id: string; summary: string; error: boolean; /** How it ended, in words ("Could not fully verify · 8 checks"). */ headline?: string; /** The same, as a word a front end can colour. */ verdict?: SubagentOutcome; /** How many steps it took. */ steps?: number }
   | { type: "usage"; promptTokens: number; completionTokens: number; totalTokens: number; cacheHitTokens: number; cacheMissTokens: number; cacheWriteTokens?: number }
   /** The lead agent's task list, whole, each time it is rewritten (todo_write). The list
@@ -1130,7 +1135,11 @@ export async function refreshGovernance(session: Session, force = false): Promis
 export async function respond(session: Session, options: RespondOptions = {}): Promise<string> {
   // A turn that begins with the person's own words: what they said now outranks an app they closed before saying it.
   const lastEntry = session.transcript[session.transcript.length - 1];
-  if (lastEntry && lastEntry.role === "user" && !lastEntry.synthetic) session.toolContext.userTurnAt = Date.now();
+  if (lastEntry && lastEntry.role === "user" && !lastEntry.synthetic) {
+    session.toolContext.userTurnAt = Date.now();
+    // A new message from the person: the turn's sub-agent allowance starts again.
+    if ((session.toolContext.subagentDepth ?? 0) === 0) session.toolContext.delegation = undefined;
+  }
   // A project's own MCP servers wait for the user; a turn starting is the first moment a
   // front end is surely listening. A no-op once nothing is held.
   if ((session.toolContext.subagentDepth ?? 0) === 0) {
@@ -1277,8 +1286,13 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
   const schemaOptions = (): ToolSchemaOptions => ({
     planMode: session.toolContext.planMode ?? false,
     readOnlyOnly: session.toolContext.readOnlyTools,
-    // A verifier has to run what it checks: the command tool and the app driver come back for it.
-    ...(session.toolContext.verifierTools ? { alsoAllow: VERIFIER_EXTRA_TOOLS } : {}),
+    // A verifier has to run what it checks: the command tool and the app driver come back for it. A worker with a write scope gets
+    // the tools that change a named file, and nothing else that changes anything.
+    ...(session.toolContext.verifierTools
+      ? { alsoAllow: VERIFIER_EXTRA_TOOLS }
+      : session.toolContext.writeScope
+        ? { alsoAllow: SCOPED_EDIT_TOOLS }
+        : {}),
     // Lets `relevantWhen` tools (use_skill) check the live session, so a tool with
     // nothing to act on is not advertised and a skill created mid-session brings
     // it back next turn.
@@ -1399,6 +1413,8 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
   // Judged next to the prose, pushed after the tool results — see the gate below.
   let pendingNarrationFault: ReturnType<typeof narrationFault> = null;
   let lastFailSig: string | null = null;
+  /** How many times in a row each tool has failed "quietly" this turn (see runAndEmit). */
+  const quietFailsByTool = new Map<string, number>();
   let lastFailOutput = "";
   // Reply gate: ONE rewrite per turn. `overlongReplyAt` is where the rejected draft sits
   // in the transcript, so it and its instruction can be spliced back out once the
@@ -1449,6 +1465,14 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
     if (!options.signal?.aborted) await sweepSessionMemory(session, options, "end");
     return reply;
   } finally {
+    // A reply set aside by a gate that was never replaced (the turn failed or was stopped first) is shown and kept as the
+    // turn's last reply, so a session reopened later reads as it did live.
+    if (overlongReplyAt !== null || prematureReplyAt !== null) {
+      settleUnansweredDraft(session, [overlongReplyAt, prematureReplyAt], (e) => options.onEvent?.(e));
+      overlongReplyAt = null;
+      prematureReplyAt = null;
+      await options.persist?.();
+    }
     // A refresh started during the turn is finished (or stopped, on Esc) before the turn is
     // accounted, so what it cost is part of this turn and the notes it wrote are saved.
     await settleSessionMemory(session);
@@ -1921,7 +1945,13 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
         };
       }
       // A read-only sub-agent: same schema-hiding + refusal, without the plan framing.
-      if (session.toolContext.readOnlyTools && !tool.readOnly && !(session.toolContext.verifierTools && VERIFIER_EXTRA_TOOLS.has(tool.name))) {
+      if (session.toolContext.writeScope && !tool.readOnly) {
+        // A worker that edits beside others: its own files only, by the tools that name them.
+        const out = scopeRefusal(call.name, parseArgs(call.arguments), session.toolContext.writeScope, session.cwd);
+        if (out) {
+          return { call, output: out, summary: "blocked (outside scope)", isError: true, detail: undefined as string | undefined };
+        }
+      } else if (session.toolContext.readOnlyTools && !tool.readOnly && !(session.toolContext.verifierTools && VERIFIER_EXTRA_TOOLS.has(tool.name))) {
         return {
           call,
           output: `Refused: '${call.name}' changes files or state, but this sub-agent is read-only. Report your findings instead.`,
@@ -2120,6 +2150,16 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
     // the model's call order (the sort below); only the UI events go out eagerly.
     const runAndEmit = async (call: (typeof toolCalls)[number]) => {
       const r = await runCall(call);
+      // A quiet failure is a correction the model makes by itself, so no red row is drawn for it. The SECOND one in a row from the same
+      // tool is not that any more: it is a model going round in a circle, or a request that cannot be done, and what was asked for is
+      // not happening. It is drawn like any failure, and it stays in the chat when the session is opened again.
+      if (r.isError && r.quiet) {
+        const n = (quietFailsByTool.get(r.call.name) ?? 0) + 1;
+        quietFailsByTool.set(r.call.name, n);
+        if (n >= 2) r.quiet = false;
+      } else if (!r.isError) {
+        quietFailsByTool.delete(r.call.name);
+      }
       announce(r.call); // one that never ran gets its start now, right before its end
       options.onEvent?.({
         type: "tool",
@@ -3083,6 +3123,22 @@ async function maybeCompact(session: Session, options: RespondOptions): Promise<
 }
 
 /**
+ * The cold-cache compaction on its own, for a session that has just been opened after a long break: the provider's copy
+ * expired while it sat closed, so the compaction is done then and shown, not held back until the next message.
+ * Never calls the model and never runs the full summarizing pass. True when it compacted.
+ */
+export async function compactWhenIdle(session: Session, options: RespondOptions = {}): Promise<boolean> {
+  if ((session.toolContext.subagentDepth ?? 0) !== 0) return false;
+  const model = session.modelConfig.model;
+  const now = Date.now();
+  const status = cacheStatus({ now, model, lastByModel: session.lastCallByModel, ttlMs: cacheLifetimeFor(model) });
+  const idleMs = now - (session.lastCallByModel?.[model] ?? now);
+  const microBar = envInt("MINDWEAVE_MICROCOMPACT_TOKENS", microCompactThreshold(model));
+  const go = shouldCompactForCold({ status, used: contextUsed(session), microBar, discounted: cacheIsDiscounted(model), lastColdCompactAt: session.lastColdCompactAt, idleMs, now });
+  return go ? compactForColdCache(session, options, microBar, status, idleMs) : false;
+}
+
+/**
  * Compact from the session notes because the provider holds no cached copy of this conversation.
  * Declines (false) when the notes cannot stand in for the history, in which case nothing changes.
  */
@@ -3103,7 +3159,14 @@ async function compactForColdCache(
     before - estimateEntriesTokens(session.transcript),
   );
   if (!fromNotes) return false;
-  options.onActivity?.(coldCompactionLine(status, session.modelConfig.model, idleMs), { context: true });
+  // A client that draws the compaction report gets the reason with it, as one line; one that does not gets the sentence.
+  const why = coldReason(status, session.modelConfig.model, idleMs);
+  if (options.onCompaction) {
+    const draw = options.onCompaction;
+    options = { ...options, onCompaction: (report) => draw({ ...report, why }) };
+  } else {
+    options.onActivity?.(coldCompactionLine(status, session.modelConfig.model, idleMs), { context: true });
+  }
   options.onCompactionStart?.();
   try {
     replaceTranscript(session, fromNotes.entries);
@@ -3132,7 +3195,7 @@ export async function compactNow(session: Session, options: RespondOptions = {})
   // the cache rewrite it causes, and a compaction is about to discard that cache
   // anyway, so the argument for holding back does not apply here.
   session.transcript = keepClearedOriginals(session, microcompact(session.transcript).entries);
-  await autocompact(session, options);
+  await autocompact(session, options, true);
 }
 
 /**
@@ -3174,18 +3237,18 @@ function keepClearedOriginals(session: Session, cleared: Entry[]): Entry[] {
  * trigger, both of which stopped being true when the bars became model-anchored and the
  * driver lineup grew past two.)
  */
-async function autocompact(session: Session, options: RespondOptions): Promise<void> {
+async function autocompact(session: Session, options: RespondOptions, manual = false): Promise<void> {
   if (session.transcript.length === 0) return;
   options.onCompactionStart?.();
   try {
-    await summarizeAndSplice(session, options);
+    await summarizeAndSplice(session, options, manual);
   } finally {
     options.onCompactionEnd?.();
   }
 }
 
 /** The body of `autocompact`: the notes when they cover the prefix, else the summarizer. */
-async function summarizeAndSplice(session: Session, options: RespondOptions): Promise<void> {
+async function summarizeAndSplice(session: Session, options: RespondOptions, manual = false): Promise<void> {
   // Measured BEFORE the summarizer runs, with the same arithmetic the thresholds use,
   // so the bar the user sees is the number the system actually acted on.
   const before = contextUsed(session);
@@ -3196,13 +3259,22 @@ async function summarizeAndSplice(session: Session, options: RespondOptions): Pr
     // not just a thrown error: a summarizer that keeps returning something unusable
     // burns a model call on every step forever, which is the exact runaway the
     // breaker exists to stop.
+    // A /compact the person typed is one try, answered on the spot: it neither counts toward the breaker
+    // nor is retried, because nothing is waiting to retry it.
+    if (manual) {
+      options.onActivity?.(`compaction did not succeed (${why}) — the conversation was kept intact. Type /compact to try again.`, { context: true });
+      return;
+    }
     session.compactFailures = (session.compactFailures ?? 0) + 1;
     // And SAY so. A compaction that silently does not happen leaves the session
     // running past its bar with no sign anything is wrong; the user cannot ask for
     // /compact, or start a fresh session, over a problem nobody mentioned.
+    // The retries are the automatic ones: each step that finds the context still over its limit tries again.
     options.onActivity?.(
-      `compaction did not succeed (${why}) — the conversation was kept intact, ` +
-        `attempt ${session.compactFailures} of ${MAX_COMPACT_FAILURES}`,
+      `compaction did not succeed (${why}) — the conversation was kept intact. ` +
+        (session.compactFailures < MAX_COMPACT_FAILURES
+          ? `It tries again on the next step while the context is over its limit (failure ${session.compactFailures} of ${MAX_COMPACT_FAILURES}).`
+          : `That was failure ${MAX_COMPACT_FAILURES} of ${MAX_COMPACT_FAILURES}; automatic compaction has stopped. Type /compact to try again.`),
       { context: true },
     );
   };

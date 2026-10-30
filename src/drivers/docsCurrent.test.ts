@@ -32,7 +32,8 @@ const countStable = (models: ModelChoice[] | undefined): number =>
 test(".env.example names every provider's key variable", () => {
   const text = read("../../.env.example");
   // A local runtime (Ollama) has no key variable to fill in; its name has to be there instead.
-  const missing = allProviders().filter((p) => !text.includes(p.local ? p.label : p.apiKeyEnv));
+  // A provider set up by an address (a local server, a custom endpoint) has no key variable to fill in; its name has to be there.
+  const missing = allProviders().filter((p) => !text.includes(p.local || p.setup ? p.label : p.apiKeyEnv));
   assert.deepEqual(
     missing.map((p) => `${p.label} (${p.apiKeyEnv})`),
     [],
@@ -43,7 +44,7 @@ test(".env.example names every provider's key variable", () => {
 test("PROVIDERS.md names every provider and its key", () => {
   const text = read("PROVIDERS.md");
   for (const p of allProviders()) {
-    if (!p.local) assert.ok(text.includes(p.apiKeyEnv), `${p.label}'s key variable is missing`);
+    if (!p.local && !p.setup) assert.ok(text.includes(p.apiKeyEnv), `${p.label}'s key variable is missing`);
     assert.ok(text.includes(p.label), `${p.label} is not listed`);
   }
 });

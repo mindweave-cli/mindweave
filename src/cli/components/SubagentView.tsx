@@ -87,7 +87,7 @@ function AgentBlock({
   const running = agent.status === "running";
   const tone = toneOf(agent);
   const name = lead ? "Sub-agent" : `#${index + 1}`;
-  const tag = agent.readOnly ? " · read-only" : "";
+  const tag = agent.readOnly ? " · read-only" : agent.scope?.length ? ` · edits ${agent.scope[0]}${agent.scope.length > 1 ? ` +${agent.scope.length - 1}` : ""}` : "";
   // Everything on the title line has a fixed place, so a long title is cut at a word and never squeezes
   // the name, as it once did ("Subagen").
   const room = Math.max(10, columns - 2 - name.length - 2 - tag.length - 1);

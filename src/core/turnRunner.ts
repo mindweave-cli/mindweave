@@ -28,7 +28,10 @@ export { clearMarathon, describeMarathonEvent, MAX_MARATHON_VERIFY_FAILS, type M
 export { contextFill } from "../dynamo/engine.js";
 import { createSession, resumeSession, reloadProjectMemory, repairToolCallOrder, reconcileInterruptedTools } from "../memory/session.js";
 import { saveSession, listSessions as listSessionsRaw, loadEarlier, loadMeta, loadTranscript } from "../memory/store.js";
-import type { Session, SessionMeta, ToolCallRecord } from "../memory/types.js";
+import type { Entry, Session, SessionMeta, ToolCallRecord } from "../memory/types.js";
+import { findUnsettledDrafts, settleUnansweredDraft } from "../memory/unsettled.js";
+// Writing to a sub-agent that is running (the CLI does this from the agent's own view).
+export { sendToAgent as sendToSubagent } from "../tools/delegation.js";
 import { toolDisplay, isGroupable, narrationShown, noteReads } from "../cli/toolDisplay.js";
 import { accessRefusal, providerOutage, statusOf } from "../drivers/providerError.js";
 import { failoverKey, noteKeyWorked } from "./providerKeys.js";
@@ -158,6 +161,19 @@ export {
   type McpServerForm,
   type McpResult,
 } from "./mcpServers.js";
+/** Where a provider is reached, and the settings of one that is set up by an address (LM Studio, llama.cpp, a custom endpoint). */
+export {
+  providerEndpoint,
+  setProviderEndpoint,
+  providerSetup,
+  setProviderSetup,
+  type EndpointView,
+  type SetupView,
+  type SetupPatch,
+  type SetResult,
+} from "./providerSetup.js";
+import { providerEndpoint, providerSetup, type EndpointView, type SetupView } from "./providerSetup.js";
+
 /** Several keys per provider: add, edit, name, switch off, make default, auto-switch. */
 export {
   providerKeys,
@@ -189,6 +205,12 @@ export interface ProviderSummary {
   connected: boolean;
   /** A runtime on this machine (Ollama): no key; connected means it answered with a model. */
   local: boolean;
+  /** Set up by an address (LM Studio, llama.cpp, a custom endpoint) instead of by a key alone. */
+  setup: SetupView | null;
+  /** The address it is reached at, and the others that serve the same models (a coding plan). Null when it cannot be changed. */
+  endpoint: EndpointView | null;
+  /** The usual notice about where prompts go, when the provider has one. */
+  notice?: string;
   models: { id: string; label: string; description?: string }[];
 }
 
@@ -219,6 +241,9 @@ export function providerDetail(id: string): (ProviderSummary & { models: Provide
     keysUrl: p.keysUrl,
     connected: hasApiKey(p.apiKeyEnv),
     local: !!p.local,
+    setup: providerSetup(p.id),
+    endpoint: providerEndpoint(p.id),
+    ...(p.notice ? { notice: p.notice } : {}),
     models: modelsOf(p).map((m) => {
       const manifest = manifestForModel(m.id);
       const price = manifest.price(m.id);
@@ -253,6 +278,9 @@ export function providerSummaries(): ProviderSummary[] {
     keysUrl: p.keysUrl,
     connected: hasApiKey(p.apiKeyEnv),
     local: !!p.local,
+    setup: providerSetup(p.id),
+    endpoint: providerEndpoint(p.id),
+    ...(p.notice ? { notice: p.notice } : {}),
     models: modelsOf(p).map((m) => ({ id: m.id, label: m.label, description: m.description })),
   }));
 }
@@ -352,7 +380,7 @@ export type TurnEvent =
   | { type: "toolStart"; id: string; name: string; arg?: string; kind: string; group: boolean; covers?: number; /** The tool itself (`ui`), where `name` is how the row reads ("Click"). */ tool?: string; /** What the call was given (full paths, a read range, a command), long text clipped. For a front end that shows the work itself rather than a one-line label. */ args?: Record<string, unknown> }
   | { type: "toolProgress"; id: string; text: string }
   | { type: "toolEnd"; id: string; ok: boolean; summary: string; detail?: string; detailFull?: string; detailKind?: "diff" | "text" | "shell"; quiet?: boolean; images?: string[]; web?: WebDisplay; ui?: UiDisplay }
-  | { type: "subagentStart"; id: string; task: string; readOnly: boolean; taskFull?: string }
+  | { type: "subagentStart"; id: string; task: string; readOnly: boolean; scope?: string[]; taskFull?: string }
   | { type: "subagentEnd"; id: string; ok: boolean; summary: string; headline?: string; verdict?: SubagentOutcome; steps?: number }
   /** A tool call made BY a spawned sub-agent, not the lead — nests under that
    *  worker's own block instead of the main stream. */
@@ -406,6 +434,7 @@ export async function previewSession(cwd: string, sessionId: string): Promise<Re
   const loaded = await loadTranscript(cwd, meta.id);
   if (!loaded || loaded.length === 0) return null;
   const transcript = reconcileInterruptedTools(repairToolCallOrder(loaded));
+  settleUnansweredDraft({ transcript }, findUnsettledDrafts(transcript));
   const earlier = await loadEarlier(cwd, meta.id);
   return replayHistory({ id: meta.id, cwd, transcript, earlier, modelConfig: { model: "" } } as unknown as Session);
 }
@@ -436,7 +465,9 @@ export type ReplayEvent =
   | { type: "userMessage"; text: string; expiredImages?: string[]; images?: string[]; files?: string[]; noRewind?: true }
   | { type: "assistantMessage"; text: string }
   | { type: "toolReplay"; name: string; arg?: string; kind: string; ok: boolean; summary: string; detail?: string; detailFull?: string; detailKind?: "diff" | "text" | "shell"; images?: string[]; web?: WebDisplay; ui?: UiDisplay; tool?: string; /** The call's arguments, clipped as on a live toolStart: which file a row is about. */ args?: Record<string, unknown>; /** A quiet result (only searches are replayed quiet): not a row of its own. */ quiet?: true; /** A command the person ran with `!`, not the agent. */ byUser?: true }
-  | { type: "compactionSummary"; text: string };
+  | { type: "compactionSummary"; text: string }
+  /** How a turn that failed ended: the provider's notice, or the error line. Saved with the entry it followed. */
+  | { type: "failureNote"; kind: "notice" | "error"; title?: string; body: string };
 
 /**
  * Turn a loaded session's stored transcript back into the same shape the live
@@ -452,7 +483,16 @@ export function replayHistory(session: Session): ReplayEvent[] {
   // What compaction took out comes first, so the chat shows the whole conversation.
   // None of it can be rewound to: it is no longer part of the conversation.
   const earlier = new Set(session.earlier ?? []);
+  // What a failed turn showed, drawn after the entry it followed: carried to the top of the next one (or the end), because the
+  // loop below skips some entries with `continue`.
+  let failed: Entry["failure"] | undefined;
+  const drawFailure = () => {
+    if (failed) out.push({ type: "failureNote", kind: failed.kind, ...(failed.title ? { title: failed.title } : {}), body: failed.body });
+    failed = undefined;
+  };
   for (const entry of [...earlier, ...session.transcript]) {
+    drawFailure();
+    failed = entry.failure;
     if (entry.role === "user") {
       if (!entry.synthetic) readThisTurn.clear();
       // Shown as typed: file bodies hidden and pastes collapsed, the same as it looked live.
@@ -507,7 +547,7 @@ export function replayHistory(session: Session): ReplayEvent[] {
       const call = calls.get(entry.toolCallId);
       // Quiet results, and loading a tool even from sessions saved before it was quiet. A search
       // is quiet too, but it is still replayed (marked quiet): a front end may list what was searched.
-      if (call?.name === "find_tools") continue;
+      if (call?.name === "find_tools" || call?.name === "view_image") continue;
       if (entry.quiet && call?.name !== "search") continue;
       // The same display name a live toolStart carries ("Run", "Read"), not the raw
       // tool id — a reopened session was showing `run_command` where the live one said Run.
@@ -535,7 +575,7 @@ export function replayHistory(session: Session): ReplayEvent[] {
           // the file for a write whose text was cleared: otherwise it can only say "N more lines".
           if ((call?.name === "web_search" || call?.name === "web") && !entry.detailFull) {
             // A web search saved before it became a short row that opens on a click comes back as one.
-            const compact = compactSearchDetail(entry.detail);
+            const compact = compactSearchDetail(entry.detail, entry.web);
             if (compact) return { detail: compact.detail, ...(compact.detailFull ? { detailFull: compact.detailFull } : {}) };
           }
           let full = entry.detailFull ?? rebuildFull(call?.name, callArgs, entry);
@@ -559,6 +599,7 @@ export function replayHistory(session: Session): ReplayEvent[] {
       out.push({ type: "compactionSummary", text: entry.content });
     }
   }
+  drawFailure();
   return out;
 }
 
@@ -808,7 +849,7 @@ export function forwardEngineEvent(e: EngineEvent, onEvent: (event: TurnEvent) =
     onEvent({ type: "replyReset" });
   } else if (e.type === "tool" && e.phase === "start") {
     // The spawn is rendered by the subagentStart block; loading a tool is never shown.
-    if (e.name === "spawn_subagent" || e.name === "find_tools") return;
+    if (e.name === "spawn_subagent" || e.name === "find_tools" || e.name === "view_image") return;
     const d = toolDisplay(e.name, e.args);
     if (e.agent) {
       onEvent({ type: "subToolStart", agentId: e.agent, toolId: e.id, name: d.name, arg: d.arg, kind: d.kind });
@@ -816,7 +857,7 @@ export function forwardEngineEvent(e: EngineEvent, onEvent: (event: TurnEvent) =
       onEvent({ type: "toolStart", id: e.id, name: d.name, arg: d.arg, kind: d.kind, tool: e.name, group: isGroupable(e.name), args: clipArgs(e.args), ...(d.covers ? { covers: d.covers } : {}) });
     }
   } else if (e.type === "tool" && e.phase === "end") {
-    if (e.name === "spawn_subagent" || e.name === "find_tools") return;
+    if (e.name === "spawn_subagent" || e.name === "find_tools" || e.name === "view_image") return;
     if (e.agent) {
       onEvent({ type: "subToolEnd", agentId: e.agent, toolId: e.id, ok: !e.error, summary: e.summary, ...(e.detail ? { detail: e.detail } : {}) });
     } else {
@@ -827,7 +868,7 @@ export function forwardEngineEvent(e: EngineEvent, onEvent: (event: TurnEvent) =
     // app to finish building). Latest-wins text, not a log.
     if (!e.agent) onEvent({ type: "toolProgress", id: e.id, text: e.text });
   } else if (e.type === "subagent" && e.phase === "start") {
-    onEvent({ type: "subagentStart", id: e.id, task: e.task, readOnly: e.readOnly, ...(e.taskFull ? { taskFull: e.taskFull } : {}) });
+    onEvent({ type: "subagentStart", id: e.id, task: e.task, readOnly: e.readOnly, ...(e.scope ? { scope: e.scope } : {}), ...(e.taskFull ? { taskFull: e.taskFull } : {}) });
   } else if (e.type === "subagent" && e.phase === "end") {
     onEvent({ type: "subagentEnd", id: e.id, ok: !e.error, summary: e.summary, ...(e.headline ? { headline: e.headline } : {}), ...(e.verdict ? { verdict: e.verdict } : {}), ...(e.steps !== undefined ? { steps: e.steps } : {}) });
   } else if (e.type === "usage") {
@@ -896,8 +937,22 @@ function reportFailure(session: Session, error: unknown, onEvent: (event: TurnEv
   const refusal =
     accessRefusal(error, providerOf(session.modelConfig.model).label, false) ??
     providerOutage(error, providerOf(session.modelConfig.model).label, modelLabel(session.modelConfig.model));
-  if (refusal) onEvent({ type: "notice", title: refusal.title, body: refusal.body });
-  else onEvent({ type: "error", text: errText(error) });
+  if (refusal) {
+    recordFailure(session, { kind: "notice", title: refusal.title, body: refusal.body });
+    onEvent({ type: "notice", title: refusal.title, body: refusal.body });
+  } else {
+    recordFailure(session, { kind: "error", body: errText(error) });
+    onEvent({ type: "error", text: errText(error) });
+  }
+}
+
+/**
+ * Keep what the screen said about a failed turn with the conversation (impure). It rides on the last entry, so a session opened
+ * later ends where the live one did, notice included; it is never sent to the model. Compaction drops it with the entry it was on.
+ */
+export function recordFailure(session: Session, failure: NonNullable<Entry["failure"]>): void {
+  const last = session.transcript[session.transcript.length - 1];
+  if (last) last.failure = failure;
 }
 
 /**

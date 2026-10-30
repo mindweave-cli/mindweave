@@ -12,6 +12,7 @@
  * request. With no channel to ask through it refuses rather than proceeding, matching
  * how every other governed action in the codebase fails.
  */
+import { resolveEntry } from "./resolveName.js";
 import type { Tool, ToolContext, ToolResult } from "./types.js";
 import type { ConnectionStatus } from "../mcp/connection.js";
 import {
@@ -254,14 +255,24 @@ async function manageServer(
   args: Record<string, unknown>,
   ctx: ToolContext,
 ): Promise<ToolResult> {
-  const name = typeof args.name === "string" ? args.name.trim() : "";
-  if (!name) return { output: "Error: `name` is required — which server.", isError: true, summary: "no server name" };
+  const asked = typeof args.name === "string" ? args.name.trim() : "";
+  if (!asked) return { output: "Error: `name` is required — which server.", isError: true, summary: "no server name" };
+  // By the name it is configured under, or close to it (case, a shortened name): the servers that exist are named in the answer when
+  // none fits, instead of pointing at tools the model may not have loaded.
+  const configured = (ctx.mcp?.statuses() ?? []).map((s) => s.name);
+  const found = resolveEntry(configured, asked, (n) => [n]);
+  if (found.kind === "many") {
+    return { output: `Error: '${asked}' matches more than one MCP server: ${found.items.join(", ")}. Give the exact name.`, isError: true, summary: `ambiguous server '${asked}'` };
+  }
+  const name = found.kind === "one" ? found.item : asked;
   const config = ctx.mcp?.configFor(name);
   if (!config) {
     return {
-      output: `Error: no MCP server named '${name}' is configured here. The servers in play are the mcp__<server>__* tools you can see; /mcp lists them all.`,
+      output:
+        `Error: no MCP server named '${asked}' is configured here.` +
+        (configured.length > 0 ? ` The servers that are: ${configured.join(", ")}.` : " No MCP servers are configured."),
       isError: true,
-      summary: `no server '${name}'`,
+      summary: `no server '${asked}'`,
     };
   }
   // Nothing to change: say so, and leave a healthy connection alone. Re-applying

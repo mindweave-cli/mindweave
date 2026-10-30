@@ -797,3 +797,18 @@ test("words between the reads still end the row, even when a quiet step follows"
   const kinds = [...s.committed, ...s.tail].map((b) => b.kind);
   assert.deepEqual(kinds, ["work", "assistant", "work"], "what the agent said stays between the two rows");
 });
+
+test("a compaction is one live row that settles into its report, or goes away if it ends without one", () => {
+  const report = { before: 100, after: 40, window: 200 };
+  let s = reduce(initialState(), { type: "compactionStart" });
+  const live = [...s.committed, ...s.tail].filter((b) => b.kind === "compaction");
+  assert.equal(live.length, 1);
+  assert.equal(live[0]!.done, false);
+  s = reduce(s, { type: "compaction", report });
+  const settled = [...s.committed, ...s.tail].filter((b) => b.kind === "compaction");
+  assert.equal(settled.length, 1, "the same row, not a second one");
+  assert.equal(settled[0]!.done, true);
+  let f = reduce(initialState(), { type: "compactionStart" });
+  f = reduce(f, { type: "compactionEnd" });
+  assert.equal([...f.committed, ...f.tail].filter((b) => b.kind === "compaction").length, 0);
+});

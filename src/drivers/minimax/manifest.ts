@@ -5,59 +5,53 @@
  * data and pure functions. The wire code lives in `client.ts`, a thin binding over
  * the shared OpenAI-compatible layer at `https://api.minimax.io/v1`.
  *
- * MiniMax carries TWO reasoning surfaces, the same shape Kimi's manifest needed
- * and for the same reason:
+ * MiniMax carries TWO reasoning surfaces, and the two models offered here use one each:
  *
- *   - M3 takes `thinking: {type}` both ways — `"adaptive"` or `"disabled"` — and
- *     genuinely can turn reasoning off.
- *   - M2.7 and M2 also take `thinking: {type}`, but MiniMax's own docs are
- *     explicit that the M2.x family "cannot disable thinking regardless of
- *     settings" — so `"disabled"` is sent to neither; both always reason.
+ *   - M3.1 Flash ALWAYS reasons and has one dial, `reasoning_effort`, with five rungs
+ *     (low, medium, high, xhigh, max). Turning reasoning off is rejected, so it is never
+ *     sent, the same shape as Kimi K3.
+ *   - M3 takes `thinking: {type}` both ways — `"adaptive"` or `"disabled"` — and genuinely
+ *     can turn reasoning off. It has no effort dial.
  *
- * None of the three exposes a graded effort rung (no low/medium/high — just the
- * type field), so `/think` on this provider is genuinely a two-state or one-state
- * menu, not a shortened ladder.
- *
- * Older tiers (MiniMax-01, M1, M2.1, M2.5, and the `-highspeed` variants) are
- * still served and deliberately not offered: this lineup already covers cheap,
- * mid, and flagship, and the older tiers bring no capability these three lack.
+ * The M2.x line (M2, M2.1, M2.5, M2.7 and the `-highspeed` variants) is retired on
+ * MiniMax's own model list: closed to new users on 19 October 2026, and stops working for
+ * pay-as-you-go on 18 November 2026. It is deliberately not offered. A conversation saved
+ * on one of those models lands on the default (see `normalize`).
  */
 import type { DriverManifest, Effort, ModelChoice, ModelConfig, ModelId, ModelPrice, ThinkLevel } from "../types.js";
 
-export const M2 = "MiniMax-M2";
-export const M27 = "MiniMax-M2.7";
+export const M31F = "MiniMax-M3.1-Flash";
 export const M3 = "MiniMax-M3";
 
 /** The model used when nothing is saved and no env override is set. */
-export const DEFAULT_MODEL = M27;
+export const DEFAULT_MODEL = M31F;
 
 /**
  * The models offered by `/model`. First entry is this provider's default, which is
  * also where `/provider` lands when someone switches to MiniMax.
  *
- * M2.7 leads rather than M3: their ≤512K-token rates are actually equal (see
- * `PRICES`), but M3 doubles past that line (see `contextWindow`) while M2.7 never
- * does, so M2.7 is the deliberate default — never worse, sometimes cheaper — and
- * M3 the choice for harder work specifically, not something to drift into.
+ * M3.1 Flash leads: it is the newest, the cheapest by a factor of two, and carries the
+ * same 1M context. M3 is the choice for harder work, and the one with a real
+ * reasoning on/off switch.
  */
 export const MODELS: ModelChoice[] = [
-  { id: M27, label: "MiniMax M2.7", description: "the current general-purpose model — the default" },
+  { id: M31F, label: "MiniMax M3.1 Flash", description: "the newest and cheapest — always reasons, with a depth dial" },
   { id: M3, label: "MiniMax M3", description: "the flagship, with a real reasoning on/off switch" },
-  { id: M2, label: "MiniMax M2", description: "the older, cheaper tier, for simple work" },
 ];
 
 /** How one model expresses reasoning on the wire. */
 export interface ModelSurface {
   /** False when the model rejects (or simply ignores) an explicit no-thinking request. */
   canDisableThinking: boolean;
+  /** True when the model takes a top-level `reasoning_effort` rung (M3.1 Flash only). */
+  takesEffort: boolean;
   /** Usable context window — see `contextWindow`. */
   window: number;
 }
 
 const SURFACES: Record<string, ModelSurface> = {
-  [M3]: { canDisableThinking: true, window: 320_000 },
-  [M27]: { canDisableThinking: false, window: 180_000 },
-  [M2]: { canDisableThinking: false, window: 180_000 },
+  [M31F]: { canDisableThinking: false, takesEffort: true, window: 200_000 },
+  [M3]: { canDisableThinking: true, takesEffort: false, window: 320_000 },
 };
 
 /** The surface a model runs on, falling back to the default model's. */
@@ -65,18 +59,24 @@ export function surfaceOf(model: ModelId): ModelSurface {
   return SURFACES[model] ?? SURFACES[DEFAULT_MODEL]!;
 }
 
+/** The rungs M3.1 Flash accepts, lightest first. */
+const FLASH_EFFORTS: Effort[] = ["low", "medium", "high", "xhigh", "max"];
+
 /**
  * The reasoning levels offered by `/think`, which depend on the model's surface.
  *
+ *   - M3.1 Flash: the five effort rungs. Every one reasons; the rung sets how hard.
  *   - M3: the plain on/off pair, no effort dial.
- *   - M2.7 / M2: ONE level. Both always reason and neither has an effort dial, so
- *     there is genuinely one setting. A single-entry menu is honest; inventing a
- *     second that did nothing would not be.
  */
 export function thinkLevels(model: ModelId): ThinkLevel[] {
-  const surface = surfaceOf(model);
-  if (!surface.canDisableThinking) {
-    return [{ label: "Thinking", description: "this model always reasons", thinking: true, effort: "high" }];
+  if (surfaceOf(model).takesEffort) {
+    return [
+      { label: "Low", description: "always reasons — the lightest, cheapest depth", thinking: true, effort: "low" },
+      { label: "Medium", description: "a little more reasoning", thinking: true, effort: "medium" },
+      { label: "High", description: "think carefully, then answer", thinking: true, effort: "high" },
+      { label: "Extra high", description: "more reasoning, more tool work", thinking: true, effort: "xhigh" },
+      { label: "Max", description: "the deepest reasoning, at the highest cost", thinking: true, effort: "max" },
+    ];
   }
   return [
     { label: "Standard", description: "answer directly — fastest", thinking: false, effort: "high" },
@@ -85,21 +85,17 @@ export function thinkLevels(model: ModelId): ThinkLevel[] {
 }
 
 /**
- * List prices (USD / 1M tokens), confirmed against platform.minimax.io's own
- * pay-as-you-go page (docs/guides/pricing-paygo) rather than carried forward or
- * estimated: M2 and M2.7 share the same input/output rate and differ only in their
- * cache-read rate (M2's cache is cheaper, at half M2.7's), and M3's own cache rate
- * IS separately published now — it matches M2.7's, not a guessed ratio.
- * `cacheWrite` is confirmed for M2 and M2.7 (both publish a distinct write rate);
- * M3's write rate is not separately published, so it is left unset, which the
+ * List prices (USD / 1M tokens), read from platform.minimax.io's own pricing page:
+ * M3.1 Flash is $0.15 in / $0.60 out / $0.015 cache read with no context tiers; M3 is
+ * $0.30 in / $1.20 out / $0.06 cache read up to 512K input tokens. Neither lists a
+ * separate cache-write rate, so `cacheWrite` is left unset, which the
  * `ModelPrice.cacheWrite` doc says falls back to `cacheMiss` — the safe default.
  */
 const PRICES: Record<string, ModelPrice> = {
-  [M27]: { cacheHit: 0.06, cacheMiss: 0.3, output: 1.2, cacheWrite: 0.375 },
+  [M31F]: { cacheHit: 0.015, cacheMiss: 0.15, output: 0.6 },
   // M3's ≤512K-token tier; crossing 512K doubles the whole request, which is why
   // `contextWindow` keeps this model's usable window well clear of that line.
   [M3]: { cacheHit: 0.06, cacheMiss: 0.3, output: 1.2 },
-  [M2]: { cacheHit: 0.03, cacheMiss: 0.3, output: 1.2, cacheWrite: 0.375 },
 };
 
 /** Cache-aware list price for a model, falling back to the default model's. */
@@ -108,10 +104,11 @@ export function price(model: ModelId): ModelPrice {
 }
 
 /**
- * The model's USABLE context window. M2.7 and M2 store roughly 205K; M3 stores
- * 1M but bills DOUBLE above 512K on the whole request, the same shape as xAI's
- * Grok 4.3 and Gemini's 3.1 Pro. Same reasoning as both: stay clear of the cliff
- * rather than anchor compaction at the edge of it.
+ * The model's USABLE context window, deliberately the sharp window rather than the 1M both
+ * models store: on BYOK every token in the window is the user's money on every turn, so
+ * anchoring compaction at the maximum would carry an enormous prompt long after it stopped
+ * earning its cost — the same reasoning, and the same range, as the other drivers. M3 also
+ * bills DOUBLE above 512K on the whole request, so its window stays well clear of that line.
  */
 export function contextWindow(model: ModelId): number {
   return surfaceOf(model).window;
@@ -129,29 +126,24 @@ export function bufferedOutputTokens(_model: ModelId): number {
 }
 
 /**
- * Vision is deliberately NOT declared. MiniMax's -01 line reads images, but the
- * three models offered here are text-only, and the shared OpenAI-compatible wire
- * layer does not render image parts into the request regardless.
+ * Vision is deliberately NOT declared. Both models accept image parts on MiniMax's own
+ * wire, but the shared OpenAI-compatible layer does not render image parts into the
+ * request, so claiming it here would promise what the request cannot carry.
  */
-
-/** The one effort rung this provider's ladders use — there is no graded scale to
- *  snap onto, only the on/off pair `thinkLevels` already lists. */
-const EFFORTS: Effort[] = ["high"];
 
 /**
  * Coerce a stored or unknown config onto a model this provider actually serves,
  * and keep the reasoning intent legal for it.
  *
- * A model that cannot stop reasoning always gets `thinking: true`, which is what
- * keeps `"disabled"` from ever being sent to M2.7 or M2 — MiniMax's own docs say
- * the family ignores it, but a request should not depend on a provider ignoring
- * something incorrectly asked for.
+ * A model that cannot stop reasoning always gets `thinking: true`, which is what keeps
+ * `"disabled"` from ever being sent to M3.1 Flash — MiniMax answers it with an error.
+ * A model with no effort dial settles on `high`, inert for it.
  */
 export function normalize(config: ModelConfig): ModelConfig {
   const model: ModelId = SURFACES[config.model] ? config.model : DEFAULT_MODEL;
   const surface = surfaceOf(model);
   const thinking = surface.canDisableThinking ? config.thinking === true : true;
-  const effort: Effort = EFFORTS.includes(config.effort) ? config.effort : "high";
+  const effort: Effort = surface.takesEffort && FLASH_EFFORTS.includes(config.effort) ? config.effort : "high";
   return { model, thinking, effort };
 }
 

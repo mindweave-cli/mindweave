@@ -96,6 +96,27 @@ const MAX_VISIBLE = 10;
 const MAX_TITLE_ROWS = 6;
 const MAX_NOTE_ROWS = 4;
 
+const META_SEP = " · ";
+
+/** The widest piece at each position of descriptions split on " · " (pure). */
+export function metaColumnWidths(descriptions: Array<string | undefined>): number[] {
+  const widths: number[] = [];
+  for (const d of descriptions) {
+    (d ?? "").split(META_SEP).forEach((part, i) => {
+      widths[i] = Math.max(widths[i] ?? 0, part.length);
+    });
+  }
+  return widths;
+}
+
+/** A description with each piece padded to its column: the first flush left, the rest flush right (pure). */
+export function columnsOf(description: string, widths: number[]): string {
+  return description
+    .split(META_SEP)
+    .map((part, i) => (i === 0 ? part.padEnd(widths[i] ?? 0) : part.padStart(widths[i] ?? 0)))
+    .join(META_SEP);
+}
+
 export function Picker({
   title,
   items,
@@ -218,6 +239,9 @@ export function Picker({
   // a plain bold label, not a loud colour, so every surface reads as one family. The
   // description sits in its own fixed-width Box for the same reason as the command
   // menu's — a bare Text has nothing to truncate against and wraps instead.
+  // The pieces of a right-aligned description ("5 minutes ago · 330 msgs") each get one width across the whole
+  // list, so the times line up with each other and so do the counts, whatever each row's own text is.
+  const metaWidths = rightAlignDescription ? metaColumnWidths(items.map((it) => it.description)) : [];
   return (
     <>
       {titleRows.map((line, i) => (
@@ -249,7 +273,7 @@ export function Picker({
                   and truncates instead — otherwise a long label pushed the description
                   onto a second wrapped line. */}
               <Box flexShrink={0}>
-                <Text dimColor>{"  " + item.description}</Text>
+                <Text dimColor={!activeRow} color={activeRow ? ACCENT : undefined}>{"  " + columnsOf(item.description, metaWidths)}</Text>
               </Box>
             </Box>
           );

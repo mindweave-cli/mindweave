@@ -79,6 +79,10 @@ export interface AgentEntry {
   agentId: string;
   task: string;
   readOnly: boolean;
+  /** The files it may change, for a worker that edits beside others. */
+  scope?: string[];
+  /** What the person wrote to it, and how many of its calls had been made by then (where it sits in its conversation). */
+  said?: Array<{ at: number; text: string }>;
   status: ToolStatus;
   /** The closing line once done ("3 steps · read-only"), red on failure. */
   summary?: string;
@@ -191,7 +195,7 @@ export type Block =
   | { kind: "help"; id: number; done: boolean; text: string }
   /** A compaction pass, with the before/after bars. See cli/compaction.ts for why this
    *  one piece of context machinery is shown when the rest stays invisible. */
-  | { kind: "compaction"; id: number; done: boolean; report: CompactionReport };
+  | { kind: "compaction"; id: number; done: boolean; report?: CompactionReport; auto?: boolean };
 
 export interface TranscriptState {
   /** Finished, append-only → <Static> (terminal scrollback). */
@@ -245,7 +249,9 @@ export type Action =
     }
   // A sub-agent's nested lifecycle: a start opens its rail block, its tool calls fold
   // in as rail items (subTool*), and end collapses it to a summary. Keyed by agentId.
-  | { type: "subagentStart"; agentId: string; task: string; readOnly: boolean; full?: string }
+  | { type: "subagentStart"; agentId: string; task: string; readOnly: boolean; scope?: string[]; full?: string }
+  /** The person wrote to this worker while it ran. */
+  | { type: "subagentSaid"; agentId: string; text: string }
   | { type: "subToolStart"; agentId: string; toolId: string; name: string; arg?: string; action?: ToolKind }
   | { type: "subToolEnd"; agentId: string; toolId: string; ok: boolean; summary?: string }
   | { type: "subagentEnd"; agentId: string; ok: boolean; summary?: string; headline?: string; verdict?: SubagentOutcome; steps?: number }
@@ -263,7 +269,9 @@ export type Action =
   | { type: "context"; text: string } // a set-off context/compaction line
   | { type: "notice"; title: string; body: string } // titled facts on a rail
   | { type: "help"; text: string } // the command list, set apart; a click removes it
-  | { type: "compaction"; report: CompactionReport } // a compaction pass, with bars
+  | { type: "compactionStart"; auto?: boolean } // a compaction began: a live row, `auto` when a turn goes on after it
+  | { type: "compaction"; report: CompactionReport } // it finished: the live row settles, with the figures
+  | { type: "compactionEnd" } // it ended without a report (failed or cut): the live row goes away
   | { type: "say"; text: string } // an assistant markdown block, NOT recorded as the reply
   | { type: "toggleExpand"; id: number } // a click on a row: show all of it, or fold it back
   | { type: "itemDetail"; toolId: string; detail: string } // the text behind a read, fetched when it is opened
@@ -320,7 +328,7 @@ export function lastExpandable(s: TranscriptState): number | null {
   for (const list of [s.tail, s.committed]) {
     for (let i = list.length - 1; i >= 0; i--) {
       const b = list[i]!;
-      if ((b.kind === "tool" && b.full) || b.kind === "work" || (b.kind === "edits" && b.items.length >= 2) || b.kind === "subagent" || b.kind === "help") return b.id;
+      if ((b.kind === "tool" && b.full) || b.kind === "work" || b.kind === "subagent" || b.kind === "help") return b.id;
     }
   }
   return null;
@@ -798,7 +806,19 @@ export function reduce(s: TranscriptState, a: Action): TranscriptState {
       const id = c.seq + 1;
       return drain({ ...c, seq: id, tail: c.tail.concat({ kind: "help", id, done: true, text: a.text }) });
     }
+    case "compactionStart": {
+      const c = closeToolGroup(s);
+      const id = c.seq + 1;
+      return { ...c, seq: id, tail: c.tail.concat({ kind: "compaction", id, done: false, auto: a.auto === true }) };
+    }
+    case "compactionEnd": {
+      return drain({ ...s, tail: s.tail.filter((b) => !(b.kind === "compaction" && !b.done)) });
+    }
     case "compaction": {
+      const live = s.tail.find((b) => b.kind === "compaction" && !b.done);
+      if (live) {
+        return drain({ ...s, tail: s.tail.map((b) => (b === live ? { ...live, done: true, report: a.report } : b)) });
+      }
       const c = closeToolGroup(s);
       const id = c.seq + 1;
       return drain({ ...c, seq: id, tail: c.tail.concat({ kind: "compaction", id, done: true, report: a.report }) });
@@ -808,6 +828,7 @@ export function reduce(s: TranscriptState, a: Action): TranscriptState {
         agentId: a.agentId,
         task: a.task,
         readOnly: a.readOnly,
+        ...(a.scope?.length ? { scope: a.scope } : {}),
         status: "running",
         items: [],
         startedAt: Date.now(),
@@ -830,6 +851,9 @@ export function reduce(s: TranscriptState, a: Action): TranscriptState {
         seq: id,
         tail: sealed.tail.concat({ kind: "subagent", id, done: false, agents: [entry] }),
       });
+    }
+    case "subagentSaid": {
+      return patchAgent(s, a.agentId, (ag) => ({ ...ag, said: [...(ag.said ?? []), { at: ag.items.length, text: a.text }] }));
     }
     case "subToolStart": {
       const item: ToolGroupItem = { toolId: a.toolId, name: a.name, arg: a.arg, kind: a.action, status: "running" };

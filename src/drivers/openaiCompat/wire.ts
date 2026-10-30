@@ -42,6 +42,13 @@ export interface CompatProvider {
   baseUrl: string;
   /** Environment variable holding the key, e.g. `DASHSCOPE_API_KEY`. */
   apiKeyEnv: string;
+  /**
+   * For a server that may not want a key at all (a model running on this machine, or an endpoint behind
+   * the company's own network): the variable that holds one if there is one. The request carries an
+   * `Authorization` header when it is set and none when it is not, and a missing key is never an error.
+   * `apiKeyEnv` is then only the name this provider is known by, so it is not read as a key.
+   */
+  optionalKeyEnv?: string;
   /** Model used when a request carries no explicit selection. */
   defaultModel: string;
 
@@ -602,6 +609,15 @@ function frameData(frame: string): string | null {
   return parts.length > 0 ? parts.join("\n") : null;
 }
 
+/** The `Authorization` header for a request, empty for a provider whose key is optional and not set. */
+export function authHeaders(provider: CompatProvider): Record<string, string> {
+  if (provider.optionalKeyEnv !== undefined) {
+    const key = process.env[provider.optionalKeyEnv]?.trim();
+    return key ? { Authorization: `Bearer ${key}` } : {};
+  }
+  return { Authorization: `Bearer ${requireApiKey(provider)}` };
+}
+
 /** The provider's API key, or a clear setup error if it isn't configured yet. */
 export function requireApiKey(provider: CompatProvider): string {
   const apiKey = process.env[provider.apiKeyEnv];
@@ -653,7 +669,7 @@ async function send(provider: CompatProvider, body: Record<string, unknown>, sig
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${requireApiKey(provider)}`,
+          ...authHeaders(provider),
           "User-Agent": clientId(),
           ...provider.headers,
         },
@@ -719,7 +735,7 @@ export interface ListedModel {
  */
 export async function listModels(provider: CompatProvider): Promise<ListedModel[]> {
   const response = await fetch(`${provider.baseUrl}/models`, {
-    headers: { Authorization: `Bearer ${requireApiKey(provider)}`, "User-Agent": clientId(), ...provider.headers },
+    headers: { ...authHeaders(provider), "User-Agent": clientId(), ...provider.headers },
   });
   if (!response.ok) {
     const detail = await response.text().catch(() => "");

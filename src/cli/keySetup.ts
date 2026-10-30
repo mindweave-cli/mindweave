@@ -39,14 +39,15 @@ export interface SetupView {
 export function setupView(hasKey: (envVar: string) => boolean): SetupView {
   // A local runtime (Ollama) takes no key, so it is no row to fill in; running, it is still a
   // way to start, so it counts toward leaving setup.
-  const rows = allProviders().filter((p) => !p.local).map((p) => ({
+  // A provider set up by an address (the custom endpoint) has no key to paste either: it has its own box (/endpoint custom).
+  const rows = allProviders().filter((p) => !p.local && !p.setup).map((p) => ({
     id: p.id,
     label: p.label,
     envVar: p.apiKeyEnv,
     keysUrl: p.keysUrl,
     ready: hasKey(p.apiKeyEnv),
   }));
-  const localReady = allProviders().filter((p) => p.local && hasKey(p.apiKeyEnv)).length;
+  const localReady = allProviders().filter((p) => (p.local || p.setup) && hasKey(p.apiKeyEnv)).length;
   const readyCount = rows.filter((r) => r.ready).length + localReady;
   return { rows, readyCount, canContinue: readyCount > 0 };
 }

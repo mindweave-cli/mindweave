@@ -51,9 +51,10 @@ npm link
 
 ## What it does
 
-- **16 providers, 63 models** — DeepSeek, Anthropic, OpenAI, Gemini, xAI, Mistral, Groq, Cerebras,
-  Qwen, Kimi, GLM, Meta, MiniMax, Tencent, OpenRouter, and local models through Ollama
-  with no key at all. [PROVIDERS.md](src/drivers/PROVIDERS.md)
+- **19 providers, 68 models** — DeepSeek, Anthropic, OpenAI, Gemini, xAI, Mistral, Groq, Cerebras,
+  Qwen, Kimi, GLM, Meta, MiniMax, Tencent, OpenRouter, local models through Ollama, LM Studio and
+  llama.cpp with no key at all, and a Custom endpoint for any other server that speaks the OpenAI wire.
+  [PROVIDERS.md](src/drivers/PROVIDERS.md)
 - **Real tools** — file reads and edits, search, a shell with background jobs,
   sub-agents, web search, and a tool that tests your app by using it: it opens a web page or
   dev server in a browser, clicks through it and looks at the result. On Windows it can also

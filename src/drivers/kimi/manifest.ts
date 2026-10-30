@@ -28,43 +28,76 @@
  * to the default via `normalize`'s `SURFACES` lookup below, same as any unknown id.
  */
 import type { DriverManifest, Effort, ModelChoice, ModelConfig, ModelId, ModelPrice, ThinkLevel } from "../types.js";
+import { activePreset, endpointUrl } from "../endpoints.js";
 
+export const K31P = "kimi-k3.1-pro";
+export const K31P_HIGHSPEED = "kimi-k3.1-pro-highspeed";
+export const KIMI_CODE = "kimi-for-coding";
+export const KIMI_CODE_HIGHSPEED = "kimi-for-coding-highspeed";
 export const K3 = "kimi-k3";
 export const K27_CODE = "kimi-k2.7-code";
 export const K27_CODE_HIGHSPEED = "kimi-k2.7-code-highspeed";
 export const K26 = "kimi-k2.6";
 
 /** The model used when nothing is saved and no env override is set. */
-export const DEFAULT_MODEL = K26;
+export const DEFAULT_MODEL = K31P;
 
 /**
  * The models offered by `/model`. First entry is this provider's default, which is
  * also where `/provider` lands when someone switches to Kimi.
  *
- * K2.6 leads rather than K3: it is roughly a third of K3's input rate and under a
- * third of its output rate, and K3 bills its reasoning trace as output on every
- * single response — so K3 is the deliberate choice for hard work, not the default
- * to drift into.
+ * K3.1 Pro leads: it is Kimi's current flagship and its own recommended replacement for
+ * every older id, and the K2 series is closed to newly registered users from 31 October
+ * 2026 and retired by the end of December 2026. The K2 models stay listed until then so a
+ * conversation already on one keeps working instead of silently moving to a pricier model.
+ * Every K3-line model bills its reasoning trace as output on every response.
  */
 export const MODELS: ModelChoice[] = [
-  { id: K26, label: "Kimi K2.6", description: "the general workhorse — the default" },
-  { id: K3, label: "Kimi K3", description: "the flagship, always reasoning, for the hardest work" },
-  { id: K27_CODE, label: "Kimi K2.7 Code", description: "tuned for coding and long tool chains" },
-  { id: K27_CODE_HIGHSPEED, label: "Kimi K2.7 Code HighSpeed", description: "K2.7 Code at up to 6x the output speed, at double the price" },
+  { id: K31P, label: "Kimi K3.1 Pro", description: "the newest flagship, always reasoning — the default" },
+  { id: K31P_HIGHSPEED, label: "Kimi K3.1 Pro HighSpeed", description: "K3.1 Pro at 2-3x the speed, at double the price" },
+  { id: K3, label: "Kimi K3", description: "the previous flagship, always reasoning" },
+  { id: K26, label: "Kimi K2.6", description: "the general workhorse — retires at the end of December 2026" },
+  { id: K27_CODE, label: "Kimi K2.7 Code", description: "tuned for coding and long tool chains — retires at the end of December 2026" },
+  { id: K27_CODE_HIGHSPEED, label: "Kimi K2.7 Code HighSpeed", description: "K2.7 Code at up to 6x the output speed, at double the price — retires at the end of December 2026" },
 ];
+
+/**
+ * A Kimi Code membership serves its own two model ids on its own address (see `endpoints.ts`), not the pay-as-you-go
+ * ids above. They are offered only while the address is one of the Kimi Code ones, and the membership is a flat fee,
+ * so they carry no price here. Their reasoning is left entirely to the service: Kimi's pages do not say what request
+ * fields these ids take, and a field they refuse would be a failed request.
+ */
+export const CODE_MODELS: ModelChoice[] = [
+  { id: KIMI_CODE, label: "Kimi Code", description: "your Kimi Code membership — included in the plan" },
+  { id: KIMI_CODE_HIGHSPEED, label: "Kimi Code HighSpeed", description: "the same membership, on faster serving" },
+];
+
+/** Whether the address is set to a Kimi Code one. */
+export function onKimiCode(env: NodeJS.ProcessEnv = process.env): boolean {
+  return activePreset("kimi", env)?.id.startsWith("kimi-code") === true || /\/coding(\/|$)/.test(endpointUrl("kimi", env));
+}
+
+/** Whether a model id is one of the membership's. */
+export const isCodeModel = (model: ModelId): boolean => model === KIMI_CODE || model === KIMI_CODE_HIGHSPEED;
 
 /** How one model expresses reasoning on the wire. */
 export interface ModelSurface {
   /** False when the model rejects an explicit no-thinking request. */
   canDisableThinking: boolean;
-  /** True when the model takes a top-level `reasoning_effort` rung (K3 only). */
+  /** True when the model takes a top-level `reasoning_effort` rung (the K3 line). */
   takesEffort: boolean;
   /** Usable context window — see `contextWindow`. */
   window: number;
 }
 
 const SURFACES: Record<string, ModelSurface> = {
-  // Always reasons, and the only dial is the effort rung.
+  // The membership's own ids: they always reason, with no dial offered here.
+  [KIMI_CODE]: { canDisableThinking: false, takesEffort: false, window: 200_000 },
+  [KIMI_CODE_HIGHSPEED]: { canDisableThinking: false, takesEffort: false, window: 200_000 },
+  // Always reasons, and the only dial is the effort rung. K3.1 Pro (and its HighSpeed tier) takes the same
+  // three rungs as K3: low, high and max.
+  [K31P]: { canDisableThinking: false, takesEffort: true, window: 200_000 },
+  [K31P_HIGHSPEED]: { canDisableThinking: false, takesEffort: true, window: 200_000 },
   [K3]: { canDisableThinking: false, takesEffort: true, window: 200_000 },
   // Always reasons, no dial at all. HighSpeed is the same system on faster serving,
   // so it shares K2.7 Code's surface exactly.
@@ -120,6 +153,14 @@ export function thinkLevels(model: ModelId): ThinkLevel[] {
  * runs above what the output figure alone suggests.
  */
 const PRICES: Record<string, ModelPrice> = {
+  // A flat-fee membership: nothing is billed per token.
+  [KIMI_CODE]: { cacheHit: 0, cacheMiss: 0, output: 0 },
+  [KIMI_CODE_HIGHSPEED]: { cacheHit: 0, cacheMiss: 0, output: 0 },
+  // K3.1 Pro: $2 in / $10 out / $0.20 cached, no context tiers. HighSpeed is double on input and output.
+  // The K3 line also bills cache WRITES by lifetime, at rates Kimi's pricing page does not render, so
+  // `cacheWrite` is left unset and falls back to the miss rate — the safe default.
+  [K31P]: { cacheHit: 0.2, cacheMiss: 2, output: 10 },
+  [K31P_HIGHSPEED]: { cacheHit: 0.2, cacheMiss: 4, output: 20 },
   [K3]: { cacheHit: 0.3, cacheMiss: 3, output: 15 },
   [K27_CODE]: { cacheHit: 0.19, cacheMiss: 0.95, output: 4 },
   [K27_CODE_HIGHSPEED]: { cacheHit: 0.38, cacheMiss: 1.9, output: 8 },
@@ -221,6 +262,7 @@ export const kimiManifest: DriverManifest = {
   apiKeyEnv: "MOONSHOT_API_KEY",
   keysUrl: "https://platform.kimi.ai/console/api-keys",
   models: MODELS,
+  extraModels: () => (onKimiCode() ? CODE_MODELS : []),
   thinkLevels,
   price,
   contextWindow,

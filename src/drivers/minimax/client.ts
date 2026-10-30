@@ -6,21 +6,24 @@
  * channel are all handled by the shared layer in `../openaiCompat/wire.js`. This
  * file supplies only the facts that differ.
  */
+import { endpointUrl } from "../endpoints.js";
 import type { ModelConfig, ModelRequest, StreamOptions, StreamResult, Turn, TurnOptions } from "../types.js";
 import { compatStreamTurn, compatToolTurn, standardCacheSplit, type CompatProvider } from "../openaiCompat/wire.js";
-import { BUFFERED_OUTPUT_TOKENS, DEFAULT_MODEL } from "./manifest.js";
+import { BUFFERED_OUTPUT_TOKENS, DEFAULT_MODEL, normalize, surfaceOf } from "./manifest.js";
 
-const BASE_URL = process.env.MINDWEAVE_MINIMAX_URL ?? "https://api.minimax.io/v1";
 
 /**
- * MiniMax's reasoning field: a nested `{type: "adaptive" | "disabled"}`, sent
- * EXPLICITLY every call rather than omitted when off. MiniMax's own docs say
- * thinking defaults ON when the field is absent, so relying on that default would
- * mean every internal buffered call (which carries no `ModelConfig`) silently
- * reasons at the higher rate. Explicit here, the same reflex Qwen's driver needed
- * for the opposite reason.
+ * MiniMax's reasoning fields, sent EXPLICITLY every call rather than left to the
+ * provider's default (which is the deepest setting).
+ *
+ *   - M3.1 Flash always reasons, so `thinking: "disabled"` is never sent (it is rejected).
+ *     The one dial is the top-level `reasoning_effort`. An internal buffered call carries
+ *     no `ModelConfig`; it gets the lightest rung rather than silently reasoning at max.
+ *   - M3 takes a nested `{type: "adaptive" | "disabled"}`, sent both ways.
  */
 export function reasoningFields(config: ModelConfig | undefined): Record<string, unknown> {
+  // An unknown model id falls back to the default's surface here, as `normalize` does for the request itself.
+  if (surfaceOf(config?.model ?? DEFAULT_MODEL).takesEffort) return { reasoning_effort: config ? normalize(config).effort : "low" };
   return { thinking: { type: config?.thinking !== false ? "adaptive" : "disabled" } };
 }
 
@@ -31,7 +34,10 @@ export const cacheSplit = standardCacheSplit;
 /** Everything the shared wire layer needs to talk to MiniMax. */
 export const minimaxProvider: CompatProvider = {
   label: "MiniMax",
-  baseUrl: BASE_URL,
+  // Read on every request, so an address changed in the app counts at once (see endpoints.ts).
+  get baseUrl() {
+    return endpointUrl("minimax");
+  },
   apiKeyEnv: "MINIMAX_API_KEY",
   defaultModel: process.env.MINDWEAVE_MODEL ?? DEFAULT_MODEL,
   reasoningFields,

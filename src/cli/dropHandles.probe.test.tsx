@@ -100,17 +100,17 @@ async function boxAfterDrop(before: string, dropped: string): Promise<string> {
 
 test("a dropped image shows as mwimg1, and the path is nowhere in the box", async () => {
   const row = await boxAfterDrop("look at ", `"${WIN_PATH}"`);
-  assert.equal(row, "look at mwimg1");
+  assert.equal(row, "look at [mwimg1]");
   assert.ok(!row.includes("Screenshot"), "the file name leaked into the input");
   assert.ok(!row.includes("C:"), "the path leaked into the input");
 });
 
 test("a dropped text file shows as mwfile1", async () => {
-  assert.equal(await boxAfterDrop("read ", '"C:\\src\\notes.txt"'), "read mwfile1");
+  assert.equal(await boxAfterDrop("read ", '"C:\\src\\notes.txt"'), "read [mwfile1]");
 });
 
 test("an unquoted drop is shortened too", async () => {
-  assert.equal(await boxAfterDrop("open ", "/home/me/notes.md"), "open mwfile1");
+  assert.equal(await boxAfterDrop("open ", "/home/me/notes.md"), "open [mwfile1]");
 });
 
 test("the handle is short enough that a long path no longer wraps the box", async () => {

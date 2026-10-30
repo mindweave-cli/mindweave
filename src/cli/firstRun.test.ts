@@ -49,8 +49,9 @@ test("the template does NOT make every provider look configured", () => {
 test("every provider appears, by name, so a new user can find theirs", () => {
   const { text } = firstRun();
   for (const p of allProviders()) {
-    // A local runtime (Ollama) has no key variable; it is named all the same.
-    if (!p.local) assert.ok(text.includes(p.apiKeyEnv), `${p.label}'s key variable is missing`);
+    // A provider with no key line (a local runtime, or one set up by an address) is named all the same, with how to set it up.
+    if (!p.local && !p.setup) assert.ok(text.includes(p.apiKeyEnv), `${p.label}'s key variable is missing`);
+    if (p.setup && !p.local) assert.ok(text.includes(p.setup.addressEnv), `${p.label}'s address variable is missing`);
     // The variable alone is not enough: DASHSCOPE, ZAI and MODEL_API_KEY name nothing a
     // user would recognise as Qwen, GLM or Meta.
     assert.ok(text.includes(p.label), `${p.label} is not named, only its variable`);
@@ -93,7 +94,8 @@ test("a key for ANY other provider opens the app too", () => {
   const theDefault = manifestForModel(DEFAULT_MODEL).apiKeyEnv;
   // A local runtime counts as connected only once discovery found models, which a key-shaped
   // stand-in cannot fake; ollama.test.ts covers it.
-  const others = allProviders().filter((p) => p.apiKeyEnv !== theDefault && !p.local);
+  // A provider set up by an address (a custom endpoint) is connected only once its server answered with a model.
+  const others = allProviders().filter((p) => p.apiKeyEnv !== theDefault && !p.local && !p.setup);
   assert.ok(others.length > 0, "there is only one provider — this test proves nothing");
   for (const p of others) {
     assert.equal(

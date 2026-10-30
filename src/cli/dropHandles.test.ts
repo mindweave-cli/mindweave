@@ -11,26 +11,26 @@ const identity = (p: string) => p;
 
 test("a dropped image path becomes mwimg1", () => {
   const h = createDropHandles(identity);
-  assert.equal(h.register(`look at "${WIN}"`), "look at mwimg1");
+  assert.equal(h.register(`look at "${WIN}"`), "look at [mwimg1]");
 });
 
 test("a dropped non-image becomes mwfile1, numbered apart from the images", () => {
   const h = createDropHandles(identity);
-  assert.equal(h.register('read "C:\\src\\notes.txt"'), "read mwfile1");
-  assert.equal(h.register(`and "${WIN}"`), "and mwimg1");
-  assert.equal(h.register('and "C:\\src\\other.txt"'), "and mwfile2");
+  assert.equal(h.register('read "C:\\src\\notes.txt"'), "read [mwfile1]");
+  assert.equal(h.register(`and "${WIN}"`), "and [mwimg1]");
+  assert.equal(h.register('and "C:\\src\\other.txt"'), "and [mwfile2]");
 });
 
 test("the same file dropped twice keeps one handle", () => {
   const h = createDropHandles(identity);
-  assert.equal(h.register(`a "${WIN}"`), "a mwimg1");
-  assert.equal(h.register(`b "${WIN}"`), "b mwimg1");
+  assert.equal(h.register(`a "${WIN}"`), "a [mwimg1]");
+  assert.equal(h.register(`b "${WIN}"`), "b [mwimg1]");
 });
 
 test("two paths in one drop both get handles, and the text around them survives", () => {
   const h = createDropHandles(identity);
   const out = h.register('compare "C:\\a\\one.txt" with "C:\\b\\two.txt" please');
-  assert.equal(out, "compare mwfile1 with mwfile2 please");
+  assert.equal(out, "compare [mwfile1] with [mwfile2] please");
 });
 
 test("expanding puts the real path back, quoted so spaces survive", () => {
@@ -48,7 +48,7 @@ test("text typed around a handle is preserved through the round trip", () => {
 
 test("a bare unquoted path is handled too", () => {
   const h = createDropHandles(identity);
-  assert.equal(h.register("see /home/me/notes.md now"), "see mwfile1 now");
+  assert.equal(h.register("see /home/me/notes.md now"), "see [mwfile1] now");
 });
 
 test("ordinary quoted prose is NOT a file drop", () => {
@@ -87,8 +87,8 @@ test("labelFor answers with the handle, for the chat's benefit", () => {
 
 test("the resolver decides identity, so two spellings of one file share a handle", () => {
   const h = createDropHandles((p) => p.toLowerCase());
-  assert.equal(h.register('"C:\\A\\File.TXT"'), "mwfile1");
-  assert.equal(h.register('"C:\\a\\file.txt"'), "mwfile1");
+  assert.equal(h.register('"C:\\A\\File.TXT"'), "[mwfile1]");
+  assert.equal(h.register('"C:\\a\\file.txt"'), "[mwfile1]");
 });
 
 test("a pasted slash command is a command, not a dropped file", () => {
@@ -109,4 +109,43 @@ test("a real path pasted at the start of a line is still a drop", () => {
   // And a command-shaped word anywhere BUT the start is untouched, because a line that
   // begins with something else is not a command line at all.
   assert.equal(findDroppedPaths("look at /tmp").length, 1);
+});
+
+const IMG1 = String.raw`C:\Users\dev\Pictures\one.png`;
+const IMG2 = String.raw`C:\Users\dev\Pictures\two.png`;
+
+test("two images dropped together with nothing between them get two handles that do not run together", () => {
+  const h = createDropHandles(identity);
+  assert.equal(h.register(`"${IMG1}""${IMG2}" these are the ideas`), "[mwimg1] [mwimg2] these are the ideas");
+});
+
+test("two handles that were typed or dropped side by side are both expanded", () => {
+  // Seen as: "mwimg1mwimg2 these images tell you the idea". Neither was expanded, so no image went with the message.
+  const h = createDropHandles(identity);
+  h.register(`"${IMG1}"`);
+  h.register(`"${IMG2}"`);
+  assert.equal(expandHandles("look at mwimg1mwimg2 please", h), `look at "${IMG1}""${IMG2}" please`);
+  assert.equal(expandHandles("mwimg1mwimg2mwimg1", h), `"${IMG1}""${IMG2}""${IMG1}"`);
+});
+
+test("a handle is still not found inside a longer word or number", () => {
+  const h = createDropHandles(identity);
+  h.register(`"${IMG1}"`);
+  assert.equal(expandHandles("xmwimg1 and mwimg12 and mwimg1", h), `xmwimg1 and mwimg12 and "${IMG1}"`);
+});
+
+test("handles show in square brackets and expand from them, and a bare one typed by hand still works", () => {
+  const h = createDropHandles(identity);
+  const shown = h.register(`see "${IMG1}"`);
+  assert.equal(shown, "see [mwimg1]");
+  assert.equal(expandHandles(shown, h), `see "${IMG1}"`);
+  assert.equal(expandHandles("see mwimg1", h), `see "${IMG1}"`);
+  assert.equal(expandHandles("[mwimg9] stays", h), "[mwimg9] stays", "a handle that names nothing is left as it is");
+});
+
+test("two handles in brackets, side by side, both expand", () => {
+  const h = createDropHandles(identity);
+  h.register(`"${IMG1}"`);
+  h.register(`"${IMG2}"`);
+  assert.equal(expandHandles("[mwimg1][mwimg2] these", h), `"${IMG1}""${IMG2}" these`);
 });

@@ -234,9 +234,9 @@ const PRICES: Record<string, ModelPrice> = {
   [OPUS]: { cacheHit: 0.5, cacheMiss: 5, output: 25, cacheWrite: 5 * CACHE_WRITE_MULTIPLIER },
   [OPUS_48]: { cacheHit: 0.5, cacheMiss: 5, output: 25, cacheWrite: 5 * CACHE_WRITE_MULTIPLIER },
   [SONNET]: { cacheHit: 0.2, cacheMiss: 2, output: 10, cacheWrite: 2 * CACHE_WRITE_MULTIPLIER },
-  // Same prices as Sonnet 5, cache read included (platform.claude.com/docs/en/about-claude/pricing,
-  // checked 2026-10-01).
-  [SONNET_55]: { cacheHit: 0.2, cacheMiss: 2, output: 10, cacheWrite: 2 * CACHE_WRITE_MULTIPLIER },
+  // The same input and output prices as Sonnet 5, but a cache read at 5% of base input rather than 10%,
+  // like Opus 5.5 (platform.claude.com/docs/en/about-claude/models/overview, checked 2026-10-28).
+  [SONNET_55]: { cacheHit: 0.1, cacheMiss: 2, output: 10, cacheWrite: 2 * CACHE_WRITE_MULTIPLIER },
   [HAIKU]: { cacheHit: 0.1, cacheMiss: 1, output: 5, cacheWrite: 1 * CACHE_WRITE_MULTIPLIER },
   // The rate for a prompt up to 100,000 tokens. Over that, every line is five times higher
   // ($0.50 input, $2.50 output, $0.05 cache read, $0.625 cache write), applied to the whole

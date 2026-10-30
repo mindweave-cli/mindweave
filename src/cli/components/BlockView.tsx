@@ -17,7 +17,8 @@ import { registerExpandable, itemHit } from "../expandHits.js";
 import { renderMarkdown } from "../markdown.js";
 import { wrapAnsi, visibleWidth } from "../wrap.js";
 import { BAD, USER_BG, USER_FG } from "../theme.js";
-import { compactionLines } from "../compaction.js";
+import { compactionLine, compactingLine } from "../compaction.js";
+import { PulseDot } from "./PulseDot.js";
 import { ToolLine } from "./ToolLine.js";
 import { WorkGroup, shadeRows } from "./WorkGroup.js";
 import { EditGroup } from "./EditGroup.js";
@@ -278,12 +279,11 @@ function BlockViewInner({ block, columns, tightTop, hovered, hoveredItem }: { bl
       // The bars are pre-composed as plain rows (compaction.ts) so the layout is
       // testable without a terminal. Each row is printed verbatim and truncated, never
       // wrapped: half a progress bar on the next line reads as two broken bars.
-      const rows = compactionLines(block.report, columns - 2);
+      // Running: a pulsing dot and what is happening. Settled: the dot stops and the line says what it did.
       return (
-        <Box marginTop={1} marginBottom={1} flexDirection="column" width={columns}>
-          {rows.map((line, i) => (
-            <Text key={i} dimColor={i !== 1} wrap="truncate-end">{"  "}{line}</Text>
-          ))}
+        <Box marginTop={1} marginBottom={1} width={columns}>
+          <Box minWidth={2}>{block.report ? <Text dimColor>{"●"}</Text> : <PulseDot glyph="●" />}</Box>
+          <Text dimColor={block.report !== undefined}>{block.report ? compactionLine(block.report, block.auto) : compactingLine(block.auto === true)}</Text>
         </Box>
       );
     }
@@ -293,7 +293,7 @@ function BlockViewInner({ block, columns, tightTop, hovered, hoveredItem }: { bl
       // faint marker and italics, so it reads as housekeeping, not something Mindweave did.
       return (
         <Box marginTop={1} marginBottom={1} width={columns}>
-          <Text dimColor italic wrap="truncate-end">{"⋯ "}{block.text}</Text>
+          <Text dimColor italic>{"⋯ "}{block.text}</Text>
         </Box>
       );
   }

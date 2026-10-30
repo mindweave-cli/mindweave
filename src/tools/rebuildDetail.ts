@@ -181,7 +181,11 @@ export function compactUiDetail(detail: string | undefined, isError: boolean | u
  * Undefined when this is not that block (a search that failed, or a row already in the new
  * form), so such a row is left exactly as it was.
  */
-export function compactSearchDetail(detail: string | undefined): { detail: string; detailFull?: string } | undefined {
+export function compactSearchDetail(
+  detail: string | undefined,
+  /** The row's own record of the web call (a search lists its sources; a fetch has none). */
+  web?: object,
+): { detail: string; detailFull?: string } | undefined {
   if (!detail) return undefined;
   const lines = detail.split("\n");
   const grab = (re: RegExp): RegExpExecArray | undefined => {
@@ -198,6 +202,12 @@ export function compactSearchDetail(detail: string | undefined): { detail: strin
   for (const l of lines) {
     const m = /^\d+\. (.*)$/.exec(l);
     if (m) titles.push(m[1]!);
+  }
+  // The row's own record of the sources (`web`) holds more titles than the block did: the block stopped at eight, the record at a
+  // far higher number. Every one that was saved is listed, so a source that exists is never reported as missing.
+  const recorded = (web as { sources?: ReadonlyArray<{ title: string }> } | undefined)?.sources;
+  if (recorded && recorded.length > titles.length) {
+    titles.splice(0, titles.length, ...recorded.map((s) => s.title.replace(/\s+/g, " ").trim()));
   }
   const summary = [grab(/^Engine: (.+)$/)?.[1], grab(/^Query time: (.+)$/)?.[1], `${total} source${total === 1 ? "" : "s"}`]
     .filter(Boolean)

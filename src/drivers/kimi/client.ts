@@ -9,6 +9,7 @@
  * The one genuinely Kimi-specific part is `reasoningFields`, because this lineup
  * does not agree with ITSELF about how reasoning is expressed — see below.
  */
+import { endpointUrl } from "../endpoints.js";
 import type {
   ModelConfig,
   ModelRequest,
@@ -18,10 +19,9 @@ import type {
   TurnOptions,
 } from "../types.js";
 import { compatStreamTurn, compatToolTurn, type CompatProvider } from "../openaiCompat/wire.js";
-import { BUFFERED_OUTPUT_TOKENS, DEFAULT_MODEL, surfaceOf } from "./manifest.js";
+import { BUFFERED_OUTPUT_TOKENS, DEFAULT_MODEL, isCodeModel, surfaceOf } from "./manifest.js";
 
 /** Moonshot's international endpoint, which is where these model ids are served. */
-const BASE_URL = process.env.MINDWEAVE_KIMI_URL ?? "https://api.moonshot.ai/v1";
 
 /** The model a request runs on, matching the shared layer's own fallback so the
  *  reasoning fields can never be built for a different model than is being called. */
@@ -47,6 +47,8 @@ function modelOf(config: ModelConfig | undefined): string {
  * can never disagree about which model's rules apply.
  */
 export function reasoningFields(config: ModelConfig | undefined): Record<string, unknown> {
+  // A Kimi Code membership id takes whatever the service decides: nothing is sent.
+  if (isCodeModel(modelOf(config))) return {};
   const surface = surfaceOf(modelOf(config));
 
   if (surface.takesEffort) {
@@ -87,7 +89,10 @@ export function cacheSplit(usage: Record<string, unknown>): { hit: number; miss:
  */
 export const kimiProvider: CompatProvider = {
   label: "Kimi",
-  baseUrl: BASE_URL,
+  // Read on every request, so an address changed in the app counts at once (see endpoints.ts).
+  get baseUrl() {
+    return endpointUrl("kimi");
+  },
   apiKeyEnv: "MOONSHOT_API_KEY",
   defaultModel: process.env.MINDWEAVE_MODEL ?? DEFAULT_MODEL,
   reasoningFields,

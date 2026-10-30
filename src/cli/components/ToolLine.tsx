@@ -234,7 +234,11 @@ export function ToolLine({ id, full, expanded, hovered, name, arg, status, actio
           </Box>
         ) : null}
       </Box>
-      {branchShown ? (
+      {working && action === "websearch" ? (
+        // The line under a search or a fetch while it runs: `DeepSeek · 7s`, the seconds counting. When it ends the same
+        // line holds the engine, the time and how many sources (or the size), and stays that way until it is clicked.
+        <LiveWebLine text={detail ?? ""} since={startedAt} />
+      ) : branchShown ? (
         detailKind === "shell" ? (
           <ShellLines lines={branchLines} columns={columns} errored={errored} headerHasCommand={!!arg} wrap={open} />
         ) : action === "screenshot" && detailKind !== "diff" ? (
@@ -246,11 +250,27 @@ export function ToolLine({ id, full, expanded, hovered, name, arg, status, actio
       {/* The one place the row says it can be pressed, and the only thing that moves while the
           pointer is over it: this line goes from dim to bright. The verb, the branch mark, the
           rail and the text keep their look, so a diff stays a diff and nothing else shifts. */}
-      {full && status !== "running" ? (
+      {full && status !== "running" && !(action === "websearch" && !open) ? (
         <Text dimColor={!hovered} bold={hovered}>
           {open ? "    ▾ click to fold" : `    ▸ click to show all ${full.split("\n").length} lines`}
         </Text>
       ) : null}
+    </Box>
+  );
+}
+
+/** The one line under a running search or fetch: what is doing it, and how long it has been going. */
+function LiveWebLine({ text, since }: { text: string; since?: number }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  const seconds = since === undefined ? 0 : Math.max(0, Math.round((now - since) / 1000));
+  return (
+    <Box flexDirection="row">
+      <Text dimColor>{`  ${BRANCH} `}</Text>
+      <Text dimColor>{[text, humanElapsed(seconds)].filter(Boolean).join(" · ")}</Text>
     </Box>
   );
 }

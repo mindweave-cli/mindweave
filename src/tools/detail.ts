@@ -22,8 +22,8 @@ export function capLines(lines: string[], max: number): string {
  *  shows when a row is expanded. Still bounded, so one giant write can't flood it. */
 export const FULL_DETAIL_MAX = 5000;
 
-/** Sources a web search's closed row lists; the rest open with a click. */
-export const SEARCH_PREVIEW_SOURCES = 5;
+/** Sources a web search's closed row lists: none. The row is its summary line (engine, time, how many), and the list opens with a click. */
+export const SEARCH_PREVIEW_SOURCES = 0;
 
 /** The line a cut leaves in place of what it hid: `… (3 more lines)` from `capLines`, or
  *  `… 57 earlier lines hidden` from `capEnds`. It says something is missing; it is not content. */

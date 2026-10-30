@@ -9,11 +9,11 @@ const win = (c: string) => defaultOpenRewrite(c, "win32");
 
 test("the exact command that kept opening Edge is rewritten", () => {
   // Verbatim from a real run, twice, after a description telling it not to.
-  const out = win("Start-Process msedge file:///C:/Projects/Cutio/mockup1.html");
+  const out = win("Start-Process msedge file:///C:/Projects/myapp/mockup1.html");
   assert.ok(out, "the command was left alone");
   assert.equal(out.browser, "msedge");
-  assert.equal(out.target, "file:///C:/Projects/Cutio/mockup1.html");
-  assert.equal(out.command, 'Start-Process "file:///C:/Projects/Cutio/mockup1.html"');
+  assert.equal(out.target, "file:///C:/Projects/myapp/mockup1.html");
+  assert.equal(out.command, 'Start-Process "file:///C:/Projects/myapp/mockup1.html"');
 });
 
 test("every browser a model reaches for is caught", () => {

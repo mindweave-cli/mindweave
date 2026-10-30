@@ -477,6 +477,14 @@ export interface ToolContext {
    */
   verifierTools?: boolean;
   /**
+   * The files and folders (relative to the project) this sub-agent may change, set for an editing worker that runs beside others.
+   * The engine refuses any edit outside it and any tool that could change files by another route, so two such workers can never
+   * write the same file. Never inherited. See tools/delegation.ts.
+   */
+  writeScope?: string[];
+  /** What this turn has handed to sub-agents so far; replaced at the start of each turn. See tools/delegation.ts. */
+  delegation?: import("./delegation.js").Delegation;
+  /**
    * Extra instructions appended to this session's system prompt, giving a child a ROLE
    * rather than a task.
    *
@@ -494,7 +502,7 @@ export interface ToolContext {
    * the parent Session the tool never sees). Returns a ready child to run through the
    * engine; absent in bare contexts (sub-agents then unavailable).
    */
-  forkChild?: (task: string, opts?: { readOnly?: boolean; agentPrompt?: string; verifier?: boolean }) => import("../memory/types.js").Session;
+  forkChild?: (task: string, opts?: { readOnly?: boolean; agentPrompt?: string; verifier?: boolean; writeScope?: string[] }) => import("../memory/types.js").Session;
   /**
    * Forward a model call's token usage to the live meter (injected by the engine from
    * its options). Lets a sub-agent's usage count toward the same total instead of

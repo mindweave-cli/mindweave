@@ -37,12 +37,39 @@ export interface Completion {
   /** Left out of the list a bare `/` opens and offered only once something is typed after it.
    *  A server can offer dozens of long prompt names; they are reachable by typing, not by scrolling past. */
   quiet?: boolean;
+  /** One row standing for a server's prompts ("/rea:"): choosing it fills the box with the name and opens the list of them
+   *  instead of running anything. */
+  group?: boolean;
 }
 
 /** The completions a command menu offers for what is typed (pure). */
 export function commandMatches(completions: readonly Completion[], typed: string): Completion[] {
   const t = typed.toLowerCase();
-  return completions.filter((c) => c.name.toLowerCase().startsWith(t) && !(c.quiet && t === "/"));
+  const found = completions.filter((c) => c.name.toLowerCase().startsWith(t) && !(c.quiet && t === "/"));
+  // Until the server's name and its colon are typed, its prompts are one row ("/rea:  12 prompts"), not a wall of long names:
+  // typing the colon, or choosing the row, lists them.
+  if (t.includes(":")) return found;
+  const out: Completion[] = [];
+  const at = new Map<string, number>();
+  const count = new Map<string, number>();
+  for (const c of found) {
+    const colon = c.quiet ? c.name.indexOf(":") : -1;
+    if (colon < 0) {
+      out.push(c);
+      continue;
+    }
+    const server = c.name.slice(0, colon + 1);
+    count.set(server, (count.get(server) ?? 0) + 1);
+    if (!at.has(server)) {
+      at.set(server, out.length);
+      out.push({ name: server, description: "", quiet: true, group: true });
+    }
+  }
+  for (const [server, index] of at) {
+    const n = count.get(server)!;
+    out[index] = { name: server, description: `${n} prompt${n === 1 ? "" : "s"} from the ${server.slice(1, -1)} server`, quiet: true, group: true };
+  }
+  return out;
 }
 
 /** A name cut to `width` columns with an ellipsis, or padded to it (pure). */
@@ -305,6 +332,11 @@ interface PromptInputProps {
     cursor: number,
     via: "up" | "escape",
   ) => { text: string; cursor: number } | undefined;
+  /**
+   * ← or → pressed while the box is EMPTY, where they have no caret to move. Return true when they were used for something else (the
+   * App uses them to step between the main agent and its sub-agents); false leaves them as they were.
+   */
+  onEmptyArrow?: (dir: 1 | -1) => boolean;
   /** Hard ceiling on how many rows the text area may occupy. Past it the box
    *  scrolls with the cursor instead of growing, because the rows it would take
    *  come off the bottom of a fixed frame — where the tip line lives. */
@@ -355,6 +387,7 @@ export function PromptInput({
   menuAbove = false,
   settleKey = 0,
   onQueuePop,
+  onEmptyArrow,
   maxInputRows = DEFAULT_MAX_INPUT_ROWS,
   overlay,
   opening = false,
@@ -547,6 +580,11 @@ export function PromptInput({
         }
         // Rendered state that is behind the buffer (keys arrived faster than frames) is not
         // the box the user is looking at: send what is really in it.
+        // A server's row opens the list of its prompts: nothing is sent.
+        if (menu?.items[sel]?.group) {
+          dispatch({ t: "histReplace", value: menu.items[sel]!.name, histIdx: null });
+          return;
+        }
         submit(latest.current.value !== value ? latest.current.value : menu ? menu.items[sel]!.name : value);
         return;
       }
@@ -556,7 +594,7 @@ export function PromptInput({
       // it must never complete here.
       if (key.tab && !key.shift && menu) {
         if (menu.mode === "path") completePath();
-        else dispatch({ t: "histReplace", value: menu.items[sel]!.name + " ", histIdx: null });
+        else dispatch({ t: "histReplace", value: menu.items[sel]!.name + (menu.items[sel]!.group ? "" : " "), histIdx: null });
         return;
       }
 
@@ -622,10 +660,12 @@ export function PromptInput({
         return;
       }
       if (key.leftArrow) {
+        if (latest.current.value === "" && onEmptyArrow?.(-1)) return;
         dispatch({ t: "left" });
         return;
       }
       if (key.rightArrow) {
+        if (latest.current.value === "" && onEmptyArrow?.(1)) return;
         dispatch({ t: "right" });
         return;
       }
@@ -878,7 +918,7 @@ export function PromptInput({
           width={width}
           height={menuBoxRows}
           flexShrink={0}
-          {...(menuAbove ? { marginBottom: 1 } : { borderStyle: "single" as const, borderColor: "gray", paddingX: 1, marginTop: 1 })}
+          {...(menuAbove ? { marginBottom: 1 } : { borderStyle: "single" as const, borderColor: "gray", paddingX: 1 })}
           overflow="hidden"
         >
           {overlay ? (

@@ -33,6 +33,7 @@ import { reportOf } from "./childReport.js";
 import type { Tool, ToolResult } from "./types.js";
 import type { EngineEvent } from "../dynamo/engine.js";
 import { fail, failQuietly } from "./results.js";
+import { DEFAULT_LIMITS, closeInbox, delegationLine, openInbox, takeInbox, newDelegation, noteSpawn, normalizeScope, refuseSpawn, scopeLocks, type DelegationLimits } from "./delegation.js";
 
 const MAX_SUBAGENT_DEPTH = 1;
 /** Default step budget for a worker; the caller can scale it with `max_steps`. */
@@ -42,7 +43,17 @@ const VERIFIER_BUDGET = envInt("MINDWEAVE_VERIFIER_BUDGET", 40);
 /** Ceiling on `max_steps` so one worker can't run away. */
 const MAX_SUBAGENT_STEPS = envInt("MINDWEAVE_SUBAGENT_MAX_STEPS", 60);
 /** How many workers may run concurrently, process-wide. */
-const SUBAGENT_CONCURRENCY = envInt("MINDWEAVE_SUBAGENT_CONCURRENCY", 5);
+const SUBAGENT_CONCURRENCY = envInt("MINDWEAVE_SUBAGENT_CONCURRENCY", DEFAULT_LIMITS.concurrent);
+/** What one turn may hand to workers in all (see delegation.ts): how many, and how many steps between them. */
+const LIMITS: DelegationLimits = {
+  concurrent: SUBAGENT_CONCURRENCY,
+  perTurn: envInt("MINDWEAVE_SUBAGENT_MAX_PER_TURN", DEFAULT_LIMITS.perTurn),
+  stepsPerTurn: envInt("MINDWEAVE_SUBAGENT_TURN_STEPS", DEFAULT_LIMITS.stepsPerTurn),
+};
+
+/** The write scope a call asks for, as given (not yet checked). */
+const askedScope = (args: Record<string, unknown>): string[] =>
+  Array.isArray(args.write_scope) ? args.write_scope.filter((s): s is string => typeof s === "string" && s.trim() !== "") : [];
 
 /**
  * A bounded gate so a wide fan-out queues instead of launching a swarm of agents at
@@ -90,7 +101,7 @@ export const spawnSubagent: Tool = {
   // them run concurrently.
   // A verifier runs commands (a build, the app) and its files are checked before and after, so it
   // runs alone even if it was also marked read-only: two at once would see each other's output.
-  isConcurrencySafe: (args) => args.read_only === true && args.verify !== true,
+  isConcurrencySafe: (args) => args.verify !== true && (args.read_only === true || (askedScope(args).length > 0 && args.read_only !== true)),
   // Three limits were enforced in code and absent from the text: a child cannot spawn
   // its own child, parallel workers are capped, and running out of steps is a clean
   // PAUSE rather than a failure. That last one changes what the model should do about
@@ -108,12 +119,15 @@ export const spawnSubagent: Tool = {
     "user anything, so the task must stand alone: the objective, its boundaries (what " +
     "NOT to touch), and via output_format the exact shape of the result you want. " +
     "Set read_only:true for research and inventory that must not change files.\n" +
-    "PARALLEL: emit several read-only calls in ONE message to fan out over independent " +
-    `areas, giving each a distinct slice so they do not duplicate work. Up to ` +
-    `${SUBAGENT_CONCURRENCY} run at once; beyond that they queue, so more workers stop ` +
-    "buying speed. A non-read-only child runs alone. Sub-agents cost far more tokens " +
-    "than doing the work inline, and most editing is sequential, so delegate for " +
-    "independent READ and discovery rather than to parallelise edits.\n" +
+    "PARALLEL: emit several calls in ONE message ONLY when the work has that many INDEPENDENT parts, and give each worker a `slice`: " +
+    "the part it owns. Two workers may not own the same slice, and a task nearly the same as one already given is refused. Use as many " +
+    "workers as there are independent parts and no more: one part means doing it yourself or starting one worker. " +
+    `Up to ${SUBAGENT_CONCURRENCY} run at once; beyond that they queue. A turn may start ${LIMITS.perTurn} workers and spend ${LIMITS.stepsPerTurn} ` +
+    "steps between them, and each result tells you what is left.\n" +
+    "EDITING IN PARALLEL: give each editing worker a `write_scope` (the files or folders it may change). Scopes of workers running " +
+    "together may not overlap, so none can write what another writes, and a worker can edit only inside its own. It has no shell: " +
+    "build and test yourself when they are back. An editing worker WITHOUT a scope runs alone. Sub-agents cost far more tokens than " +
+    "doing the work inline, so delegate only what is large and independent: several areas to read, or several separate pieces to build.\n" +
     `LIMITS: a child gets ${SUBAGENT_BUDGET} tool rounds by default (raise with ` +
     "max_steps; a verifier gets more). If it runs out it is given one last turn, with no " +
     "tools, to report what it found so far, and the result says that the limit was hit. " +
@@ -140,6 +154,20 @@ export const spawnSubagent: Tool = {
         description:
           "When true, the child may only read/search — no edits or commands — AND it runs in parallel with other " +
           "read-only workers spawned in the same message. Default false (runs alone). Use true for research/inventory.",
+      },
+      slice: {
+        type: "string",
+        description:
+          "Required for a worker that runs beside others (read_only, or one with a write_scope): a short name for the part of the work it " +
+          "owns, such as \"auth routes\". Two workers may not own the same slice.",
+      },
+      write_scope: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "For a worker that EDITS while others work: the files or folders (relative to the project) it may change, and nothing else. " +
+          "Scopes of workers running together may not overlap. A worker with a scope can read and search, and edit inside its scope, " +
+          "but has no shell: build and test yourself once they are back. Without a scope an editing worker runs alone.",
       },
       output_format: {
         type: "string",
@@ -199,16 +227,54 @@ export const spawnSubagent: Tool = {
     // that can edit is a verifier that can make the thing it is judging pass.
     const readOnly = verifying || args.read_only === true;
 
-    const child = ctx.forkChild(framedTask, { readOnly, ...(verifying ? { agentPrompt: VERIFIER_PROMPT, verifier: true } : {}) });
-    // Dynamic import: the static registry ← engine edge would otherwise cycle. By the
-    // time execute() runs, both modules are fully loaded, so this is safe.
-    const { respond } = await import("../dynamo/engine.js");
+    // A worker that edits beside others owns named files. The names are checked before anything starts.
+    const asked = askedScope(args);
+    if (asked.length > 0 && (readOnly || verifying)) {
+      return failQuietly("Not started: `write_scope` and `read_only`/`verify` contradict each other. A worker either only reads, or edits the files it is given.");
+    }
+    const scopes: string[] = [];
+    for (const raw of asked) {
+      const n = normalizeScope(raw, ctx.cwd);
+      if (!n.ok) return failQuietly(`Not started: write_scope ${n.reason}.`);
+      if (!scopes.includes(n.scope)) scopes.push(n.scope);
+    }
+    const scoped = scopes.length > 0;
+    const slice = typeof args.slice === "string" ? args.slice.trim() : "";
+
+    // What this turn has handed out so far. The ceilings, the duplicate check and the slices are the point of this block: a model asked
+    // to be thorough will start ten workers for what one could do, so it is refused here, in code, with what to do instead.
+    const ledger = (ctx.delegation ??= newDelegation());
+    const refused = refuseSpawn(ledger, LIMITS, { task, slice, parallel: (readOnly || scoped) && !verifying });
+    if (refused) return failQuietly(refused);
 
     // A short id for THIS worker. Every event it emits carries it, so the UI keeps each
     // worker's nested rail distinct even when several fan out in parallel.
     const agentId = randomUUID().slice(0, 8);
+    if (scoped) {
+      // Taken now, before any await, so workers started in one message take their scopes in the order they were written.
+      const got = scopeLocks.acquire(agentId, slice || task.slice(0, 40), scopes);
+      if (!got.ok) {
+        return failQuietly(
+          `Not started: ${got.scope} overlaps ${got.heldScope}, which the worker "${got.heldBy}" is editing right now. Two workers must never write the same file. Give this one different files, or start it after that one is back.`,
+        );
+      }
+    }
+    noteSpawn(ledger, { task, slice, parallel: (readOnly || scoped) && !verifying });
+    // The person may write to this worker while it runs (from its view in the CLI); what they write is read between its steps.
+    openInbox(agentId);
+
+    const child = ctx.forkChild(
+      scoped ? `${framedTask}\n\nYour write scope: ${scopes.join(", ")}. You may change only these; you have no shell. Report what you changed and what is left.` : framedTask,
+      { readOnly: readOnly || scoped, ...(scoped ? { writeScope: scopes } : {}), ...(verifying ? { agentPrompt: VERIFIER_PROMPT, verifier: true } : {}) },
+    );
+    // From here on the worker holds its scope and counts against the turn: both are settled in the `finally` below, however it ends.
+    try {
+    // Dynamic import: the static registry ← engine edge would otherwise cycle. By the
+    // time execute() runs, both modules are fully loaded, so this is safe.
+    const { respond } = await import("../dynamo/engine.js");
+
     const taskLabel = task.replace(/\s+/g, " ").trim().slice(0, 100);
-    ctx.emitEvent?.({ type: "subagent", phase: "start", id: agentId, task: taskLabel, readOnly, taskFull: task.replace(/\s+/g, " ").trim().slice(0, 600) });
+    ctx.emitEvent?.({ type: "subagent", phase: "start", id: agentId, task: taskLabel, readOnly, ...(scoped ? { scope: scopes } : {}), ...(slice ? { slice } : {}), taskFull: task.replace(/\s+/g, " ").trim().slice(0, 600) });
 
     let reply = "";
     let verified: VerdictReport | undefined;
@@ -220,6 +286,8 @@ export const spawnSubagent: Tool = {
         respond(child, {
           signal: ctx.abortSignal,
           maxSteps: steps,
+          // Between its steps the worker reads what the person has written to it, as the main agent reads what is typed to it.
+          steer: async () => takeInbox(agentId).map((content) => ({ content })),
           // Surface the child's activity, not its chatter: its usage counts toward the
           // meter, and each of its tool calls is forwarded UP tagged with this worker's
           // id so the UI nests them in the worker's rail (its prose/reasoning stays
@@ -233,7 +301,15 @@ export const spawnSubagent: Tool = {
       );
     // A child that runs out of steps is given one more turn, with no tools, to say what it found (childReport.ts).
     const runChild = async (watch?: (e: EngineEvent) => void): Promise<string> => {
-      const first = await runOnce(budget, watch);
+      let first = await runOnce(budget, watch);
+      // A message that arrived while the worker was writing its answer is the next request, not a steer: it gets its own round, a few
+      // at most, so a person who keeps writing cannot keep one worker going for ever.
+      for (let round = 0; round < 3; round++) {
+        const late = takeInbox(agentId);
+        if (late.length === 0) break;
+        for (const content of late) child.transcript.push({ role: "user", content });
+        first = await runOnce(budget, watch);
+      }
       const done = await reportOf(child, first, () => runOnce(2, watch));
       exhausted = done.exhausted;
       return done.reply;
@@ -298,12 +374,37 @@ export const spawnSubagent: Tool = {
       ...workerOutcome({ status: verdict.status, trustworthy: verdict.trustworthy, exhausted: exhausted || steps >= budget }),
       steps,
     });
+    const touched = filesTouched(child);
     return {
-      output: renderVerdict(verdict),
+      output: [renderVerdict(verdict), touched.length > 0 ? `Files changed: ${touched.join(", ")}` : "", delegationLine(ledger, LIMITS)].filter(Boolean).join("\n\n"),
       summary: `subagent · ${stepLabel}${flag}`,
     };
+    } finally {
+      // The steps it took are the turn's, and the files it held are free again, whether it finished, failed or was stopped.
+      ledger.steps += child.transcript.filter((e) => e.role === "assistant").length;
+      scopeLocks.release(agentId);
+      closeInbox(agentId);
+    }
   },
 };
+
+/** The files a worker changed, from the edit calls in its own conversation (pure). */
+function filesTouched(child: { transcript: ReadonlyArray<{ role: string; toolCalls?: ReadonlyArray<{ name: string; arguments: string }> }> }): string[] {
+  const seen = new Set<string>();
+  for (const e of child.transcript) {
+    if (e.role !== "assistant") continue;
+    for (const call of e.toolCalls ?? []) {
+      if (call.name !== "edit" && call.name !== "write_file" && call.name !== "replace_symbol_body") continue;
+      try {
+        const p = (JSON.parse(call.arguments) as { path?: unknown }).path;
+        if (typeof p === "string" && p) seen.add(p.replace(/\\/g, "/"));
+      } catch {
+        /* a call whose arguments did not parse changed nothing */
+      }
+    }
+  }
+  return [...seen];
+}
 
 
 /** A clamped positive step budget from the model's `max_steps`, or undefined. */

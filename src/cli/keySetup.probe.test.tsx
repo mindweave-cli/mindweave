@@ -108,7 +108,7 @@ test("a normal terminal shows EVERY provider at once, not the first nine", () =>
   // The list was capped at nine rows, so with sixteen providers on the books a new user saw
   // a slice and reasonably concluded the rest were not supported. When the height allows,
   // all of them are on screen; the welcome tips give way before any provider does.
-  const keyed = allProviders().filter((p) => !p.local);
+  const keyed = allProviders().filter((p) => !p.local && !p.setup);
   for (const rows of [38, 40, 50]) {
     const out = frameAt(rows);
     for (const p of keyed) assert.ok(out.includes(p.label), `${p.label} is not on screen at ${rows} rows`);
@@ -136,7 +136,7 @@ test("a first run tells Ollama users they need no key", () => {
 test("every provider is reachable by name somewhere in setup", () => {
   // Not all at once — the list scrolls — but the LIST must contain them all.
   // A local runtime (Ollama) takes no key, so it is no row to fill in.
-  const keyed = allProviders().filter((p) => !p.local);
+  const keyed = allProviders().filter((p) => !p.local && !p.setup);
   const view = setupView(() => false);
   assert.equal(view.rows.length, keyed.length);
   for (const p of keyed) {

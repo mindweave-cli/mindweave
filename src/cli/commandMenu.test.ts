@@ -20,8 +20,16 @@ test("a bare slash lists the commands and not a server's prompts", () => {
   assert.deepEqual(commandMatches(list, "/").map((c) => c.name), ["/help", "/model"]);
 });
 
+test("a server's prompts are one row until its colon is typed, and the row says how many", () => {
+  const rows = commandMatches(list, "/re");
+  assert.deepEqual(rows.map((c) => c.name), ["/rea:"]);
+  assert.equal(rows[0]!.group, true);
+  assert.match(rows[0]!.description, /2 prompts from the rea server/);
+  assert.deepEqual(commandMatches(list, "/rea").map((c) => c.name), ["/rea:"]);
+  assert.deepEqual(commandMatches(list, "/rea:").map((c) => c.name), ["/rea:audit_residual_unknowns", "/rea:investigate_feature"]);
+});
+
 test("typing after the slash finds a server's prompts by their name", () => {
-  assert.deepEqual(commandMatches(list, "/rea").map((c) => c.name), ["/rea:audit_residual_unknowns", "/rea:investigate_feature"]);
   assert.deepEqual(commandMatches(list, "/rea:inv").map((c) => c.name), ["/rea:investigate_feature"]);
   assert.deepEqual(commandMatches(list, "/h").map((c) => c.name), ["/help"]);
 });

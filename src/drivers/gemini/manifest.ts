@@ -26,6 +26,7 @@
  */
 import type { DriverManifest, Effort, ModelChoice, ModelConfig, ModelId, ModelPrice, ThinkLevel } from "../types.js";
 
+export const ARGON_4 = "gemini-4-argon";
 export const FLASH_38 = "gemini-3.8-flash";
 export const FLASH_37 = "gemini-3.7-flash";
 export const PRO_31 = "gemini-3.1-pro-preview";
@@ -40,6 +41,7 @@ export const DEFAULT_MODEL = FLASH_38;
 /** The models offered by `/model`. First entry is this provider's default. */
 export const MODELS: ModelChoice[] = [
   { id: FLASH_38, label: "Gemini 3.8 Flash", description: "the current flash model, built for coding — the default" },
+  { id: ARGON_4, label: "Gemini 4 Argon", description: "the flagship reasoning model, with a 1M window — the strongest and dearest here" },
   { id: FLASH_37, label: "Gemini 3.7 Flash", description: "the previous flash model, at the same price" },
   { id: PRO_31, label: "Gemini 3.1 Pro", description: "the deepest reasoning tier, for the hardest problems" },
   { id: FLASH_LITE_35, label: "Gemini 3.5 Flash-Lite", description: "cheap and quick, for high-volume work" },
@@ -71,6 +73,10 @@ export function thinkLevels(_model: ModelId): ThinkLevel[] {
  * this function guessing today's date against it.
  */
 const PRICES: Record<string, ModelPrice> = {
+  // Gemini 4 Argon: $2 in / $0.10 cached / $10 out through 2026-11-30, then $4 / $0.20 / $20 from 2026-12-01
+  // (ai.google.dev/gemini-api/docs/pricing, checked 2026-10-28), with no prompt-size tier. Recorded as the
+  // current rate, the same call as the Flash promotion below: that date belongs in a review before it arrives.
+  [ARGON_4]: { cacheHit: 0.1, cacheMiss: 2, output: 10 },
   // 3.8 Flash launched at exactly 3.7's rate, promotion and expiry included: input and
   // cache both double on 2027-01-01, output goes to 7.50.
   [FLASH_38]: { cacheHit: 0.075, cacheMiss: 0.75, output: 3.75 },

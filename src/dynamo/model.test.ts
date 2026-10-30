@@ -75,7 +75,8 @@ test("a provider's list contains only that provider's models", () => {
 
 // A local runtime (Ollama) serves only what is pulled on the machine, so it has no fixed lineup
 // to land on; /provider says so instead of switching (App.tsx, applyProvider).
-const fixedLineups = () => allProviders().filter((p) => !p.local);
+// A provider set up by an address (a local server, a custom endpoint) likewise lists only what its server reports.
+const fixedLineups = () => allProviders().filter((p) => !p.local && !p.setup);
 
 test("every provider serves at least one model", () => {
   // /provider switches by landing on `models[0]`, so a provider with none would be

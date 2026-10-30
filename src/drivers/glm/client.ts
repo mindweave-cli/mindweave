@@ -12,6 +12,7 @@
  * values outside the OpenAI set, two of which would otherwise be reported as a
  * clean finish.
  */
+import { endpointUrl } from "../endpoints.js";
 import type {
   ModelConfig,
   ModelRequest,
@@ -30,7 +31,6 @@ import { BUFFERED_OUTPUT_TOKENS, DEFAULT_MODEL, takesEffort } from "./manifest.j
  * different key, so it is an override rather than a guess: a user on that account
  * sets `MINDWEAVE_GLM_URL` and everything else works unchanged.
  */
-const BASE_URL = process.env.MINDWEAVE_GLM_URL ?? "https://api.z.ai/api/paas/v4";
 
 /** The model a request runs on, matching the shared layer's own fallback so the
  *  reasoning fields can never be built for a different model than is being called. */
@@ -97,7 +97,10 @@ export function cacheSplit(usage: Record<string, unknown>): { hit: number; miss:
 /** Everything the shared wire layer needs to talk to GLM. */
 export const glmProvider: CompatProvider = {
   label: "GLM",
-  baseUrl: BASE_URL,
+  // Read on every request, so an address changed in the app counts at once (see endpoints.ts).
+  get baseUrl() {
+    return endpointUrl("glm");
+  },
   apiKeyEnv: "ZAI_API_KEY",
   defaultModel: process.env.MINDWEAVE_MODEL ?? DEFAULT_MODEL,
   reasoningFields,

@@ -8,6 +8,7 @@
  * What is unusual here is `discoverModels`: this is the first driver whose model
  * list comes off the wire rather than out of the manifest.
  */
+import { endpointUrl } from "../endpoints.js";
 import type {
   ModelChoice,
   ModelConfig,
@@ -20,7 +21,6 @@ import type {
 import { compatStreamTurn, compatToolTurn, listModels, standardCacheSplit, type CompatProvider } from "../openaiCompat/wire.js";
 import { BUFFERED_OUTPUT_TOKENS, DEFAULT_MODEL, takesEffort } from "./manifest.js";
 
-const BASE_URL = process.env.MINDWEAVE_GROQ_URL ?? "https://api.groq.com/openai/v1";
 
 /** The model a request runs on, matching the shared layer's own fallback. */
 function modelOf(config: ModelConfig | undefined): string {
@@ -86,7 +86,10 @@ export async function discoverModels(): Promise<ModelChoice[]> {
  */
 export const groqProvider: CompatProvider = {
   label: "Groq",
-  baseUrl: BASE_URL,
+  // Read on every request, so an address changed in the app counts at once (see endpoints.ts).
+  get baseUrl() {
+    return endpointUrl("groq");
+  },
   apiKeyEnv: "GROQ_API_KEY",
   defaultModel: process.env.MINDWEAVE_MODEL ?? DEFAULT_MODEL,
   reasoningFields,

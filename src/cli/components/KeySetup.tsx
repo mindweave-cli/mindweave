@@ -96,6 +96,11 @@ export function KeySetup({ view, rows, version, envPath, docsUrl, onSaveKey, onC
         } else onCancel?.();
         return;
       }
+      // With nothing typed there is no caret to move, so ← and Backspace go back to the list, as Esc does.
+      if (entering && value === "" && (key.leftArrow || key.backspace || key.delete)) {
+        setEntering(null);
+        return;
+      }
       if (entering) return; // everything else belongs to the field
       if (key.upArrow) setSel((s) => (s - 1 + rowCount) % rowCount);
       else if (key.downArrow) setSel((s) => (s + 1) % rowCount);

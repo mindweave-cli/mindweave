@@ -34,6 +34,9 @@ import { minimaxManifest } from "./minimax/manifest.js";
 import { tencentManifest } from "./tencent/manifest.js";
 import { openrouterManifest } from "./openrouter/manifest.js";
 import { ollamaManifest } from "./ollama/manifest.js";
+import { lmstudioManifest } from "./lmstudio/manifest.js";
+import { llamacppManifest } from "./llamacpp/manifest.js";
+import { customManifest } from "./custom/manifest.js";
 
 /** Every provider's cheap metadata, in display order. Always loaded. */
 const MANIFESTS: DriverManifest[] = [
@@ -53,6 +56,9 @@ const MANIFESTS: DriverManifest[] = [
   tencentManifest,
   openrouterManifest,
   ollamaManifest,
+  lmstudioManifest,
+  llamacppManifest,
+  customManifest,
 ];
 
 /** How to load each provider's wire code, on demand. Keyed by manifest id. */
@@ -73,6 +79,9 @@ const LOADERS: Record<string, () => Promise<Driver>> = {
   tencent: async () => (await import("./tencent/index.js")).tencentDriver,
   openrouter: async () => (await import("./openrouter/index.js")).openrouterDriver,
   ollama: async () => (await import("./ollama/index.js")).ollamaDriver,
+  lmstudio: async () => (await import("./lmstudio/index.js")).lmstudioDriver,
+  llamacpp: async () => (await import("./llamacpp/index.js")).llamacppDriver,
+  custom: async () => (await import("./custom/index.js")).customDriver,
 };
 
 /** The provider used when a model id doesn't match any other. */
@@ -100,7 +109,7 @@ const discovered = new Map<string, ModelChoice[]>();
  * whole mechanism depends on, and `registry.test.ts` pins it.
  */
 export function modelsOf(manifest: DriverManifest): ModelChoice[] {
-  const list = discovered.get(manifest.id) ?? manifest.models;
+  const list = [...(manifest.extraModels?.() ?? []), ...(discovered.get(manifest.id) ?? manifest.models)];
   // Drop any model whose retirement date has passed (see ModelChoice.until). A model
   // the vendor has folded into a successor must stop appearing in the picker, even in
   // a build published before the date, so this is checked at read time rather than
@@ -273,6 +282,16 @@ export function discoveredProviderIds(): string[] {
 /** Ids of the providers that run on this machine (a local model server), whose answer is quick and changes at any moment. */
 export function localProviderIds(): string[] {
   return MANIFESTS.filter((m) => m.discoverModels && m.local).map((m) => m.id);
+}
+
+/**
+ * Forget one discovered provider's list and when it was fetched, so the next refresh asks it again and nothing it listed
+ * before is still on offer. For a provider whose address or key was just changed: its old list belongs to a server that is no
+ * longer the one in use, and a list that is "fresh enough" must not stand in for the new answer.
+ */
+export function forgetDiscovered(id: string): void {
+  discovered.delete(id);
+  refreshedAt.delete(id);
 }
 
 /** Drop every discovered list. For tests, and for a full provider reset. */

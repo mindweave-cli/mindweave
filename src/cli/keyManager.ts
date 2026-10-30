@@ -10,7 +10,7 @@
  * "which one is being sent" and "what can be done to it" are answerable without
  * rendering anything.
  */
-import { allProviders } from "../drivers/registry.js";
+import { allProviders, modelsOf } from "../drivers/registry.js";
 import { activeSlot, keyHint, keysFor, nextFreeSlot } from "./keyStore.js";
 import { orderProviders } from "./pickerOrder.js";
 
@@ -20,6 +20,19 @@ export interface ProviderRow {
   apiKeyEnv: string;
   /** How many keys are stored for it. Zero is shown too — that is how the first is added. */
   count: number;
+  /**
+   * What sort of provider this is, on the combined provider list: one that takes a key (the default), a server on this computer,
+   * or one set up by an address. Only the first has keys to manage; the others are set up in /endpoint.
+   */
+  kind?: "key" | "local" | "setup";
+  /** What the provider list says about it: its models and whether it is ready ("5 models · 2 keys"). */
+  status?: string;
+  /** Ready to be used right now (a key is set, the server answers). */
+  ready?: boolean;
+  /** The provider the conversation is on. */
+  active?: boolean;
+  /** Where to get a key (or the runtime). */
+  keysUrl?: string;
 }
 
 export interface KeyRow {
@@ -41,8 +54,9 @@ export interface KeyRow {
  * the registry lists (the one a fresh project opens on).
  */
 export function providerRows(env: NodeJS.ProcessEnv = process.env): ProviderRow[] {
-  // A local runtime (Ollama) has no keys to manage.
-  const rows = allProviders().filter((p) => !p.local).map((p) => ({
+  // A local runtime (Ollama, LM Studio, llama.cpp) has no keys to manage, and neither has a provider set up by an address: the
+  // custom endpoint keeps its key with its address, in its own box (/endpoint custom), not in a slot here.
+  const rows = allProviders().filter((p) => !p.local && !p.setup).map((p) => ({
     id: p.id,
     label: p.label,
     apiKeyEnv: p.apiKeyEnv,
@@ -50,6 +64,29 @@ export function providerRows(env: NodeJS.ProcessEnv = process.env): ProviderRow[
   }));
   const defaultId = allProviders()[0]?.id ?? "";
   return orderProviders(rows, (r) => r.count > 0, defaultId);
+}
+
+/**
+ * Every provider the combined /provider screen lists, in display order (the default, then the ones that are ready, then the rest,
+ * each A to Z), with what to say about each. `hasKey` is injected so this stays a pure function of what it is given.
+ */
+export function providerChoices(activeId: string, hasKey: (envVar: string) => boolean, env: NodeJS.ProcessEnv = process.env): ProviderRow[] {
+  const all = allProviders();
+  const rows = all.map((p): ProviderRow => {
+    const n = modelsOf(p).length;
+    const models = `${n} model${n === 1 ? "" : "s"}`;
+    const kind = p.local ? "local" : p.setup ? "setup" : "key";
+    const ready = hasKey(p.apiKeyEnv);
+    const count = kind === "key" ? keysFor(p.apiKeyEnv, env).length : 0;
+    const state =
+      kind === "local"
+        ? ready ? "running on this computer" : n > 0 ? "not running" : "not running, or no models loaded"
+        : kind === "setup"
+          ? ready ? "connected" : "not set up"
+          : countLabel(count);
+    return { id: p.id, label: p.label, apiKeyEnv: p.apiKeyEnv, count, kind, ready, active: p.id === activeId, keysUrl: p.keysUrl, status: `${models} · ${state}` };
+  });
+  return orderProviders(rows, (r) => r.ready === true, all[0]?.id ?? "");
 }
 
 /** One provider's keys, in slot order. */

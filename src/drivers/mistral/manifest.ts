@@ -18,6 +18,7 @@
 import type { DriverManifest, Effort, ModelChoice, ModelConfig, ModelId, ModelPrice, ThinkLevel } from "../types.js";
 
 export const MEDIUM = "mistral-medium-3-5-26-04";
+export const LARGE_4 = "mistral-large-4-0";
 export const LARGE = "mistral-large-3-25-12";
 export const SMALL = "mistral-small-4-0-26-03";
 export const MINISTRAL_8B = "ministral-3-8b-25-12";
@@ -28,6 +29,7 @@ export const DEFAULT_MODEL = MEDIUM;
 /** The models offered by `/model`. First entry is this provider's default. */
 export const MODELS: ModelChoice[] = [
   { id: MEDIUM, label: "Mistral Medium 3.5", description: "the flagship, tuned for agents and code — the default" },
+  { id: LARGE_4, label: "Mistral Large 4", description: "the newest open-weight model, with a 1M window — in public preview" },
   { id: LARGE, label: "Mistral Large 3", description: "open weights, and much cheaper than the flagship" },
   { id: SMALL, label: "Mistral Small 4", description: "small and capable, with a reasoning dial" },
   { id: MINISTRAL_8B, label: "Ministral 8B", description: "cheapest tier, for simple work" },
@@ -35,10 +37,10 @@ export const MODELS: ModelChoice[] = [
 
 /**
  * Whether a model takes the `reasoning_effort` dial. Mistral serves it on the
- * flagship and on Small 4, and not on the rest of the lineup.
+ * flagship, on Large 4 and on Small 4, and not on the rest of the lineup.
  */
 export function takesEffort(model: ModelId): boolean {
-  return model === MEDIUM || model === SMALL;
+  return model === MEDIUM || model === LARGE_4 || model === SMALL;
 }
 
 /**
@@ -73,6 +75,9 @@ export function thinkLevels(model: ModelId): ThinkLevel[] {
  */
 const PRICES: Record<string, ModelPrice> = {
   [MEDIUM]: { cacheHit: 0.15, cacheMiss: 1.5, output: 7.5 },
+  // Large 4: $1.36 in / $0.14 cached / $4.18 out (docs.mistral.ai model page, checked 2026-10-28). Its id is
+  // the one Mistral's reasoning page lists, `mistral-large-4-0`; no dated snapshot id is published yet.
+  [LARGE_4]: { cacheHit: 0.14, cacheMiss: 1.36, output: 4.18 },
   [LARGE]: { cacheHit: 0.05, cacheMiss: 0.5, output: 1.5 },
   [SMALL]: { cacheHit: 0.015, cacheMiss: 0.15, output: 0.6 },
   [MINISTRAL_8B]: { cacheHit: 0.015, cacheMiss: 0.15, output: 0.15 },

@@ -109,7 +109,7 @@ interface Row {
 
 /**
  * A path cut to fit from the FRONT (pure): the end is the file, which is what anyone is
- * looking for, so it is the beginning that gives way (`…rojects/Cutio/src/app.ts`).
+ * looking for, so it is the beginning that gives way (`…rojects/myapp/src/app.ts`).
  */
 export function fitPath(path: string, room: number): string {
   const width = Math.max(4, room);
@@ -180,7 +180,8 @@ export function WorkGroup({
     <Box ref={(node: DOMElement | null) => registerRowBox(id, node)} marginTop={tightTop ? 0 : 1} flexDirection="column">
       <Box ref={(node: DOMElement | null) => registerExpandable(id, node)} flexDirection="row" width={columns}>
         <Box minWidth={2} flexShrink={0}>
-          {head.working ? <PulseDot glyph={DOT} /> : <Text>{DOT}</Text>}
+          {/* The dot pulses while the work goes on and is gone once it is done: a finished row is just its words ("Ran 4 commands ▸"). */}
+          {head.working ? <PulseDot glyph={DOT} /> : <Text> </Text>}
         </Box>
         <Box flexShrink={0}>
           <Text bold dimColor={!hovered}>{head.text}</Text>

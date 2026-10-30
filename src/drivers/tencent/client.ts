@@ -10,6 +10,7 @@
  * default and must be switched off explicitly. This is the fourth provider in this
  * project with that default; it is a family pattern rather than a coincidence.
  */
+import { endpointUrl } from "../endpoints.js";
 import type {
   ModelConfig,
   ModelRequest,
@@ -27,7 +28,6 @@ import { BUFFERED_OUTPUT_TOKENS, DEFAULT_MODEL } from "./manifest.js";
  * guess: a user on that account sets `MINDWEAVE_TENCENT_URL` and selects the id their
  * own console lists.
  */
-const BASE_URL = process.env.MINDWEAVE_TENCENT_URL ?? "https://tokenhub-intl.tencentcloudmaas.com/v1";
 
 /**
  * Tencent's reasoning fields.
@@ -52,7 +52,10 @@ export function reasoningFields(config: ModelConfig | undefined): Record<string,
 
 export const tencentProvider: CompatProvider = {
   label: "Tencent",
-  baseUrl: BASE_URL,
+  // Read on every request, so an address changed in the app counts at once (see endpoints.ts).
+  get baseUrl() {
+    return endpointUrl("tencent");
+  },
   apiKeyEnv: "TOKENHUB_API_KEY",
   defaultModel: process.env.MINDWEAVE_MODEL ?? DEFAULT_MODEL,
   reasoningFields,

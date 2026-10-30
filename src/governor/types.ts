@@ -17,6 +17,8 @@
 export interface Rule {
   /** Short identifier (frontmatter `name`, falling back to the filename). */
   name: string;
+  /** The file it was read from, inside its `rules/` folder: what removing it deletes. */
+  file?: string;
   /** One-line summary (frontmatter `description`) — for listing/management. */
   description: string;
   /** The rule text the model must follow. */

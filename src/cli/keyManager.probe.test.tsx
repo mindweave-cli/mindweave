@@ -114,8 +114,8 @@ test("startProvider on an empty provider opens straight on the key field", () =>
       startProvider={gemini}
     />,
   );
-  assert.match(out, /Add a Gemini key/, "did not open on the key field for the chosen provider");
-  assert.match(out, /paste, then press Enter/, "the input field is not shown");
+  assert.match(out, /Gemini · add a key/, "did not open on the key field for the chosen provider");
+  assert.match(out, /paste your key, then press Enter/, "the input field is not shown");
   assert.doesNotMatch(out, /Anthropic/, "the provider list is shown again instead of the field");
 });
 
@@ -242,7 +242,7 @@ test("every level fills the box and ends on the hint, so the footer never moves"
       .filter((r) => r.includes("│") || r.includes("┌") || r.includes("└"));
     heights.add(rows.length);
     const lastContent = rows[rows.length - 2] ?? "";
-    assert.match(lastContent, /Enter to choose/, `${name}: the hint is not on the box's bottom line`);
+    assert.match(lastContent, /Enter to (choose|use)/, `${name}: the hint is not on the box's bottom line`);
   }
   assert.equal(heights.size, 1, "the levels render at different heights inside a fixed box");
 });

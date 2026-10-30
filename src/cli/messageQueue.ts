@@ -86,6 +86,25 @@ export function isCommand(text: string): boolean {
  * is recognised by its own syntax, the same way the send path recognises it, so the
  * queue cannot disagree with the thing that eventually runs it.
  */
+/**
+ * What ctrl+F does with the turn, given what it is doing (pure).
+ *
+ *  - "send"     nothing is running: it is Enter.
+ *  - "ends"     a command was moved to the background, or could not be: the step ends of its own accord and the message arrives.
+ *  - "wait"     sub-agents are at work: they are not cut (they cost a great deal and nobody asked to stop them); the message arrives when
+ *               they are back, and the screen says so.
+ *  - "cut"      the model is writing and nothing else would end the step soon: that request is stopped, the work so far is kept, and
+ *               the message goes out at once as the next turn.
+ */
+export type ForceSendPlan = "send" | "ends" | "wait" | "cut";
+export function forceSendPlan(s: { busy: boolean; movedCommand: "moved" | "none" | "stuck"; workersAtWork: boolean; userCommandRunning: boolean }): ForceSendPlan {
+  if (!s.busy) return "send";
+  if (s.movedCommand !== "none") return "ends";
+  if (s.workersAtWork) return "wait";
+  // A person's own ! command is theirs to stop; cutting the turn would not end it.
+  return s.userCommandRunning ? "ends" : "cut";
+}
+
 export function queueMessage(text: string, opts: { interrupting?: boolean } = {}): Queued {
   if (isCommand(text)) return { text, priority: "later" };
   return { text, priority: opts.interrupting ? "now" : "next" };

@@ -102,9 +102,9 @@ const webSearchTool: Tool = {
   },
 };
 
-/** Pages a front end may list under a search. More than the model is shown, because a
- *  list the user opens on purpose can afford it; still bounded. */
-const MAX_DISPLAY_SOURCES = 20;
+/** Pages a front end may list under a search. More than the model is shown, because a list the user opens on purpose can
+ *  afford it. Every source a search returns is kept for that list; the bound only stops a runaway result. */
+const MAX_DISPLAY_SOURCES = 500;
 
 /**
  * Render a result for the model. Pure, so the shape is testable without a

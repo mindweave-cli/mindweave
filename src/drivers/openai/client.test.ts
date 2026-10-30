@@ -16,7 +16,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Responses } from "openai/resources/responses/responses";
 import { buildBody, emit, renderInput, toStop, toTurn, toUsage } from "./client.js";
-import { ASTRA, LUNA, MODELS, SOL, SOL_61, TERRA, canSkipReasoning, normalize, price, thinkLevels } from "./manifest.js";
+import { ASTRA, DEFAULT_MODEL, LUNA, MODELS, SOL, SOL_61, TERRA, TERRA_61, canSkipReasoning, normalize, price, thinkLevels } from "./manifest.js";
 import type { Effort, ModelRequest, StreamEvent } from "../types.js";
 
 const base: ModelRequest = { system: "SYSTEM", messages: [] };
@@ -443,8 +443,14 @@ test("normalize snaps an unlisted effort onto a rung /think actually offers", ()
 });
 
 test("an unknown model id falls back rather than reaching the wire", () => {
-  assert.equal(normalize({ model: "gpt-9-imaginary", thinking: true, effort: "high" }).model, TERRA);
-  for (const model of [SOL, TERRA, LUNA]) {
+  assert.equal(normalize({ model: "gpt-9-imaginary", thinking: true, effort: "high" }).model, DEFAULT_MODEL);
+  for (const model of [SOL, TERRA, TERRA_61, LUNA]) {
     assert.equal(normalize({ model, thinking: true, effort: "high" }).model, model, `${model} was coerced away`);
   }
+});
+
+test("GPT-6.1 Terra is the default, can skip reasoning, and is priced at its published rate", () => {
+  assert.equal(DEFAULT_MODEL, TERRA_61);
+  assert.equal(canSkipReasoning(TERRA_61), true);
+  assert.deepEqual(price(TERRA_61), { cacheHit: 0.05, cacheMiss: 1, output: 5 });
 });

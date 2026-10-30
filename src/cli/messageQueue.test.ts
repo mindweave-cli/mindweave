@@ -301,12 +301,17 @@ test("send-now keeps the promises it was built on (source-enforced, as the Esc h
   //    being cancelled, drawn in the chat, and never answered.
   const steer = app.slice(app.indexOf("async function steerRunningTurn"), app.indexOf("async function steerRunningTurn") + 900);
   assert.match(steer, /if \(abortRef\.current\?\.signal\.aborted\) return \[\];/, "steering into a stopped turn would lose the message");
-  // 2. Send-now is the queue, made quicker. It must never stop, abort or kill anything: a command moves to the
-  //    background and keeps running, and everything else is left alone.
-  const force = app.slice(app.indexOf("function forceSend"), app.indexOf("function forceSend") + 2200);
-  assert.doesNotMatch(force, /\.abort\(|\.kill\(|stopUi|dismissWaiting/, "ctrl+F destroys nothing; only Esc stops things");
+  // 2. Send-now is the queue, made quicker. It never kills a background shell, stops the app being tested, or cuts sub-agents
+  //    (only Esc does those): a command moves to the background and keeps running. The one thing it may stop is the model's own
+  //    request, and only when nothing else is in the way (forceSendPlan says "cut"): otherwise the key does nothing for as long as a
+  //    long answer takes to write, which is how it came to look dead.
+  const force = app.slice(app.indexOf("function forceSend"), app.indexOf("function forceSend") + 3200);
+  assert.doesNotMatch(force, /\.kill\(|stopUi/, "ctrl+F kills no shell and stops no app; only Esc does");
   assert.match(force, /pressBackground\(/, "a command in the way is moved to the background, as ctrl+X does");
   assert.match(force, /queueMessage\(text/, "the message goes through the same queue as Enter");
+  const abortAt = force.indexOf(".abort(");
+  assert.ok(abortAt > force.indexOf("if (cutShort)"), "the turn is stopped only on the plan that says the model is simply writing");
+  assert.match(force, /forceSendPlan\(/);
   // 3. The key reaches it from the box that knows what is typed.
   assert.match(input, /key\.ctrl && input === "f" && onForceSend/);
 });

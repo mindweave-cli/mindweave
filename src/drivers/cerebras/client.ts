@@ -5,6 +5,7 @@
  * shape, SSE framing, fragmented tool-call arguments and the `reasoning_content`
  * channel are handled by the shared layer in `../openaiCompat/wire.js`.
  */
+import { endpointUrl } from "../endpoints.js";
 import type {
   ModelChoice,
   ModelConfig,
@@ -17,7 +18,6 @@ import type {
 import { compatStreamTurn, compatToolTurn, listModels, standardCacheSplit, type CompatProvider } from "../openaiCompat/wire.js";
 import { BUFFERED_OUTPUT_TOKENS, DEFAULT_MODEL, takesEffort } from "./manifest.js";
 
-const BASE_URL = process.env.MINDWEAVE_CEREBRAS_URL ?? "https://api.cerebras.ai/v1";
 
 /** The model a request runs on, matching the shared layer's own fallback. */
 function modelOf(config: ModelConfig | undefined): string {
@@ -72,7 +72,10 @@ export async function discoverModels(): Promise<ModelChoice[]> {
  */
 export const cerebrasProvider: CompatProvider = {
   label: "Cerebras",
-  baseUrl: BASE_URL,
+  // Read on every request, so an address changed in the app counts at once (see endpoints.ts).
+  get baseUrl() {
+    return endpointUrl("cerebras");
+  },
   apiKeyEnv: "CEREBRAS_API_KEY",
   defaultModel: process.env.MINDWEAVE_MODEL ?? DEFAULT_MODEL,
   reasoningFields,

@@ -24,8 +24,9 @@ export interface CommandInfo {
 export const BASE_COMMANDS: CommandInfo[] = [
   { name: "/help", description: "show this list" },
   { name: "/init", description: "write MINDWEAVE.md — what the agent should always know about this project" },
-  { name: "/provider", description: "choose which provider serves this project" },
-  { name: "/key", description: "add or replace an API key" },
+  { name: "/provider", description: "choose a provider and manage its keys" },
+  { name: "/key", description: "add or replace an API key (same screen as /provider)" },
+  { name: "/endpoint", description: "see or change where a provider is reached: /endpoint, /endpoint <provider> <address|preset|reset>" },
   { name: "/model", description: "choose which model answers, from the current provider" },
   { name: "/think", description: "set the reasoning level for the model" },
   { name: "/screen", description: "choose the shell: fullscreen, or inline (beta)" },

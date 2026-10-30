@@ -163,7 +163,8 @@ test("Mistral prices cached input at a tenth, because that is what it charges", 
   for (const choice of mistral.MODELS) {
     const p = mistral.price(choice.id);
     assert.ok(p.cacheHit < p.cacheMiss, `${choice.id} should discount cached input`);
-    assert.ok(Math.abs(p.cacheHit - p.cacheMiss / 10) < 1e-9, `${choice.id} should be a tenth, got ${p.cacheHit}`);
+    // Within half a cent: Large 4 publishes $0.14 against $1.36, a tenth rounded to the cent.
+    assert.ok(Math.abs(p.cacheHit - p.cacheMiss / 10) < 0.005, `${choice.id} should be a tenth, got ${p.cacheHit}`);
   }
   assert.equal(typeof mistralProvider.cacheSplit, "function", "Mistral does report a cache split");
 });

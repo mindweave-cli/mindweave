@@ -94,6 +94,8 @@ export interface CompactionReport {
   after: number;
   /** The model's full context window. */
   window: number;
+  /** Set when the engine compacted on its own for a reason worth telling (the provider's cache was gone). */
+  why?: string;
 }
 
 export function sharpContextWindow(model: string): number {
@@ -316,6 +318,14 @@ export function shouldCompactForCold(o: {
   if (o.status === "idle" && o.idleMs < COLD_COMPACT_MIN_IDLE_MS) return false;
   if (o.used < o.microBar) return false;
   return !(o.lastColdCompactAt && o.now - o.lastColdCompactAt < COLD_COMPACT_COOLDOWN_MS);
+}
+
+/** Why the conversation was compacted because the provider's cache is gone, in a few words. */
+export function coldReason(status: CacheStatus, model: string, idleMs: number): string {
+  if (status === "switched") return `${model} had no cached copy`;
+  const mins = Math.max(1, Math.round(idleMs / 60_000));
+  const idle = mins >= 120 ? `${Math.round(mins / 60)}h` : `${mins} min`;
+  return `idle for ${idle}, the provider's cache expired`;
 }
 
 /** The line shown in the chat when the conversation is compacted because the provider's cache is gone. */

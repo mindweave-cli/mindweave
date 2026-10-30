@@ -6,6 +6,7 @@
  * are all handled by the shared layer in `../openaiCompat/wire.js`. This file
  * supplies only the facts that differ.
  */
+import { endpointUrl } from "../endpoints.js";
 import type {
   ModelConfig,
   ModelRequest,
@@ -18,7 +19,6 @@ import type {
 import { compatStreamTurn, compatToolTurn, type CompatProvider } from "../openaiCompat/wire.js";
 import { ALWAYS_ON_DEFAULT, BUFFERED_OUTPUT_TOKENS, DEFAULT_MODEL, canDisableReasoning, takesEffort } from "./manifest.js";
 
-const BASE_URL = process.env.MINDWEAVE_XAI_URL ?? "https://api.x.ai/v1";
 
 /** The model a request runs on, matching the shared layer's own fallback so the
  *  reasoning fields can never be built for a different model than is being called. */
@@ -76,7 +76,10 @@ export function conversationHeader(req: ModelRequest): Record<string, string> | 
 /** Everything the shared wire layer needs to talk to xAI. */
 export const xaiProvider: CompatProvider = {
   label: "xAI",
-  baseUrl: BASE_URL,
+  // Read on every request, so an address changed in the app counts at once (see endpoints.ts).
+  get baseUrl() {
+    return endpointUrl("xai");
+  },
   apiKeyEnv: "XAI_API_KEY",
   defaultModel: process.env.MINDWEAVE_MODEL ?? DEFAULT_MODEL,
   reasoningFields,
