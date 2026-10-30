@@ -34,7 +34,7 @@ export interface CallRecord {
   hit: number;
   miss: number;
   out: number;
-  /** Set on a call nobody asked for ("notes", "summary", "fetch"): background work that was billed. */
+  /** Set on a call nobody asked for ("notes", "summary", "fetch", "lessons"): background work that was billed. */
   aux?: string;
 }
 

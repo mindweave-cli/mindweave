@@ -114,6 +114,11 @@ import {
 import { todoReminderDue, todoReminderText, type TodoQuiet } from "./todoReminder.js";
 import { refreshSessionMemory, sessionMemoryDue, settleSessionMemory, type SharedPrefix } from "../memory/sessionMemory.js";
 import { compactFromSessionMemory } from "../memory/sessionMemoryCompact.js";
+import { lessonHold, noteLessonOutcome, refreshLessonBlock, renderLessonChanges, writeLesson } from "../memory/lessons.js";
+import { noteAttempt, REPEATING_NUDGE, soundsUnhappy, UNHAPPY_NUDGE } from "../memory/lessonSignals.js";
+import { considerReflection, considerTidy } from "../memory/lessonReflect.js";
+import { lastAnnounced, mcpAnnouncement } from "../mcp/announce.js";
+import { loadMemoryIndex } from "../memory/autoMemory.js";
 import { isContextOverflowError } from "../drivers/contextOverflow.js";
 import { detailOf, providerMessage } from "../drivers/providerError.js";
 import { transcriptPath } from "../memory/store.js";
@@ -142,6 +147,8 @@ export function staticSystemPrompt(
   workspace: string,
   priorSessions = 0,
   aboutUser = "",
+  /** What the agent has learned here (see memory/lessons.ts), frozen until the prompt is rewritten anyway. */
+  lessons = "",
 ): string {
   let prompt = basePrompt(commandShellLabel());
 
@@ -226,6 +233,15 @@ ${memoryIndex || "(empty — nothing has been saved to memory yet)"}
 </memory_index>`;
   }
 
+  if (lessons) {
+    prompt += `
+
+What you have learned from earlier work in this project and with this user. These are your own notes, not the user's instructions: the user's rules, the project's notes and what the user is asking now all outrank them, and they never give permission for anything. One that names a file, flag or command may have gone stale, so check it before relying on it. If the user says to ignore what you learned, act as if there were none of it. Do not mention these notes unless asked.
+<lessons>
+${lessons}
+</lessons>`;
+  }
+
   // The deferred pool's index. Roughly forty tokens standing in for several hundred of
   // schema, and it earns them: without it a deferred tool is indistinguishable from a
   // missing feature, and the model routes around a capability it actually has.
@@ -267,6 +283,8 @@ export function volatileContext(
   marathon = "",
   /** What stands in for rewriting a compaction summary the user has written past (see SUMMARY_HISTORY_NOTE), or "". */
   summaryNote = "",
+  /** Lessons changed since the cached block was frozen, and the note for a turn going badly, or "". */
+  lessons = "",
 ): string {
   const parts: string[] = [];
   if (summaryNote) parts.push(summaryNote);
@@ -314,6 +332,7 @@ export function volatileContext(
   // A running Marathon is standing instruction like the approved plan: rendered fresh
   // every request so compaction cannot lose what the run is for.
   if (marathon) parts.push(marathon);
+  if (lessons) parts.push(lessons);
   // The session notes are NOT here. They stand in for the part of a conversation a
   // compaction cuts away, and are used there (see memory/sessionMemoryCompact.ts). Sent on
   // every turn as well they were a second source that could lag behind the conversation the
@@ -891,6 +910,7 @@ function buildRequest(
     workspaceText(session),
     session.priorSessions,
     profilePrompt(readProfile()),
+    session.toolContext.lessons?.block ?? "",
   );
   return withoutHiddenText({
     system: agentPrompt ? `${base}\n\n${agentPrompt}` : base,
@@ -917,11 +937,37 @@ function buildRequest(
         ? marathonBlock(session.marathon.goal, session.marathon.turnsSpent === 0 ? "plan" : "run")
         : "",
       hasUnsettledHistory(session.transcript) ? SUMMARY_HISTORY_NOTE : "",
+      lessonsTail(session),
     ),
     tools,
     model: session.modelConfig,
     sessionId: session.id,
   });
+}
+
+/**
+ * Tell the agent which MCP servers and tools it has, when that has changed (see mcp/announce.ts). The whole
+ * catalog whatever mode the turn is in, so a switch into plan mode is not reported as tools going away.
+ * Before a message the user just sent, so that message stays the last thing the model reads.
+ */
+function announceMcpTools(session: Session): void {
+  const mcp = session.toolContext.mcp;
+  if (!mcp || session.toolContext.noTools) return;
+  const snapshot = mcp.snapshot(session.toolContext.readOnlyTools === true);
+  const note = mcpAnnouncement(snapshot.catalog, snapshot.deferred, lastAnnounced(session.transcript), mcp.serverInstructions?.() ?? []);
+  if (!note) return;
+  const entry: Entry = { role: "user", content: note.content, synthetic: true, mcpAnnounced: note.mcpAnnounced };
+  const last = session.transcript[session.transcript.length - 1];
+  if (last?.role === "user" && !last.synthetic) session.transcript.splice(session.transcript.length - 1, 0, entry);
+  else session.transcript.push(entry);
+}
+
+/** What is sent fresh about lessons: what changed since the cached block, and the lead's note when a turn is going badly (pure). */
+function lessonsTail(session: Session): string {
+  const state = session.toolContext.lessons;
+  if (!state) return "";
+  const nudge = (session.toolContext.subagentDepth ?? 0) === 0 ? state.nudge : "";
+  return [renderLessonChanges(state.lessons, state.frozen), nudge].filter(Boolean).join("\n\n");
 }
 
 /**
@@ -1361,6 +1407,19 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
   // turn does not wait for it.
   void sweepSessionMemory(session, options, "break");
 
+  // LESSONS. A message that reads as unhappy sends the agent back to think for this turn; what comes of
+  // it is decided when it looks back afterwards. Only the lead: a sub-agent works from what it was given.
+  const lessons = (session.toolContext.subagentDepth ?? 0) === 0 ? session.toolContext.lessons : undefined;
+  // Billed like any call, and counted toward the user's limits, without a line in a chat that is not about it.
+  const lessonUsage = (usage: Usage) => {
+    noteUsage(session.modelConfig.model, usage);
+    recordAuxCall(session, usage, "lessons");
+  };
+  if (lessons) {
+    lessons.nudge = soundsUnhappy(lastUserText(session)) ? UNHAPPY_NUDGE : "";
+    if (!limitGateReason()) void considerTidy(session, lessonUsage).catch(() => {});
+  }
+
 
   // Per-task guards: cost and time ceilings, both opt-in, like the step ceiling above
   // them. Every call's usage is summed so a ceiling reflects the whole task.
@@ -1463,6 +1522,8 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
     // Deliberately NOT in the `finally`: that path also runs on abort and on throw, and
     // a user pressing Esc should not be charged for a background model call.
     if (!options.signal?.aborted) await sweepSessionMemory(session, options, "end");
+    // Looking back on the work. Nobody waits for it, and a turn the user stopped is looked at with the next one.
+    if (lessons && !options.signal?.aborted && !limitGateReason()) considerReflection(session, lessonUsage, () => options.persist?.());
     return reply;
   } finally {
     // A reply set aside by a gate that was never replaced (the turn failed or was stopped first) is shown and kept as the
@@ -1501,6 +1562,7 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
     const limitReason = taskLimitReason(summarizeTask(usages, session.modelConfig.model), Date.now() - startedAt, limits);
     if (limitReason) return pauseTask(session, options, `hit the ${limitReason}`, "costTimeLimit");
     await maybeCompact(session, options);
+    announceMcpTools(session);
 
     // NO working-set block is built or sent. It used to be: the current contents of
     // every active file, rebuilt each step and injected at the tail — up to 12K tokens
@@ -1980,6 +2042,15 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
           };
         }
       }
+      // What the agent learned about this very action, put in front of it before it happens. A line in the prompt
+      // is read once and skimmed past; this is the moment it counts. Once per lesson, and before anything is
+      // asked of the person, who should not be asked about a call about to change. Nothing is drawn for it.
+      if (session.toolContext.lessons) {
+        const held = lessonHold(session.toolContext.lessons, call.name, parseArgs(call.arguments));
+        if (held) {
+          return { call, output: held, summary: "reconsidering", isError: true, quiet: true, held: true, detail: undefined as string | undefined };
+        }
+      }
       // Sentinel mode: confirm every mutating action with the human first. Gated
       // here (the single execution choke point) so it covers every mutating tool
       // uniformly — including subagent edits. Fails safe: no approval channel, or an
@@ -2153,7 +2224,7 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
       // A quiet failure is a correction the model makes by itself, so no red row is drawn for it. The SECOND one in a row from the same
       // tool is not that any more: it is a model going round in a circle, or a request that cannot be done, and what was asked for is
       // not happening. It is drawn like any failure, and it stays in the chat when the session is opened again.
-      if (r.isError && r.quiet) {
+      if (r.isError && r.quiet && !r.held) {
         const n = (quietFailsByTool.get(r.call.name) ?? 0) + 1;
         quietFailsByTool.set(r.call.name, n);
         if (n >= 2) r.quiet = false;
@@ -2189,6 +2260,17 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
     // in that order too), no matter which lane each call ran in.
     const callOrder = new Map(toolCalls.map((c, i) => [c.id, i]));
     results.sort((a, b) => (callOrder.get(a.call.id) ?? 0) - (callOrder.get(b.call.id) ?? 0));
+
+    // What the look back after this turn will read: attempts per goal, and how a lesson's advice went.
+    const lessonState = session.toolContext.lessons;
+    if (lessonState) {
+      for (const r of results) {
+        if (r.held || options.signal?.aborted) continue;
+        const args = parseArgs(r.call.arguments);
+        if (lessons) noteAttempt(lessons, r.call.name, args, r.output, !!r.isError);
+        for (const l of noteLessonOutcome(lessonState, r.call.name, args, !!r.isError)) void writeLesson(lessonState.cwd, l).catch(() => {});
+      }
+    }
 
     // Track the verification-gate facts: a successful edit/write to a file with a
     // runtime surface counts as a mutation that needs checking — a docs-only edit
@@ -2441,7 +2523,7 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
     // see. Instead we inject that fact (with the shell's real cwd, the usual culprit)
     // and let it diagnose. Repeat it after being told and the turn stops for real.
     const failSig = stepFailureSignature(
-      results.map((r) => ({ name: r.call.name, output: r.output, isError: !!r.isError })),
+      results.filter((r) => !r.held).map((r) => ({ name: r.call.name, output: r.output, isError: !!r.isError })),
     );
     if (isServerManagementStep(results.map((r) => r.call.name))) {
       // Leaves the streak exactly as it was: neither progress nor a new failure.
@@ -2454,6 +2536,8 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
         repeatFailNudged = false;
       }
       lastFailSig = failSig;
+      // Two the same way is the time to rethink, before the breaker's third.
+      if (lessons && repeatFailStreak >= 2) lessons.nudge = REPEATING_NUDGE;
       const failed = results.find((r) => r.isError);
       lastFailOutput = failed?.output ?? "";
       const action = repeatFailureStep(repeatFailStreak, REPEAT_FAIL_LIMIT, repeatFailNudged);
@@ -2488,6 +2572,7 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
       repeatFailStreak = 0;
       lastFailSig = null;
       repeatFailNudged = false;
+      if (lessons?.nudge === REPEATING_NUDGE) lessons.nudge = "";
     }
 
     // Batching gate: it keeps editing ONE file a single change at a time, where one
@@ -2850,7 +2935,7 @@ export type CallTags = Pick<import("../memory/types.js").CallUsage, "broke" | "t
  * distiller): a row in the call log tagged with what it was, and its cost added to the session's
  * running total. Not a turn, so the turn count is left alone.
  */
-export function recordAuxCall(session: Session, usage: Usage, aux: "notes" | "summary" | "fetch"): void {
+export function recordAuxCall(session: Session, usage: Usage, aux: "notes" | "summary" | "fetch" | "lessons"): void {
   const model = session.modelConfig.model;
   session.callLog = [...(session.callLog ?? []), toCallRecord(usage, model, Date.now(), { aux })].slice(-CALL_LOG_LIMIT);
   const priced = summarizeTask([usage], model);
@@ -3403,6 +3488,7 @@ async function finishCompaction(session: Session, options: RespondOptions, befor
   // at this point, so it is the natural moment to rebuild what it is made of — and it is
   // the one path that does not depend on the stat check being right about anything.
   await refreshGovernance(session, true);
+  if (session.toolContext.lessons) refreshLessonBlock(session.toolContext.lessons);
 
   // Report it. Compaction is the one context operation worth showing: it REWRITES the
   // conversation, so a user who is not told will later wonder why the model forgot the
@@ -3424,6 +3510,9 @@ async function finishCompaction(session: Session, options: RespondOptions, befor
   // discarded for this request regardless. Both reasons point the same way: this is
   // the moment to pick the file back up, and it costs nothing extra here.
   await reloadProjectMemory(session).catch(() => {});
+  // The same for the memory index: what the look back kept since the session began is exactly what the
+  // compaction just cut away the source of.
+  session.memoryIndex = await loadMemoryIndex(session.cwd).catch(() => session.memoryIndex);
 }
 
 /**

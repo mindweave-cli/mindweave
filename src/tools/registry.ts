@@ -23,6 +23,7 @@ import { todoWrite } from "./todo.js";
 import { useSkill } from "./useSkill.js";
 import { governor, skillTool } from "./governorTools.js";
 import { saveMemoryTool } from "./saveMemory.js";
+import { lessonTool } from "./lesson.js";
 import { askUserTool } from "./askUser.js";
 import { workspaceTool } from "./workspace.js";
 import { shellsTool, killShell } from "./shellTools.js";
@@ -73,6 +74,7 @@ export const TOOLS: Tool[] = [
   killShell,
   // Cross-session memory (mutating: persists what the model is asked to remember)
   saveMemoryTool,
+  lessonTool,
   // Governor (mutating: persist a rule / forbidden path / skill for the project)
   governor,
   mcpServer,

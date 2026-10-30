@@ -122,7 +122,10 @@ async function listOne(ctx: ToolContext, dir: string, _unit: SearchUnit): Promis
     const noisy = e.isDir && DEFAULT_IGNORES.has(e.name);
     return `${e.name}${e.isDir ? "/" : ""}${e.note}${noisy ? "  (skipped by search)" : ""}`;
   });
-  if (truncated) shown.push(`… (${resolved.length - MAX_ENTRIES} more)`);
+  if (truncated) {
+    shown.unshift(`Showing ${MAX_ENTRIES} of ${resolved.length} entries. The rest exist and are not shown.`);
+    shown.push(`… (${resolved.length - MAX_ENTRIES} more)`);
+  }
   return { body: shown.join("\n"), count: resolved.length };
 }
 

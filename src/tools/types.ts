@@ -484,6 +484,8 @@ export interface ToolContext {
   writeScope?: string[];
   /** What this turn has handed to sub-agents so far; replaced at the start of each turn. See tools/delegation.ts. */
   delegation?: import("./delegation.js").Delegation;
+  /** What the agent has learned here, shared with its sub-agents by reference. See memory/lessons.ts. Absent when switched off. */
+  lessons?: import("../memory/lessons.js").LessonState;
   /**
    * Extra instructions appended to this session's system prompt, giving a child a ROLE
    * rather than a task.

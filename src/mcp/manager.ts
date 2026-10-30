@@ -38,9 +38,12 @@ import { renderPromptMessages, type McpPrompt } from "./prompts.js";
 import { sortResources, type McpResource, type McpResourceTemplate } from "./resources.js";
 import { McpConnection, type ConnectionStatus } from "./connection.js";
 import { searchCatalog, shouldDefer } from "./deferred.js";
-import { compareTrust, acceptTools, changedToolsQuestion, fingerprintCatalog, type TrustRecord } from "./trust.js";
+import { compareTrust, acceptTools, changedToolsQuestion, fingerprint, fingerprintCatalog, type TrustRecord } from "./trust.js";
 import { loadTrust, saveTrust } from "./trustStore.js";
 import type { McpServerConfig } from "./config.js";
+
+/** Where a server's instructions sit in the trust record. No tool can have this name: it is not a valid one. */
+const SERVER_INSTRUCTIONS = "(server instructions)";
 
 /**
  * One turn's frozen view of the MCP catalog: what the model is told it can call, and
@@ -291,7 +294,7 @@ export class McpManager {
   }
 
   private async doVerifyTrust(cwd: string, ask?: (question: string, options: string[]) => Promise<string>): Promise<void> {
-    const defs = this.catalog();
+    const defs = this.trustedDefs();
     // Remember the root even with nothing to check: a server can connect later, and the
     // recheck below is inert until it knows where the record lives.
     this.trustCwd = cwd;
@@ -349,7 +352,7 @@ export class McpManager {
     // Before the startup check has run there is no baseline to compare against, and
     // treating everything as fresh here would record fingerprints we never verified.
     if (!this.trustCwd) return;
-    const defs = this.catalog();
+    const defs = this.trustedDefs();
     if (defs.length === 0) return;
     const signature = JSON.stringify(fingerprintCatalog(defs));
     if (signature === this.trustSignature) return; // nothing moved; the common case
@@ -401,7 +404,7 @@ export class McpManager {
     if (blocked.length === 0) return false;
     const answer = await ask(changedToolsQuestion(blocked), [ALLOW_CHANGED, BLOCK_CHANGED]);
     if (answer !== ALLOW_CHANGED) return false;
-    this.trust = acceptTools(this.trust, this.catalog(), blocked);
+    this.trust = acceptTools(this.trust, this.trustedDefs(), blocked);
     for (const name of blocked) this.quarantined.delete(name);
     if (this.trustCwd) await saveTrust(this.trustCwd, this.trust);
     this.onChange?.();
@@ -713,6 +716,11 @@ export class McpManager {
     return searchCatalog(query, this.allowedCatalog());
   }
 
+  /** Everything a search matches, best first, for telling how much of it one result shows. */
+  searchCatalogAll(query: string): McpToolDef[] {
+    return searchCatalog(query, this.allowedCatalog(), Number.POSITIVE_INFINITY);
+  }
+
   /** Tool names currently advertised out of a deferred catalog (for diagnostics). */
   activatedNames(): string[] {
     return [...this.activated].sort();
@@ -729,6 +737,34 @@ export class McpManager {
     // and counting the hidden remainder would make the compaction bars fire early for
     // tokens the model never receives.
     return this.snapshot().tokens();
+  }
+
+  /**
+   * What the trust check compares: every tool, and each server's instructions as if they were one. They
+   * are text the agent reads and acts on, the same as a description, so the same attack works through
+   * them and the same answer applies: first sight is trusted, and a later change is held until the user
+   * says otherwise.
+   */
+  private trustedDefs(): McpToolDef[] {
+    return [...this.catalog(), ...this.instructionDefs()];
+  }
+
+  private instructionDefs(): McpToolDef[] {
+    return [...this.connections]
+      .filter(([, c]) => c.isConnected() && c.instructions())
+      .map(([server, c]) => ({ server, name: SERVER_INSTRUCTIONS, description: c.instructions(), inputSchema: {}, readOnly: true }) as McpToolDef);
+  }
+
+  /**
+   * What each connected server says about how to use it: only words the trust record holds. Servers connect in
+   * the background, so the agent could otherwise read changed words in the moment before the check has run.
+   * Words not yet checked, or held after a change, simply are not given.
+   */
+  serverInstructions(): { server: string; text: string }[] {
+    return this.instructionDefs()
+      .filter((d) => this.trust[mcpToolName(d.server, SERVER_INSTRUCTIONS)] === fingerprint(d))
+      .map((d) => ({ server: d.server, text: d.description }))
+      .sort((a, b) => (a.server < b.server ? -1 : 1));
   }
 
   /** Every tool across every connected server, in a stable order. */

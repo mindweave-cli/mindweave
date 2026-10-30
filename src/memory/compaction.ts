@@ -222,6 +222,7 @@ const PINNED_TOOLS = new Set([
   "use_skill",
   "spawn_subagent",
   "save_memory",
+  "lesson",
   "governor",
   "skill",
   "exit_plan",

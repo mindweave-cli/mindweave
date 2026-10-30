@@ -43,6 +43,12 @@ if (!process.env.MINDWEAVE_OAUTH_BACKOFF_MS) {
   process.env.MINDWEAVE_OAUTH_BACKOFF_MS = "1";
 }
 
+// Looking back on the work is a background model call, and the tests of everything else script
+// their model call by call. Off here; the tests of lessons switch it on.
+if (process.env.MINDWEAVE_LESSONS === undefined) {
+  process.env.MINDWEAVE_LESSONS = "0";
+}
+
 // A command that starts an app or server waits a few real seconds to see it come up (see
 // BackgroundShells.settle). The tests that start such commands only want the shell id back, so the
 // wait is off here; the tests of the wait itself set it explicitly.

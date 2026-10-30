@@ -320,6 +320,8 @@ function formatGrep(
   // Say what is left AND how to reach it. "Narrow the search" on its own was advice the
   // model frequently could not take.
   if (shown < lines.length) {
+    // First as well as last: a long result's last line is the easiest to miss.
+    out.unshift(`Showing ${noun}s ${offset + 1} to ${shown} of ${lines.length}. The rest exist and are not shown.`);
     out.push(
       `… (${lines.length - shown} more ${noun}s — pass offset: ${shown} for the next page, or narrow the search)`,
     );

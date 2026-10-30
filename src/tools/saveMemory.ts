@@ -27,11 +27,12 @@ export const saveMemoryTool: Tool = {
   deferred: true,
   readOnly: false,
   description:
-    "Save something to your cross-session memory so future conversations have it. " +
+    "Save something TRUE that you want future conversations to have. How the user wants work done, and how to behave, " +
+    "is a lesson (the lesson tool), not a memory; how the project works goes in MINDWEAVE.md. " +
     "Use type 'project' for context to continue this project from next time (a goal, " +
     "decision, or where things stand) that isn't in the code or MINDWEAVE.md. Use 'user'/" +
     "'feedback'/'reference' ONLY for genuinely UNIVERSAL, cross-project facts — who the " +
-    "user is, durable preferences about how they work, or an external pointer — and only " +
+    "user is, or an external pointer — and only " +
     "when you judge it will matter beyond this one project; do not save universal facts " +
     "from routine project work. Do NOT use it for things derivable from the code, git " +
     "history, or MINDWEAVE.md, or for ephemeral task state. Saving is automatic and silent — " +

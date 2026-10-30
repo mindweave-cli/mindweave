@@ -37,6 +37,8 @@ export interface Negotiated {
   dialect: Dialect;
   /** Server-reported identity, when it gave one. */
   serverInfo?: { name: string; version?: string };
+  /** What the server says about how to use it, when it says anything. */
+  instructions?: string;
   capabilities: Record<string, unknown>;
   /** True when we got here through the legacy `initialize` path. */
   legacy: boolean;
@@ -105,6 +107,7 @@ export async function probe(rpc: ProbeRpc, identity: ClientIdentity, capabilitie
       protocolVersions?: unknown;
       capabilities?: unknown;
       serverInfo?: { name?: unknown; version?: unknown };
+      instructions?: unknown;
     };
     const offered = Array.isArray(result?.protocolVersions) ? result.protocolVersions.filter((v): v is string => typeof v === "string") : [];
     const chosen = negotiate(offered);
@@ -115,6 +118,7 @@ export async function probe(rpc: ProbeRpc, identity: ClientIdentity, capabilitie
       capabilities: asRecord(result?.capabilities),
       legacy: false,
       ...(serverInfoOf(result?.serverInfo) ? { serverInfo: serverInfoOf(result?.serverInfo)! } : {}),
+      ...instructionsOf(result?.instructions),
     };
   } catch (error) {
     // A version mismatch is a real answer, not a reason to try the old path.
@@ -127,7 +131,7 @@ export async function probe(rpc: ProbeRpc, identity: ClientIdentity, capabilitie
     protocolVersion: PREFERRED_VERSION,
     capabilities,
     clientInfo: { name: identity.name, version: identity.version },
-  })) as { protocolVersion?: unknown; capabilities?: unknown; serverInfo?: { name?: unknown; version?: unknown } };
+  })) as { protocolVersion?: unknown; capabilities?: unknown; serverInfo?: { name?: unknown; version?: unknown }; instructions?: unknown };
 
   const version = acceptLegacyVersion(init?.protocolVersion);
   if (!version) {
@@ -140,6 +144,7 @@ export async function probe(rpc: ProbeRpc, identity: ClientIdentity, capabilitie
     capabilities: asRecord(init?.capabilities),
     legacy: true,
     ...(serverInfoOf(init?.serverInfo) ? { serverInfo: serverInfoOf(init?.serverInfo)! } : {}),
+    ...instructionsOf(init?.instructions),
   };
 }
 
@@ -153,6 +158,10 @@ function looksLikeMethodNotFound(error: unknown): boolean {
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+function instructionsOf(value: unknown): { instructions?: string } {
+  return typeof value === "string" && value.trim() ? { instructions: value.trim() } : {};
 }
 
 function serverInfoOf(info: { name?: unknown; version?: unknown } | undefined): { name: string; version?: string } | undefined {

@@ -46,6 +46,7 @@ const DISPLAY_NAME: Record<string, string> = {
   // toolDisplay.test.ts now fails the build if a registered tool is missing here.
   replace_symbol_body: "Update",
   save_memory: "Remember",
+  lesson: "Learn",
   sessions: "Session",
   mindweave: "Mindweave",
   workspace: "Workspace",
@@ -165,7 +166,7 @@ export function noteReads(calls: { name: string; args: Record<string, unknown> }
  * now appear while a call works, so these are left out from the start instead of flashing up and
  * disappearing.
  */
-const NEVER_SHOWN = new Set(["outline", "definition", "references", "relevant", "todo_write", "find_tools", "view_image"]);
+const NEVER_SHOWN = new Set(["outline", "definition", "references", "relevant", "todo_write", "find_tools", "view_image", "lesson"]);
 
 /** Whether a tool's calls are never drawn in the conversation. */
 export function neverShown(name: string): boolean {

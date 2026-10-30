@@ -45,6 +45,8 @@ export const MEMORY_INDEX = "MEMORY.md";
 // a short index with very long lines. Past either, we load a prefix + a warning.
 const MAX_INDEX_LINES = 200;
 const MAX_INDEX_BYTES = 25_000;
+/** Deleted memories kept on disk for the record. */
+const RETIRED_KEEP = 200;
 
 /** The memory directory for a project (under its state dir). */
 export function memoryDir(projectCwd: string): string {
@@ -402,6 +404,77 @@ async function upsertIndexLineNow(dir: string, file: string, line: string): Prom
 function settle(attempt: number): Promise<void> {
   const ms = Math.round(15 * attempt * (0.5 + Math.random()));
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** One saved memory, as a listing shows it. */
+export interface MemoryListing {
+  name: string;
+  file: string;
+  description: string;
+  type: string;
+  /** When it was last written, epoch ms. */
+  updated: number;
+}
+
+/** Every memory saved for this project, read from the files themselves. */
+export async function listMemories(projectCwd: string): Promise<MemoryListing[]> {
+  const dir = memoryDir(projectCwd);
+  let names: string[];
+  try {
+    names = await fs.readdir(dir);
+  } catch {
+    return [];
+  }
+  const read = await Promise.all(
+    names
+      .filter((n) => n.endsWith(".md") && n !== MEMORY_INDEX)
+      .map(async (file): Promise<MemoryListing | null> => {
+        try {
+          const path = join(dir, file);
+          const [raw, stat] = await Promise.all([fs.readFile(path, "utf8"), fs.stat(path)]);
+          const field = (key: string) => new RegExp(`^${key}:[ \\t]*(.*)$`, "m").exec(raw)?.[1]?.trim() ?? "";
+          return { name: field("name") || file.replace(/\.md$/, ""), file, description: field("description"), type: field("type"), updated: stat.mtimeMs };
+        } catch {
+          return null;
+        }
+      }),
+  );
+  return read.filter((m): m is MemoryListing => m !== null).sort((a, b) => (a.file < b.file ? -1 : 1));
+}
+
+/** The index without its pointer to `file` (pure). */
+export function applyIndexRemoval(current: string, file: string): string {
+  return current
+    .split("\n")
+    .filter((l) => !pointsAt(l, file))
+    .join("\n");
+}
+
+/**
+ * Delete a memory: its file, its pointer, and a line of it in a log that is never read back. The file goes
+ * first, so a failure on the index leaves a pointer the next read can see is dangling rather than a memory
+ * that was meant to be gone and is not. False when there was nothing to delete.
+ */
+export async function deleteMemory(projectCwd: string, file: string, reason: string): Promise<boolean> {
+  const dir = memoryDir(projectCwd);
+  const path = join(dir, file);
+  let body: string;
+  try {
+    body = await fs.readFile(path, "utf8");
+    await fs.rm(path);
+  } catch {
+    return false;
+  }
+  await serializeIndexWrite(async () => {
+    const indexPath = join(dir, MEMORY_INDEX);
+    const index = await fs.readFile(indexPath, "utf8").catch(() => "");
+    if (index) await writeFileAtomic(indexPath, applyIndexRemoval(index, file));
+    const log = join(dir, ".retired.jsonl");
+    const kept = (await fs.readFile(log, "utf8").catch(() => "")).split("\n").filter(Boolean);
+    kept.push(JSON.stringify({ at: new Date().toISOString(), file, reason: oneLine(reason), body: body.slice(0, 2_000) }));
+    await writeFileAtomic(log, `${kept.slice(-RETIRED_KEEP).join("\n")}\n`);
+  }).catch(() => undefined);
+  return true;
 }
 
 /** A filesystem-safe slug from a memory name. Falls back to "memory" if empty. */

@@ -25,6 +25,7 @@ import { createRuleScope } from "../governor/scope.js";
 import type { Governance } from "../governor/types.js";
 import { loadModelConfig } from "../dynamo/model.js";
 import { ensureMemoryDir, loadMemoryIndex, memoryDir } from "./autoMemory.js";
+import { openLessons } from "./lessons.js";
 import { planMcpServers } from "../mcp/projectApproval.js";
 import { McpManager } from "../mcp/manager.js";
 import { assembleNotes, NOTES_FILE } from "./projectNotes.js";
@@ -315,6 +316,8 @@ export async function createSession(
   toolContext.checkpoints?.persistTo(checkpointDir(cwd, id));
   attachMcp(toolContext, cwd);
   await seedProjectMemoryRead(toolContext, projectMemory);
+  const lessons = await openLessons(cwd, []);
+  if (lessons) toolContext.lessons = lessons;
   return {
     id,
     cwd,
@@ -491,6 +494,8 @@ export async function resumeSession(
   // What the model has already read is in the transcript it is about to be handed, so the
   // ledger has to agree with it. See restoreReadLedger for what a stale ledger cost.
   await restoreReadLedger(toolContext, transcript, meta.updatedAt ?? 0);
+  const lessons = await openLessons(cwd, transcript, meta.lessonsRead);
+  if (lessons) toolContext.lessons = lessons;
   return {
     id: meta.id,
     cwd,

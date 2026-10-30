@@ -2,6 +2,32 @@
 
 Notable changes to Mindweave. Dates are release dates.
 
+## v3.4.4 (2026-10-30): the agent learns how to work with you, remembers why, and knows what it has
+
+The agent now gets better the more you work with it. It learns from what goes wrong, remembers what you told it and why a choice was made, and understands what tools it has, so you say things once and it stops repeating the same mistakes. All of this happens in the background: there is nothing to set up and nothing new on screen.
+
+### It learns how to work with you
+
+- **The agent keeps lessons.** After a turn that gives it a reason to, it looks back over the work and decides for itself what is worth keeping: how things really run in this project, how you want work done, how you like problems tackled, and what you mean by a word. Say "never add a co-author line" or "don't touch the changelog" once, and it carries that into later sessions.
+- **It learns from its own trouble.** When something fails twice and then works, it works out what made the difference, so the next session does not pay for the same attempts. It also keeps what you confirmed ("yes, exactly like that"), not only what you corrected, so it holds on to what already works.
+- **A lesson comes up at the moment it counts.** A lesson about a command or a file is put in front of the agent right before it runs that command or edits that file, once, and it can then go ahead or change course.
+- **It can change its mind.** The agent corrects or deletes a lesson that turned out wrong or no longer fits how the project is going, and a lesson whose advice keeps failing stops being used. Say "forget that" and it does. Once in a while it goes over everything it keeps, merges what repeats and drops what is out of date.
+- **When something is going badly, it stops and rethinks.** If your message says it is off track, or the same thing has failed twice the same way, it is told to work out what it assumed and try a different approach instead of pressing on.
+- **Lessons stay in their place.** They rank below your standing rules and MINDWEAVE.md, and they can never loosen a permission, an approval or a check. They are written only from your words and the agent's own steps, never from a web page, a file or a tool's output, so nothing it reads can talk it into one. They are plain files on your machine: `~/.mindweave/projects/<project>/lessons/`, and `~/.mindweave/lessons/` for what you meant for all your work. They are never sent anywhere except to your model. A new install starts empty, and `MINDWEAVE_LESSONS=0` switches all of this off.
+
+### It remembers why
+
+- **Decisions and reasons are kept without being asked.** The same look back saves what the code will never show: a decision and why it was made, an approach that was tried and ruled out, who the work is for, a deadline, and where a long piece of work was left. A later session knows why you chose something, and does not argue over it or test it again.
+- **One fact, one place.** A lesson is how to behave, a memory is what is true, and MINDWEAVE.md is how the project works. MINDWEAVE.md is now kept to the technical record, and where the work stands and why a choice was made go in memories.
+- **Saved memories stay current.** Project memories that were overtaken get removed in the same review as lessons, and what was saved during a session is back in the agent's prompt after a compaction.
+
+### It knows what tools it has
+
+- **The agent is told its MCP servers and tools.** Past 25 tools they are held back from the tool list, and the agent used to know nothing about them until a search happened to find some: with 170 tools connected it could read the first 8 it found as all it had. It is now told each server and every tool name, and only what changes after that, without disturbing the prompt cache.
+- **It follows a server's own instructions.** What an MCP server says about how to use it now reaches the agent, capped in size and marked as coming from the server rather than from you. If those words change after you first trusted them, they are held back until you allow them, the same as a changed tool description.
+- **`find_tools` says what it found, first.** The first line now reads "Showing 8 of the 40 MCP tools that match (170 MCP tools connected in all)". Exact names can be loaded with `select:name1,name2`, `max_results` returns up to 30, and searching a server's name returns only that server.
+- **A cut-off list says so at the top.** `grep`, `glob` and folder listings now open with "Showing X of Y" as well as ending with it, so a partial answer is not read as the whole one.
+
 ## v3.4.3 (2026-10-30): more providers, workers that run side by side, a compaction you can watch
 
 ### More places to run it

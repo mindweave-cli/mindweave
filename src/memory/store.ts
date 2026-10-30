@@ -218,6 +218,9 @@ async function writeSession(session: Session): Promise<boolean> {
       // ones, and that difference is the whole answer.
       ...(session.callLog && session.callLog.length > 0 ? { callLog: session.callLog } : {}),
       ...(session.lastTurn ? { lastTurn: session.lastTurn } : {}),
+      ...(session.toolContext?.lessons
+        ? { lessonsRead: session.toolContext.lessons.cursor ? session.transcript.lastIndexOf(session.toolContext.lessons.cursor) + 1 : 0 }
+        : {}),
       ...(session.contextOverhead ? { contextOverhead: session.contextOverhead } : {}),
       // Deferred tools the model surfaced this session, so a resume re-advertises them
       // instead of stripping a tool it was mid-use of (see registry.toolSchemas).

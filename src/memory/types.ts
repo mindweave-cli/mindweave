@@ -111,6 +111,8 @@ type EntryOf =
        * stored with `synthetic`, so nothing treats it as a request. See `localCommand.ts`.
        */
       localCommand?: import("./localCommand.js").LocalCommandRecord;
+      /** Set on the note saying which MCP servers and tools exist: what it told the agent. See mcp/announce.ts. */
+      mcpAnnounced?: import("../mcp/announce.js").McpAnnounced;
     }
   | {
       role: "assistant";
@@ -267,6 +269,8 @@ export interface SessionMeta {
    * before it moves what "the first N entries" means.
    */
   notesCover?: { entries: number; tokens: number; of: number };
+  /** How many transcript entries the look back has read. See memory/lessons.ts. */
+  lessonsRead?: number;
   /** What the session did, counted live. See memory/counters.ts. */
   counters?: import("./counters.js").SessionCounters;
   /** A running or finished Marathon on this session. See `dynamo/marathon.ts`. */
@@ -324,7 +328,7 @@ export interface CallUsage {
    * page distiller. The log held only the main conversation's calls, so a third of what a
    * session cost could not be seen.
    */
-  aux?: "notes" | "summary" | "fetch";
+  aux?: "notes" | "summary" | "fetch" | "lessons";
 }
 
 /** Accumulated, cache-aware usage for one session. All token counts are sums; `costUsd`

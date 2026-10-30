@@ -100,6 +100,7 @@ export const globDef: Tool = {
     const truncated = matched.length > MAX_RESULTS;
     const lines = matched.slice(0, MAX_RESULTS);
     if (truncated) {
+      lines.unshift(`Showing ${MAX_RESULTS} of ${matched.length} files. The rest exist and are not shown.`);
       lines.push(`… (${matched.length - MAX_RESULTS} more — narrow the pattern)`);
     }
     return {

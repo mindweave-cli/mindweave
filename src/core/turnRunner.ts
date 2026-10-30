@@ -547,7 +547,7 @@ export function replayHistory(session: Session): ReplayEvent[] {
       const call = calls.get(entry.toolCallId);
       // Quiet results, and loading a tool even from sessions saved before it was quiet. A search
       // is quiet too, but it is still replayed (marked quiet): a front end may list what was searched.
-      if (call?.name === "find_tools" || call?.name === "view_image") continue;
+      if (call?.name === "find_tools" || call?.name === "view_image" || call?.name === "lesson") continue;
       if (entry.quiet && call?.name !== "search") continue;
       // The same display name a live toolStart carries ("Run", "Read"), not the raw
       // tool id — a reopened session was showing `run_command` where the live one said Run.
@@ -849,7 +849,7 @@ export function forwardEngineEvent(e: EngineEvent, onEvent: (event: TurnEvent) =
     onEvent({ type: "replyReset" });
   } else if (e.type === "tool" && e.phase === "start") {
     // The spawn is rendered by the subagentStart block; loading a tool is never shown.
-    if (e.name === "spawn_subagent" || e.name === "find_tools" || e.name === "view_image") return;
+    if (e.name === "spawn_subagent" || e.name === "find_tools" || e.name === "view_image" || e.name === "lesson") return;
     const d = toolDisplay(e.name, e.args);
     if (e.agent) {
       onEvent({ type: "subToolStart", agentId: e.agent, toolId: e.id, name: d.name, arg: d.arg, kind: d.kind });
@@ -857,7 +857,7 @@ export function forwardEngineEvent(e: EngineEvent, onEvent: (event: TurnEvent) =
       onEvent({ type: "toolStart", id: e.id, name: d.name, arg: d.arg, kind: d.kind, tool: e.name, group: isGroupable(e.name), args: clipArgs(e.args), ...(d.covers ? { covers: d.covers } : {}) });
     }
   } else if (e.type === "tool" && e.phase === "end") {
-    if (e.name === "spawn_subagent" || e.name === "find_tools" || e.name === "view_image") return;
+    if (e.name === "spawn_subagent" || e.name === "find_tools" || e.name === "view_image" || e.name === "lesson") return;
     if (e.agent) {
       onEvent({ type: "subToolEnd", agentId: e.agent, toolId: e.id, ok: !e.error, summary: e.summary, ...(e.detail ? { detail: e.detail } : {}) });
     } else {

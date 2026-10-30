@@ -21,6 +21,7 @@ import type { Tool } from "./types.js";
 import { screenshot } from "./screenshot.js";
 import { ui } from "./ui.js";
 import { saveMemoryTool } from "./saveMemory.js";
+import { lessonTool } from "./lesson.js";
 import { governor, skillTool } from "./governorTools.js";
 import { sessionsTool } from "./sessionTools.js";
 import { mcpResourceTool } from "./mcpResources.js";
@@ -47,6 +48,7 @@ export const DEFERRED_TOOLS: Tool[] = [
   governor,
   skillTool,
   saveMemoryTool,
+  lessonTool,
   sessionsTool,
   workspaceTool,
   mcpResourceTool,

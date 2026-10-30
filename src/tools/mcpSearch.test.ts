@@ -142,9 +142,9 @@ test("a search cut off at the cap says so instead of looking exhaustive", async 
   const mgr = await poolOf(40);
   try {
     const r = await findTools.execute({ query: "big" }, ctxWith(mgr)); // bare server name
-    assert.match(r.output, /top 8/, "a capped result must not read as the whole list");
-    assert.match(r.output, /search again with a narrower term/);
-    assert.ok(findTools.description.includes("at most 8 tools"), "the cap belongs in the description too");
+    assert.match(r.output, /Showing 8 of/, "a capped result must not read as the whole list");
+    assert.match(r.output, /narrow the search/);
+    assert.ok(findTools.description.includes("returns 8 tools"), "the cap belongs in the description too");
   } finally {
     await mgr.dispose();
   }
@@ -155,7 +155,7 @@ test("a search that fits under the cap does NOT claim there is more", async () =
   const mgr = await poolOf(40);
   try {
     const r = await findTools.execute({ query: "create issue" }, ctxWith(mgr));
-    assert.doesNotMatch(r.output, /top 8/);
+    assert.doesNotMatch(r.output, /Showing 8 of/);
   } finally {
     await mgr.dispose();
   }

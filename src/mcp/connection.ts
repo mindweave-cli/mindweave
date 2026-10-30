@@ -24,7 +24,7 @@
  * the user cannot see. `/mcp` can always retry by hand.
  */
 import { appVersion } from "../cli/version.js";
-import { parseToolList, type McpToolDef } from "./catalog.js";
+import { capDescription, parseToolList, type McpToolDef } from "./catalog.js";
 import { paramHeaders } from "./paramHeaders.js";
 import type { McpServerConfig } from "./config.js";
 import { probe, UnsupportedProtocolVersionError, type Negotiated } from "./discover.js";
@@ -168,6 +168,11 @@ export class McpConnection {
 
   tools(): readonly McpToolDef[] {
     return this.toolDefs;
+  }
+
+  /** What the server said at the handshake about how to use it, under the same cap as a tool description. */
+  instructions(): string {
+    return capDescription(this.negotiated?.instructions ?? "");
   }
 
   /** This server's prompts, fetched at connect (they have to exist before the command

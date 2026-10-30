@@ -35,6 +35,8 @@ export const DEFER_THRESHOLD = 25;
 
 /** How many results one search returns. Enough to choose from, few enough to read. */
 export const MAX_SEARCH_RESULTS = 8;
+/** The most one search may be asked for. Each tool costs its full schema. */
+export const MAX_SEARCH_RESULTS_ASKED = 30;
 
 /** Should this catalog be held back behind search? */
 export function shouldDefer(toolCount: number, threshold = DEFER_THRESHOLD): boolean {
@@ -68,6 +70,25 @@ export function scoreTool(def: McpToolDef, terms: readonly string[]): number {
     if (description.includes(term)) score += 2;
   }
   return score;
+}
+
+/** The names in a `select:a,b` query, or null when it is not one (pure). */
+export function selectedNames(query: string): string[] | null {
+  const m = /^select:(.*)$/i.exec(query.trim());
+  if (!m) return null;
+  return m[1]!.split(",").map((s) => s.trim()).filter(Boolean);
+}
+
+/**
+ * The line that says how much of what matched is being shown (pure). First in the result, ahead of the
+ * schemas: at the end it came after thousands of tokens, and a model read eight tools as all it had.
+ */
+export function searchHeadline(shown: number, matched: number, connected: number): string {
+  const total = `${connected} MCP tool${connected === 1 ? "" : "s"} connected in all`;
+  if (shown < matched) {
+    return `Showing ${shown} of the ${matched} MCP tools that match (${total}). The rest exist and are not shown: pass max_results, narrow the search, or load exact names with select:name1,name2.`;
+  }
+  return `Loaded ${shown} MCP tool${shown === 1 ? "" : "s"}, every one that matches (${total}). You can call ${shown === 1 ? "it" : "them"} now:`;
 }
 
 /**

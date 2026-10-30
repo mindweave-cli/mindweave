@@ -19,7 +19,8 @@
  * of schema rather than a catalog's worth.
  */
 import type { Tool, ToolContext, ToolResult } from "./types.js";
-import { MAX_SEARCH_RESULTS, renderResults } from "../mcp/deferred.js";
+import { MAX_SEARCH_RESULTS, MAX_SEARCH_RESULTS_ASKED, renderResults, searchHeadline, selectedNames } from "../mcp/deferred.js";
+import { mcpToolName } from "../mcp/catalog.js";
 import { DEFERRED_TOOLS, matchDeferred, renderToolSchema, withRelated } from "./deferredNative.js";
 
 
@@ -43,9 +44,9 @@ export const findTools: Tool = {
     "know it — an exact name and a bare server name are both handled specially, so " +
     "neither is a wasted guess. Matching is on names and descriptions, not meaning: if " +
     "a sensible term finds nothing, try the server's name on its own before concluding " +
-    `the integration is absent. One search returns at most ${MAX_SEARCH_RESULTS} tools ` +
-    "and tells you when it hit that limit, so a full result is a reason to search again " +
-    "more narrowly rather than to assume you have seen everything. Loaded tools stay " +
+    `the integration is absent. One search returns ${MAX_SEARCH_RESULTS} tools unless you pass max_results, ` +
+    "and its first line says how many matched, so check it before assuming you have seen everything. " +
+    "To load tools whose names you already have, pass select:name1,name2. Loaded tools stay " +
     "available for the rest of the session: search once per capability, not once per call.",
   parameters: {
     type: "object",
@@ -54,7 +55,11 @@ export const findTools: Tool = {
     properties: {
       query: {
         type: "string",
-        description: "What you need: a server name, an action, or an exact tool name.",
+        description: "What you need: a server name, an action, an exact tool name, or select:name1,name2 for several exact names.",
+      },
+      max_results: {
+        type: "integer",
+        description: `How many MCP tools to return, up to ${MAX_SEARCH_RESULTS_ASKED}. Default ${MAX_SEARCH_RESULTS}. Each one costs its full schema.`,
       },
     },
   },
@@ -74,7 +79,15 @@ export const findTools: Tool = {
     // the whole prefix — tools, system AND messages — at full price, which cost several
     // times what the deferral saved. Dispatch resolves against the registry, so a name
     // and a schema is everything the model needs. See deferredNative.renderToolSchema.
-    const native = withRelated(matchDeferred(query));
+    const selected = selectedNames(query);
+    // A query that is exactly a connected server's name is asking for that server. It would otherwise also
+    // load the agent's own tools with those letters in them, each at the cost of its full schema.
+    const namesServer = ctx.mcp?.snapshot().catalog.some((d) => d.server.toLowerCase() === query.toLowerCase()) ?? false;
+    const native = selected
+      ? DEFERRED_TOOLS.filter((t) => selected.includes(t.name))
+      : namesServer
+        ? []
+        : withRelated(matchDeferred(query));
     // Activate what was found: from now on these are added to the advertised tool list
     // (registry.toolSchemas), so a strict function-calling model can actually emit the
     // call. Without this the schema below is callable in name only — the model sees it and
@@ -129,7 +142,15 @@ export const findTools: Tool = {
       };
     }
 
-    const found = mcp.searchCatalogTools(query);
+    // Exact names, or everything the search matches: how many there were is what the first line reports.
+    const asked = typeof args.max_results === "number" && args.max_results > 0 ? Math.min(Math.floor(args.max_results), MAX_SEARCH_RESULTS_ASKED) : MAX_SEARCH_RESULTS;
+    const matched = selected
+      ? snapshot.catalog.filter((d) => selected.includes(mcpToolName(d.server, d.name)) || selected.includes(d.name))
+      : mcp.searchCatalogAll(query);
+    const found = selected ? matched : matched.slice(0, asked);
+    const notFound = selected
+      ? selected.filter((n) => !native.some((t) => t.name === n) && !matched.some((d) => mcpToolName(d.server, d.name) === n || d.name === n))
+      : [];
     if (found.length === 0) {
       const note =
         `No MCP tool matches "${query}". There ${snapshot.toolCount === 1 ? "is" : "are"} ${snapshot.toolCount} ` +
@@ -142,21 +163,13 @@ export const findTools: Tool = {
       };
     }
 
-    // A capped search looks exactly like an exhaustive one. That matters more here than
-    // anywhere else: search is the ONLY door to a deferred catalog, so a model that gets
-    // 8 of a server's 40 tools and no hint of the rest concludes the other 32 do not
-    // exist — and they stay hidden AND unactivated. Both sibling MCP listings already
-    // announce their cut; this one did not.
-    const capped =
-      found.length === MAX_SEARCH_RESULTS
-        ? `\n\nThat is the top ${MAX_SEARCH_RESULTS}, which is all one search returns — there may be more. ` +
-          `If what you need is not here, search again with a narrower term or the server's name.`
-        : "";
-    const mcpBlock =
-      `Loaded ${found.length} MCP tool${found.length === 1 ? "" : "s"} — you can call ` +
-      `${found.length === 1 ? "it" : "them"} now:\n\n${renderResults(found)}${capped}`;
+    // A capped search looks exactly like an exhaustive one unless it says otherwise, and search is the ONLY
+    // door to a deferred catalog. So the first line gives the numbers, ahead of the schemas.
+    const missing = notFound.length > 0 ? `\n\nNo tool is named: ${notFound.join(", ")}.` : "";
+    const mcpBlock = `${searchHeadline(found.length, matched.length, snapshot.toolCount)}\n\n${renderResults(found)}${missing}`;
     return {
-      output: nativeBlock ? `${nativeBlock}\n\n${mcpBlock}` : mcpBlock,
+      // The numbers stay the first thing read, so the MCP part goes ahead of the agent's own tools.
+      output: nativeBlock ? `${mcpBlock}\n\n${nativeBlock}` : mcpBlock,
       summary: `loaded ${found.length + native.length} tool${found.length + native.length === 1 ? "" : "s"}`,
     };
   },

@@ -15,6 +15,7 @@
  * its best judgment, and writes outside the workspace are refused. That is what makes the mode safe to
  * leave unattended, and it needs no mode of its own.
  */
+import { settleLessons } from "../memory/lessonReflect.js";
 import { applySessionMode, disposeSession, prepareMessage, runTurn, sessionMode, type TurnEvent } from "../core/turnRunner.js";
 import { defaultModeFor } from "../core/permissions.js";
 import { createSession, resumeSession } from "../memory/session.js";
@@ -214,6 +215,7 @@ export async function runHeadless(options: HeadlessOptions, io: HeadlessIO, ctx:
     say(`mindweave: ${error instanceof Error ? error.message : String(error)}`);
     return EXIT_FAILED;
   } finally {
+    if (session) await settleLessons(session).catch(() => {});
     if (session) await disposeSession(session).catch(() => {});
   }
 }
