@@ -163,6 +163,17 @@ function project(): string {
 }
 const named = (c: string, cwd: string, d: "posix" | "powershell" = "posix") => protectedArgsReason(parseCommand(c, d), cwd);
 
+test("a colon in a word is not a file's stream unless the file behind it is protected", async () => {
+  // Both seen refused as "a Windows stream spelling of a file": CSS inside a command, and a registry path.
+  const root = project();
+  const css = `$c.Replace(".search select{flex:none;border:0;padding:9px 6px}", "x")`;
+  assert.equal(await named(css, root, "powershell"), null);
+  assert.equal(await named(`Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\chrome.exe'`, root, "powershell"), null);
+  assert.equal(await named(`Get-Content notes.txt:hidden`, root, "powershell"), null, "an ordinary file's stream holds no secret of ours");
+  // A stream is a Windows thing. Elsewhere that name is simply another file.
+  if (process.platform === "win32") assert.ok(await named(`Get-Content .env:hidden`, root, "powershell"), "a protected file's is refused");
+});
+
 test("reading, copying out or sending a protected file is refused, whatever the verb", async () => {
   const root = project();
   for (const c of [
@@ -218,6 +229,7 @@ test("run_command refuses a forbidden command with the user's reason, and a prot
   const secret = await run.execute({ command: process.platform === "win32" ? "Copy-Item .env backup.txt" : "cp .env backup.txt" }, ctxIn(root));
   assert.match(secret.output, /Refusing to run this command/);
   assert.match(secret.output, /`\.env` is/);
+  assert.match(secret.output, /make that change with edit or write_file/, "a command that only mentions the name has somewhere to go");
 });
 
 test("run_command asks for a command the user marked 'prompt', and runs nothing on a no", async () => {

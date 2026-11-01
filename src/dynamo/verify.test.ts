@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isFileMutation, mutationNeedsVerification, looksLikeVerification, isVerification, reScopeCheck, isBackgroundPollStep, stepFailureSignature, isServerManagementStep, normalizeErrorSignature, repeatFailureStep, repeatFailureNudge, failedActionLabel, firstErrorLine, narrationFault, narrationNudge, nearestTools, unknownToolError, replyFault, replyRewrite, REPLY_LINES, NARRATION_SENTENCES} from "./verify.js";
+import { isFileMutation, mutationNeedsVerification, looksLikeVerification, isVerification, reScopeCheck, isBackgroundPollStep, stepFailureSignature, isServerManagementStep, normalizeErrorSignature, repeatFailureStep, repeatFailureNudge, failedActionLabel, firstErrorLine, narrationFault, narrationNudge, nearestTools, unknownToolError, closingAfterCheck, otherRoute, VERIFY_NUDGE, NARRATION_SENTENCES} from "./verify.js";
 
 test("file mutations are the edit/write tools", () => {
   assert.ok(isFileMutation("edit"));
@@ -73,13 +73,26 @@ test("looksLikeVerification ignores ordinary commands", () => {
   }
 });
 
-test("isVerification counts check-like commands, and only those", () => {
+test("isVerification counts what really ran or looked at the work, and only that", () => {
   // The language server no longer answers a call of its own — its errors ride back with
-  // every edit — so running the project is the only thing left that verifies it.
+  // every edit — so running or looking at the result is what verifies it.
   assert.ok(!isVerification("diagnostics", {}), "there is no such tool to count");
   assert.ok(isVerification("run_command", { command: "npm test" }));
+  assert.ok(isVerification("run_command", { command: "node dist/index.js --version" }), "running the program is checking it");
+  assert.ok(isVerification("run_command", { command: "python3 app.py" }));
+  assert.ok(isVerification("run_command", { command: "curl -s localhost:3000/health" }));
   assert.ok(!isVerification("run_command", { command: "git status" }));
+  assert.ok(!isVerification("run_command", { command: "Get-Content node_modules/x" }));
   assert.ok(!isVerification("read_file", { path: "x" }));
+});
+
+test("opening a page and looking at it is a check: a project of plain pages has no other", () => {
+  assert.ok(isVerification("ui", { action: "look", url: "file:///x/index.html" }));
+  assert.ok(isVerification("ui", { steps: [{ action: "click", name: "Movies" }] }));
+  assert.ok(isVerification("screenshot", {}));
+  assert.ok(!isVerification("ui", { action: "close" }), "closing the browser looks at nothing");
+  assert.ok(isVerification("spawn_subagent", { verify: true }));
+  assert.ok(!isVerification("spawn_subagent", { prompt: "go" }));
 });
 
 test("reScopeCheck: an ordinary turn that never completes a list never pauses", () => {
@@ -254,6 +267,36 @@ test("repeatFailureNudge: mentions the working directory only when the shell has
   assert.doesNotMatch(msg, /working directory|shell is currently/i);
 });
 
+test("otherRoute: a stuck edit is pointed at the shell, and a stuck file-writing command at the edit tools", () => {
+  const miss = "the edit could not be applied to a.js: old_string not found.";
+  assert.match(otherRoute("edit", { path: "a.js" }, miss)!, /shell command/);
+  assert.match(otherRoute("write_file", { path: "a.js" }, "disk is full")!, /shell command/);
+  for (const command of [
+    `[IO.File]::WriteAllText("a.js", $c)`,
+    "Set-Content a.js x",
+    "sed -i s/a/b/ a.js",
+    "echo hi > a.js",
+    "echo hi >> a.js",
+  ]) {
+    assert.match(otherRoute("run_command", { command }, "exit 1")!, /edit or write_file/, command);
+  }
+});
+
+test("otherRoute: nothing for a command that changes no file, or after being turned away", () => {
+  assert.equal(otherRoute("run_command", { command: "npm test" }, "1 failing"), null);
+  assert.equal(otherRoute("run_command", { command: "npm test 2>&1" }, "1 failing"), null, "a redirect of a stream is not a file");
+  assert.equal(otherRoute("read_file", { path: "a" }, "no such file"), null);
+  // Offering a shell command here would be telling it to go round the protection.
+  assert.equal(otherRoute("edit", { path: ".env" }, "Refusing to edit .env: it is an environment/secrets file."), null);
+  assert.equal(otherRoute("run_command", { command: "Set-Content a.js x" }, "Stopped: the user declined this action."), null);
+});
+
+test("repeatFailureNudge: carries the other route when there is one", () => {
+  const route = "You can also make this change with a shell command.";
+  assert.ok(repeatFailureNudge({ attempts: 3, action: "edit a.js", error: "not found", route }).includes(route));
+  assert.doesNotMatch(repeatFailureNudge({ attempts: 3, action: "npm test", error: "1 failing", route: null }), /null/);
+});
+
 test("failedActionLabel: a shell failure shows the command that was actually run", () => {
   assert.equal(
     failedActionLabel("run_command", { command: "  python manage.py check  " }),
@@ -348,72 +391,43 @@ test("the unknown-tool error names the tool, denies it exists, and gives a way f
   assert.match(far, /find_tools/, "with no near miss it must still say where to look");
 });
 
-// ── The reply gate ────────────────────────────────────────────────────────────
-// Written against the observed failure: asked what was missing from a frontend, it
-// answered with two bold section labels, eleven bullets, three numbered questions and
-// an "My honest opinion" paragraph. The prompt already forbade all of that.
+// ── What is left of a turn that was sent back to check its work ───────────────
+// Seen as a turn that built a whole page and said only "I checked it as I built it".
 
-test("a turn that only ANSWERED is never gated, however long", () => {
-  // The budget exists to stop padding after work, not to stop answering a question.
-  const essay = Array.from({ length: 40 }, (_, i) => `Paragraph ${i} of a real explanation.`).join("\n");
-  assert.equal(replyFault(essay, false), null);
+const FULL = "The Movies page is in place at movies.html, with 74 titles, genre filters and the same Sort picker as Music CDs.";
+
+test("a second reply that says about as much as the first is the rewrite that was asked for", () => {
+  const rewrite = "Movies is at movies.html: 74 titles, genre filters, and the same Sort picker as the Music CDs page.";
+  assert.equal(closingAfterCheck(FULL, rewrite, { ranSomething: true, changedSince: false }), rewrite);
+  assert.equal(closingAfterCheck(FULL, rewrite, { ranSomething: false, changedSince: false }), rewrite);
 });
 
-test("a short plain confirmation after work passes", () => {
-  assert.equal(replyFault("Added. The spending-cap branch now subtracts subs before the split.", true), null);
+test("an excuse written without running anything never replaces what was done", () => {
+  const excuse = "No build or test suite applies here.";
+  assert.equal(closingAfterCheck(FULL, excuse, { ranSomething: false, changedSince: false }), FULL);
 });
 
-test("a wall of prose after work is over budget", () => {
-  const wall = Array.from({ length: 9 }, (_, i) => `Sentence ${i} recapping what you just watched.`).join("\n");
-  const fault = replyFault(wall, true);
-  assert.equal(fault?.kind, "length");
-  assert.equal(fault?.lines, 9);
+test("a short line after a real check is added to what was done, not swapped for it", () => {
+  const line = "Horror + New returns three titles.";
+  assert.equal(closingAfterCheck(FULL, line, { ranSomething: true, changedSince: false }), `${FULL}\n\n${line}`);
 });
 
-test("headings are refused after work at ANY length", () => {
-  // A four-line answer that needs a heading is not a four-line answer.
-  const fault = replyFault("## What changed\nThe cap now subtracts subs.", true);
-  assert.equal(fault?.kind, "shape");
-  assert.match(fault!.detail, /heading/);
+test("once a file changed after the first reply, that reply is out of date", () => {
+  const line = "Fixed the footer, which the check showed was missing.";
+  assert.equal(closingAfterCheck(FULL, line, { ranSomething: true, changedSince: true }), line);
 });
 
-test("bold section labels are refused — they are headings wearing a disguise", () => {
-  const fault = replyFault("**What exists:**\nThe cart loop is closed.", true);
-  assert.equal(fault?.kind, "shape");
-  assert.match(fault!.detail, /bold section label/);
+test("an empty reply on either side leaves the other", () => {
+  assert.equal(closingAfterCheck("", "Done.", { ranSomething: false, changedSince: false }), "Done.");
+  assert.equal(closingAfterCheck(FULL, "  ", { ranSomething: true, changedSince: false }), FULL);
 });
 
-test("one question is allowed, two are not", () => {
-  assert.equal(replyFault("Done. Want me to remove the stale reference too?", true), null);
-  const fault = replyFault("Done. Should I remove it? Or leave it for later?", true);
-  assert.equal(fault?.kind, "shape");
-  assert.match(fault!.detail, /2 questions/);
-});
-
-test("a fenced code block does not count against the budget", () => {
-  // A snippet or a diff in the reply is content, never padding.
-  const withCode = ["Fixed it, the guard was inverted.", "```ts", "a", "b", "c", "d", "e", "f", "```"].join("\n");
-  assert.equal(replyFault(withCode, true), null);
-});
-
-test("blank lines do not count as lines", () => {
-  const spaced = "One.\n\nTwo.\n\nThree.\n\nFour.";
-  assert.equal(replyFault(spaced, true), null, `${REPLY_LINES} lines of prose is within budget however it is spaced`);
-});
-
-test("an empty reply is not a fault", () => {
-  assert.equal(replyFault("   ", true), null);
-});
-
-test("the rewrite instruction names the fault, not just 'be shorter'", () => {
-  // "Be shorter" produces a shorter version of the same shape.
-  const shape = replyRewrite(replyFault("## Heading\nbody", true)!);
-  assert.match(shape, /1 heading/);
-  assert.match(shape, /plain prose/);
-
-  const length = replyRewrite(replyFault(Array.from({ length: 9 }, () => "Line.").join("\n"), true)!);
-  assert.match(length, /9 lines/);
-  assert.match(length, new RegExp(`${REPLY_LINES} lines or fewer`));
+test("the nudge says the reply was not shown, and asks for nothing about the check", () => {
+  // Without the first the model answers it as if the person had asked; whatever the second asks for is what they read.
+  assert.match(VERIFY_NUDGE, /NOT shown/);
+  assert.match(VERIFY_NUDGE, /write your closing reply again in full/);
+  assert.match(VERIFY_NUDGE, /never say that a project has no build or tests/);
+  assert.doesNotMatch(VERIFY_NUDGE, /say so in one line/, "the line that produced the phrase is back");
 });
 
 test("stepFailureSignature: different tools of ONE failing MCP server are the same failure", () => {

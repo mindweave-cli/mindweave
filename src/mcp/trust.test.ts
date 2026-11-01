@@ -8,8 +8,16 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { acceptTools, changedToolsQuestion, compareTrust, fingerprint, fingerprintCatalog } from "./trust.js";
-import type { McpToolDef } from "./catalog.js";
+import {
+  acceptTools,
+  changedPhrase,
+  changedToolsQuestion,
+  compareTrust,
+  fingerprint,
+  fingerprintCatalog,
+  SERVER_INSTRUCTIONS,
+} from "./trust.js";
+import { mcpToolName, type McpToolDef } from "./catalog.js";
 
 const def = (name: string, description: string, schema: Record<string, unknown> = { type: "object" }): McpToolDef => ({
   server: "srv",
@@ -83,4 +91,20 @@ test("the question names what changed and why it matters", () => {
   // A long list is summarized rather than filling the terminal.
   const many = changedToolsQuestion(["a", "b", "c", "d", "e"]);
   assert.match(many, /and 2 more/);
+});
+
+test("a server's changed instructions are named as instructions, not as a tool", () => {
+  const entry = mcpToolName("srv", SERVER_INSTRUCTIONS);
+  const only = changedToolsQuestion([entry]);
+  assert.match(only, /its instructions to the agent/);
+  assert.match(only, /srv instructions/);
+  assert.ok(!only.includes("(server instructions)"), "the bookkeeping name must not reach the user");
+  assert.ok(!/a tool claims/.test(only));
+
+  const mixed = changedToolsQuestion([entry, "mcp__srv__read"]);
+  assert.match(mixed, /tools or its instructions/);
+  assert.match(mixed, /mcp__srv__read/);
+
+  assert.equal(changedPhrase([entry]), "the instructions of 1 MCP server");
+  assert.equal(changedPhrase([entry, "mcp__srv__a", "mcp__srv__b"]), "2 MCP tools and the instructions of 1 MCP server");
 });

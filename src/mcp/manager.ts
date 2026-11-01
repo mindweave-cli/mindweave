@@ -38,12 +38,19 @@ import { renderPromptMessages, type McpPrompt } from "./prompts.js";
 import { sortResources, type McpResource, type McpResourceTemplate } from "./resources.js";
 import { McpConnection, type ConnectionStatus } from "./connection.js";
 import { searchCatalog, shouldDefer } from "./deferred.js";
-import { compareTrust, acceptTools, changedToolsQuestion, fingerprint, fingerprintCatalog, type TrustRecord } from "./trust.js";
+import {
+  compareTrust,
+  acceptTools,
+  changedLabel,
+  changedPhrase,
+  changedToolsQuestion,
+  fingerprint,
+  fingerprintCatalog,
+  SERVER_INSTRUCTIONS,
+  type TrustRecord,
+} from "./trust.js";
 import { loadTrust, saveTrust } from "./trustStore.js";
 import type { McpServerConfig } from "./config.js";
-
-/** Where a server's instructions sit in the trust record. No tool can have this name: it is not a valid one. */
-const SERVER_INSTRUCTIONS = "(server instructions)";
 
 /**
  * One turn's frozen view of the MCP catalog: what the model is told it can call, and
@@ -322,9 +329,8 @@ export class McpManager {
         // server, not a security decision they can act on. This is also the safety net
         // for the case where there was no approval channel to ask through at all.
         this.notices.push(
-          `Blocked ${verdict.changed.length} MCP tool${verdict.changed.length === 1 ? "" : "s"} whose description ` +
-            `changed since you last used ${verdict.changed.length === 1 ? "it" : "them"}: ${verdict.changed.join(", ")}. ` +
-            `Run /mcp to review.`,
+          `Blocked ${changedPhrase(verdict.changed)}, changed since you last used ${verdict.changed.length === 1 ? "it" : "them"}: ` +
+            `${verdict.changed.map(changedLabel).join(", ")}. Run /mcp to review.`,
         );
         this.onChange?.();
       }
@@ -366,9 +372,8 @@ export class McpManager {
     if (verdict.changed.length > 0) {
       for (const name of verdict.changed) this.quarantined.add(name);
       this.notices.push(
-        `An MCP server changed ${verdict.changed.length} tool description${verdict.changed.length === 1 ? "" : "s"} ` +
-          `while this session was running: ${verdict.changed.join(", ")}. ` +
-          `Blocked for now — run /mcp to review.`,
+        `An MCP server changed ${changedPhrase(verdict.changed)} while this session was running: ` +
+          `${verdict.changed.map(changedLabel).join(", ")}. Blocked for now — run /mcp to review.`,
       );
     }
     await saveTrust(this.trustCwd, this.trust);

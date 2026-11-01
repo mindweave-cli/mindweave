@@ -88,17 +88,29 @@ export function looksLikeVerification(command: string): boolean {
   return tools.some((t) => new RegExp(`(^|[\\s|&;])${t.replace(/ /g, "\\s+")}\\b`).test(c));
 }
 
+/** A command that runs a program or a script: running the thing is checking it. A shell on its own is not here, since it can do anything. */
+const RUNS_A_PROGRAM = /(^|[\s|&;])(node|deno|bun|python3?|py|ruby|php|java|dotnet|swift|go\s+run|cargo\s+run|curl)\s+\S/i;
+
 /**
- * Did this tool call count as verifying the code? A shell command that runs a
- * build, test, typecheck or lint.
+ * Did this tool call count as verifying the work? Anything that really ran or really looked at it:
+ * a build, test, typecheck or lint, a program or script being run, the page or app being opened and
+ * looked at with `ui` or `screenshot`, or a verifier sub-agent.
  *
- * The language server's own errors no longer count, and cannot: they arrive with every
- * edit result rather than through a call of their own, so there is nothing here to
- * recognise. That is also why they are not verification — reading what an edit handed
- * back is not the same as running the project.
+ * The browser has to count. A project of plain pages has nothing else to run, so leaving it out meant
+ * every turn that edited one was told it "never ran a check" straight after looking at the page, and
+ * what the person read as the turn's reply was the model answering that.
+ *
+ * The language server's own errors do not count, and cannot: they arrive with every edit result rather
+ * than through a call of their own. Reading what an edit handed back is not running the project.
  */
 export function isVerification(toolName: string, args: Record<string, unknown>): boolean {
-  if (toolName === "run_command") return looksLikeVerification(String(args.command ?? ""));
+  if (toolName === "run_command") {
+    const command = String(args.command ?? "");
+    return looksLikeVerification(command) || RUNS_A_PROGRAM.test(command);
+  }
+  if (toolName === "ui") return args.action !== "close";
+  if (toolName === "screenshot") return true;
+  if (toolName === "spawn_subagent") return args.verify === true;
   return false;
 }
 
@@ -290,6 +302,8 @@ export function repeatFailureNudge(opts: {
   action: string;
   error: string;
   cwd?: string;
+  /** The other way to do it, from `otherRoute`, when there is one. */
+  route?: string | null;
 }): string {
   const where = opts.cwd
     ? `Your shell is currently in ${opts.cwd}, not the project root. Relative paths resolve from there, ` +
@@ -302,8 +316,30 @@ export function repeatFailureNudge(opts: {
     where +
     `Running it again unchanged will end the turn. Find out why it fails before you act again: ` +
     `check the path or file it names, confirm the state you are actually in, or take a different ` +
-    `route to the same goal. (This fires once per failure loop.)`
+    `route to the same goal.${opts.route ? ` ${opts.route}` : ""} (This fires once per failure loop.)`
   );
+}
+
+/** A command that writes to a file, in either shell. */
+const WRITES_A_FILE = /\b(WriteAllText|WriteAllLines|Set-Content|Add-Content|Out-File|tee|sed\s+-i)\b|(^|[^>&\d])>>?\s*["']?[\w./\\$~]/i;
+
+/** Failing because something was refused or declined. That was somebody's decision, so no other route is offered for it. */
+const WAS_TURNED_AWAY = /Refusing to|Stopped:|declined|forbid|protected|outside the workspace/i;
+
+/**
+ * The other way to change a file, when the way being tried keeps failing (pure), or null.
+ *
+ * An edit that will not match and a script that will not run are the same job by two routes, and a model stuck on one
+ * tends not to think of the other. Never offered for a refusal: suggesting a shell command after "Refusing to edit
+ * .env" would be telling it to go round the protection.
+ */
+export function otherRoute(name: string, args: Record<string, unknown>, error: string): string | null {
+  if (WAS_TURNED_AWAY.test(error)) return null;
+  if (isFileMutation(name)) return "You can also make this change with a shell command.";
+  if (name === "run_command" && WRITES_A_FILE.test(String(args.command ?? ""))) {
+    return "If this command is there to change a file, make the change with edit or write_file instead.";
+  }
+  return null;
 }
 
 /**
@@ -370,12 +406,43 @@ export function batchEditNudge(path: string, count: number): string {
   );
 }
 
-/** The one-shot nudge injected when files changed but nothing was checked. */
+/**
+ * The one-shot nudge injected when files changed and nothing ran or looked at them afterwards.
+ *
+ * It states what the model cannot otherwise know: the reply it just wrote was not shown. Without that it
+ * reads this as someone answering that reply, so it answers back ("The check did run this turn…"), and that
+ * answer is all the person ever sees of a turn that built something. It also never asks for a word about
+ * the check, because whatever it asks for here is what the person gets.
+ */
 export const VERIFY_NUDGE =
-  "You edited files this turn but never ran a check. Before finishing, verify what you changed actually " +
-  "works — run the project's build or tests, and fix anything " +
-  "it surfaces. If no check meaningfully applies here (for example a docs or config edit), say so in one line " +
-  "and finish. (This reminder fires once per turn.)";
+  "You changed files this turn and nothing has run or looked at them since. The reply you just wrote was NOT shown " +
+  "to the user, and this message is not from them: they cannot see it, so do not answer it or mention it. Check the " +
+  "change now in whatever way fits: run the build, the tests or the script, or open the page or app and look at it. " +
+  "Fix what that turns up. Then write your closing reply again in full, as if this message had never been sent: what " +
+  "you built or changed and what the user needs to know about it. Say nothing about the check if it went fine, and " +
+  "never say that a project has no build or tests. If you could not check it, finish with one plain sentence saying so.";
+
+/**
+ * What the person reads when a turn was sent back to check its work (pure).
+ *
+ * The reply written before the nudge said what was done. The one written after it is supposed to say that again
+ * in full, and a model may instead answer the nudge in a line ("No build or test suite applies here"). That line
+ * must not be what is left of the turn, whatever the wording of the nudge, so the first reply is not lost here:
+ *
+ *  - The second reply says about as much as the first: it is the rewrite that was asked for.
+ *  - Nothing ran in between: nothing has been learned, so the first reply stands.
+ *  - Something ran and no file changed since: the first reply is still true, and the second adds how that went.
+ *  - Something ran and a file changed: the first reply is out of date, so the second is all there is.
+ */
+export function closingAfterCheck(draft: string, second: string, facts: { ranSomething: boolean; changedSince: boolean }): string {
+  const first = draft.trim();
+  const after = second.trim();
+  if (!first) return second;
+  if (!after) return draft;
+  if (after.length >= first.length * 0.7) return second;
+  if (!facts.ranSomething) return draft;
+  return facts.changedSince ? second : `${first}\n\n${after}`;
+}
 
 // ── Narration budget ──────────────────────────────────────────────────────────
 // Prose between tool calls is not free: it is written into the transcript and
@@ -515,76 +582,5 @@ export function unknownToolError(name: string, known: readonly string[], describ
     ? `Did you mean ${near.map((n) => `'${n}'`).join(" or ")}?`
     : `Call find_tools to see what is available.`;
   return `Error: unknown tool '${name}'. Mindweave has no tool by that name. ${hint}`;
-}
-
-/**
- * Lines of plain prose a reply that REPORTS FINISHED WORK may spend.
- *
- * The same budget REPLY_STYLE states in the prompt. It is repeated here because this
- * is the copy that holds: the prompt has asked for it in three different wordings and
- * the model still answers a two-word confirmation with a page.
- */
-export const REPLY_LINES = 4;
-
-export interface ReplyFault {
-  kind: "length" | "shape";
-  lines: number;
-  /** What specifically blew the budget, named for the rewrite instruction. */
-  detail: string;
-}
-
-/**
- * Whether the reply ending this turn is over budget.
- *
- * Only WORK turns are gated. A turn that answered a question, explained something, or
- * changed nothing is exactly where a long answer is the right answer, and cutting
- * those would trade one bad habit for a worse one. After work, though, the user has
- * watched every tool call and can read the diff, so a recap is the model narrating
- * something already on screen.
- *
- * Fenced code is not counted — a snippet or a diff in the reply is content, never
- * padding. Headings and a second question are refused at any length: a four-line
- * answer that needs a heading is not a four-line answer.
- */
-export function replyFault(text: string, didWork: boolean): ReplyFault | null {
-
-  if (!didWork) return null;
-  const prose = text.trim();
-  if (!prose) return null;
-
-  const withoutFences = prose.replace(/```[\s\S]*?```/g, "");
-  const lines = withoutFences.split("\n").map((l) => l.trim()).filter(Boolean);
-
-  const headings = lines.filter((l) => /^#{1,6}\s/.test(l)).length;
-  const labels = lines.filter((l) => /^\*\*[^*]+\*\*:?$/.test(l)).length;
-  const questions = (withoutFences.match(/\?/g) ?? []).length;
-
-  const shape: string[] = [];
-  if (headings > 0) shape.push(`${headings} heading${headings === 1 ? "" : "s"}`);
-  if (labels > 0) shape.push(`${labels} bold section label${labels === 1 ? "" : "s"}`);
-  if (questions > 1) shape.push(`${questions} questions`);
-  if (shape.length > 0) return { kind: "shape", lines: lines.length, detail: shape.join(" and ") };
-
-  if (lines.length > REPLY_LINES) return { kind: "length", lines: lines.length, detail: `${lines.length} lines` };
-  return null;
-}
-
-/**
- * The instruction that replaces an over-budget reply.
- *
- * Addressed to the model as a rewrite of text it can still see, so nothing it worked
- * out is lost — only the scaffolding around it. Deliberately names the fault, because
- * "be shorter" produces a shorter version of the same shape.
- */
-export function replyRewrite(fault: ReplyFault): string {
-  const cause =
-    fault.kind === "shape"
-      ? `That reply used ${fault.detail}, to report work the user watched you do.`
-      : `That reply ran to ${fault.detail}, where the budget after doing work is ${REPLY_LINES}.`;
-  return (
-    `${cause} Write it again in ${REPLY_LINES} lines or fewer of plain prose: no headings, no bold ` +
-    `section labels, at most one question, and no recap of the changes — the user saw every call and ` +
-    `can read the diff. Keep any fact they could not have seen. Reply with the rewrite only, nothing else.`
-  );
 }
 

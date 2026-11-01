@@ -129,6 +129,20 @@ export async function guardedPathReason(absPath: string): Promise<string | null>
 }
 
 /**
+ * The file a word in a command would reach on Windows, with anything after a colon in each part of the
+ * path removed (pure). `.env:hidden` reaches `.env`.
+ *
+ * A word in a command is not always a path, so a colon alone cannot be taken as a stream the way it can for a
+ * path a tool is about to open: `HKLM:\SOFTWARE` is the registry and `a{border:0}` is text. What matters is
+ * whether the file behind it is a protected one, so that is what gets asked.
+ */
+export function withoutStream(path: string): string {
+  if (process.platform !== "win32") return path;
+  const plain = path.replace(/^\\\\\?\\/, "");
+  return plain.slice(0, 2) + plain.slice(2).replace(/:[^\\/]*/g, "");
+}
+
+/**
  * The real location of `path` with links, junctions and short names resolved, for a path
  * that may not exist yet: the nearest existing ancestor is resolved and the rest
  * appended. Lower-cased on Windows, where two spellings of a path name the same file.
@@ -186,6 +200,11 @@ function stateFileReason(posix: string): string | null {
 // it means presenting someone else's history as if it were our own, or inheriting
 // stale decisions the user never made with us. So the rule is "ask first", not
 // "never" — the user can always say yes.
+//
+// One exception is loaded without asking: a project's instruction files (AGENTS.md,
+// CLAUDE.md, and Cursor's always-on rules) are read at session start as notes about the
+// project (memory/projectNotes.ts). They are the repository's own words to every agent;
+// it is the tool's saved conversations and settings that this list protects.
 //
 // Deliberately absent from this list: our own directory. Our sessions and memory
 // live under the user's home directory rather than in the project, but a project

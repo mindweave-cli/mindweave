@@ -21,7 +21,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { parseCommand, verbOf, type Dialect, type ParsedCommand, type SimpleCommand } from "./commandParse.js";
-import { expandHomeWords, guardedPathReason, protectedPathReason } from "./guard.js";
+import { expandHomeWords, guardedPathReason, protectedPathReason, withoutStream } from "./guard.js";
 
 // ── the user's rules ────────────────────────────────────────────────────────
 
@@ -284,7 +284,7 @@ export async function protectedArgsReason(parsed: ParsedCommand, cwd: string): P
         if (text) return `\`${candidate}\` is ${text}`;
         const abs = resolveWord(candidate, cwd);
         if (!abs || !(/[\\/]/.test(candidate) || /^[.~]/.test(candidate) || existsSync(abs))) continue;
-        const real = await guardedPathReason(abs);
+        const real = await guardedPathReason(withoutStream(abs));
         if (real) return `\`${candidate}\` is ${real}`;
       }
     }

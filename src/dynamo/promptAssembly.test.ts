@@ -148,8 +148,8 @@ test("the prompt never claims tool calls are invisible to the user", () => {
   // Both false statements, in the two places they appeared.
   assert.doesNotMatch(p, /do(es)? NOT see your tool calls/i);
   assert.doesNotMatch(p, /tool calls are not part of the visible text/i);
-  // And it states the truth, which is what makes "add, don't repeat" make sense.
-  assert.match(p, /SEES every tool call you make/);
+  // And it states the truth: they are on screen, as rows that record steps and do not explain the result.
+  assert.match(p, /Tool calls show on screen as short rows/);
 });
 
 test("the prompt does not model narration as the house style", () => {
@@ -190,30 +190,42 @@ test("restating the picture so far is forbidden, not just restating a plan", () 
   assert.match(p, /give the assessment ONCE/);
 });
 
-test("the final reply rules are complete, and live in the cached prompt", () => {
-  // Observed: "read the roadmap and tell me what to do" answered with a bold section
-  // label, a status recap nobody asked for, bullets, a numbered list with several
-  // sentences of justification each, six further phases, a digression and two closing
-  // questions. The RULES are what fixed that, and every clause below earned its place —
-  // a number without examples is the version that lost. Their POSITION has since moved
-  // into the cached prefix, because at the boundary they cost 645 tokens per step.
+test("the final reply rules say what the reader needs from the work, and live in the cached prompt", () => {
+  // Observed: asked to build a whole new page, the reply was only that it had been checked. A hard
+  // line count, "do not recap" and a closing offer on every turn all pushed that way.
   const prompt = basePrompt("PowerShell");
-  assert.match(prompt, /FOUR LINES OR FEWER/);
-  assert.match(prompt, /After doing work, lead with the outcome in one plain line/);
-  // One question per turn still, but it is now the closing offer rather than a
-  // clarification the model stopped to ask.
-  assert.match(prompt, /the ONE question a turn may ask/);
-  assert.match(prompt, /Long is not thorough/);
-  assert.match(prompt, /Examples of the right length/, "a number without examples is the version that lost");
-  // And nothing re-sends them per request — that is the whole point of the move.
-  assert.doesNotMatch(volatileContext("", false), /FOUR LINES OR FEWER/);
+  assert.match(prompt, /Write for someone who was not watching/);
+  assert.match(prompt, /Building something new .* takes a real description of what now exists/);
+  assert.match(prompt, /The check is not the news/);
+  assert.match(prompt, /Never say that a project has no build or test suite/);
+  assert.match(prompt, /build the movies page/, "a rule without an example of the long case is the version that lost");
+  assert.doesNotMatch(prompt, /FOUR LINES OR FEWER/, "the hard cap is back");
+  assert.doesNotMatch(prompt, /Do not recap what the user watched/, "the rule that hid the work is back");
+  // Nothing re-sends them per request.
+  assert.doesNotMatch(volatileContext("", false), /Write for someone who was not watching/);
 });
 
-test("the reply rule forbids appending what was not asked for", () => {
-  // The specific habit: answering the question, then volunteering an improvement nobody
-  // asked about. The closing offer is NOT that — it names the step the finished work
-  // implies — so the rule draws the line rather than banning the ending outright.
-  assert.match(basePrompt("PowerShell"), /do not raise an adjacent improvement the finished work does not imply/);
+test("the reply rule stops ending finished work with an offer, and does not ask leave for what was asked", () => {
+  // Seen as "want me to do that?" straight after the person asked for it.
+  const prompt = basePrompt("PowerShell");
+  assert.match(prompt, /Do not end by offering more work/);
+  assert.match(prompt, /do it instead of asking for permission/);
+  assert.doesNotMatch(prompt, /offering to take it/, "the forced closing offer is back");
+});
+
+test("a check is only what was really seen, and pointing at something means that thing", () => {
+  const prompt = basePrompt("PowerShell");
+  assert.match(prompt, /a step that failed checked nothing/);
+  assert.match(prompt, /which element and which state they mean/);
+  assert.match(prompt, /put it back first/);
+});
+
+test("a shell command may change files, a failed route has another, and a protection is not an obstacle", () => {
+  // Models differ in how they like to edit, so neither way is forbidden. What must not happen is getting stuck on one.
+  const prompt = basePrompt("PowerShell");
+  assert.match(prompt, /A shell command is also a fine way to change files/);
+  assert.match(prompt, /if an edit will not apply, use a command; if a command fails or is refused, make the change with edit or write_file/);
+  assert.match(prompt, /those are decisions, not obstacles/);
 });
 
 test("the reply rule asks for what the user could not have seen", () => {
@@ -221,7 +233,6 @@ test("the reply rule asks for what the user could not have seen", () => {
   // trim "for brevity" would take first, since everything around it says what to leave out.
   const prompt = basePrompt("PowerShell");
   assert.match(prompt, /unexpected that you did not act on/);
-  assert.match(prompt, /an invented next step is worse than none/, "the escape from a forced offer");
 });
 
 test("the base prompt keeps sub-agents rare: the agent checks its own work, a verifier is the exception", () => {

@@ -316,7 +316,8 @@ export const runCommand: Tool = {
     if (named) {
       return fail(
         `Refusing to run this command: ${named}. A command may list it, delete it, or write to it, but not read it, copy it out or send it. ` +
-          `Nothing here can read it for you; ask the user for the value you need.`,
+          `Nothing here can read it for you; ask the user for the value you need. ` +
+          `If the command only mentions that name in text it is writing to another file, make that change with edit or write_file instead.`,
       );
     }
     const shell: Shell = args.shell === "cmd" ? "cmd" : "powershell";

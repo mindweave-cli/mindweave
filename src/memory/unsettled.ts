@@ -46,9 +46,9 @@ export function settleUnansweredDraft(session: { transcript: Entry[] }, at: Arra
 /**
  * The positions of replies set aside by a gate that were never replaced, in a saved conversation (pure).
  *
- * A gate's instruction is a synthetic user entry directly after the reply it rejected: the verify gate ("You edited files this
- * turn but never ran a check…") and the reply gate ("That reply used…" / "That reply ran to…"). When the model went on to give a
- * real reply, the engine removed both, so one still there with no later reply is one the turn never got past.
+ * A gate's instruction is a synthetic user entry directly after the reply it rejected: the verify gate ("You changed files this
+ * turn and nothing has run…") and, in older sessions, the reply gate ("That reply used…" / "That reply ran to…"). When the model
+ * went on to give a real reply, the engine removed both, so one still there with no later reply is one the turn never got past.
  */
 export function findUnsettledDrafts(entries: readonly Entry[]): number[] {
   const found: number[] = [];
@@ -57,7 +57,8 @@ export function findUnsettledDrafts(entries: readonly Entry[]): number[] {
     const next = entries[i + 1]! as { role: string; content?: string; synthetic?: boolean };
     if (e.role !== "assistant" || (e.toolCalls?.length ?? 0) > 0 || !e.content.trim()) continue;
     if (next.role !== "user" || next.synthetic !== true || typeof next.content !== "string") continue;
-    if (!/^(You edited files this turn but never ran a check\.|That reply (used|ran to) )/.test(next.content)) continue;
+    // The older wordings stay: a session saved under them can still be opened.
+    if (!/^(You changed files this turn and nothing has run|You edited files this turn but never ran a check\.|That reply (used|ran to) )/.test(next.content)) continue;
     found.push(i);
   }
   // Only a turn that ended without a later real reply: any assistant text after the last one means the turn did conclude.

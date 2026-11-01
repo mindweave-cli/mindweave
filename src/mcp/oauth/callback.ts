@@ -66,11 +66,21 @@ export async function findAvailablePort(platform: NodeJS.Platform = process.plat
   throw new Error("could not find a free local port to receive the authorization redirect");
 }
 
-function isFree(port: number): Promise<boolean> {
+/**
+ * Free on BOTH loopback families, since the redirect says `localhost` and the browser may resolve that to either.
+ * A port busy on `::1` alone looked free, and the code then went to whatever was listening there.
+ */
+async function isFree(port: number): Promise<boolean> {
+  if (!(await isFreeOn(port, "127.0.0.1"))) return false;
+  return isFreeOn(port, "::1");
+}
+
+function isFreeOn(port: number, host: string): Promise<boolean> {
   return new Promise((resolve) => {
     const probe = createServer();
-    probe.once("error", () => resolve(false));
-    probe.listen(port, "127.0.0.1", () => probe.close(() => resolve(true)));
+    // Only "in use" means taken. A machine with IPv6 off cannot bind `::1` at all, and nothing can be listening there.
+    probe.once("error", (err: NodeJS.ErrnoException) => resolve(err.code !== "EADDRINUSE"));
+    probe.listen(port, host, () => probe.close(() => resolve(true)));
   });
 }
 
@@ -161,12 +171,13 @@ export function waitForCallback(options: WaitOptions): Promise<CallbackResult> {
     // thing to rest an auth flow on.
     //
     // IPv4 is required and IPv6 is best effort: a machine with IPv6 disabled must still
-    // work, and there `::1` simply refuses to bind.
+    // work, and there `::1` simply refuses to bind. Someone else already on `::1` is not that
+    // case: the browser may go there, handing them the code and leaving this waiting.
     const listenOn = (host: string, required: boolean): void => {
       const server = createServer(handle);
       servers.push(server);
       server.once("error", (err: NodeJS.ErrnoException) => {
-        if (!required) return; // no IPv6 here; the IPv4 listener is the real one
+        if (!required && err.code !== "EADDRINUSE") return; // no IPv6 here; the IPv4 listener is the real one
         const reason =
           err.code === "EADDRINUSE"
             ? `local port ${port} is already in use, so the redirect cannot be received`

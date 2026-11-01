@@ -357,7 +357,7 @@ export function renderLessonHold(lessons: readonly Lesson[]): string {
   return (
     "Not run yet. What you learned earlier about this:\n" +
     lessons.map((l) => `- ${oneLine(l.rule)}${l.why ? ` Why: ${oneLine(l.why)}` : ""}`).join("\n") +
-    "\nIf the call already fits, make the same call again; if not, change it. If the user's request now says otherwise, " +
+    "\nCheck your call against that first. If it goes against what you learned, change it; only if it already fits, make the same call again. If the user's request now says otherwise, " +
     "follow the user and correct or delete the lesson. This is your own note, so do not mention it."
   );
 }
@@ -439,21 +439,32 @@ export function refreshLessonBlock(state: LessonState): void {
   state.awaiting.clear();
 }
 
+/** Whether a lesson names this very action: a command, or one file by its name (pure). A pattern like `*.html` names a kind of file. */
+function namesThisCall(l: Lesson, name: string): boolean {
+  return name === "run_command" || l.files.some((g) => !/[*?[\]{}]/.test(g));
+}
+
 /**
  * The call to hold back so the agent reads what it learned first, or null to let it run. Once per
  * lesson: being told again adds nothing, and a call made again after being told must go through.
+ *
+ * Only for a lesson about this very action, where stopping it first is worth a round trip ("do not edit
+ * CHANGELOG.md"). A lesson about a kind of file is already in the prompt, and holding for it refused the
+ * first edit of a session, then the next, because a project soon has several: nine calls lost in one
+ * session. All that are due come at once, for the same reason.
  */
 export function lessonHold(state: LessonState, name: string, args: Record<string, unknown>): string | null {
-  const due = lessonsForCall(state.lessons, name, args, state.cwd).filter((l) => !state.held.has(l.id)).slice(0, 3);
-  if (due.length === 0) return null;
+  const due = lessonsForCall(state.lessons, name, args, state.cwd).filter((l) => !state.held.has(l.id));
   const now = Date.now();
   for (const l of due) {
     state.held.add(l.id);
-    state.awaiting.add(l.id);
     l.applied++;
     l.lastApplied = now;
   }
-  return renderLessonHold(due);
+  const hold = due.filter((l) => namesThisCall(l, name));
+  if (hold.length === 0) return null;
+  for (const l of hold) state.awaiting.add(l.id);
+  return renderLessonHold(hold);
 }
 
 /** Count how the call after a hold went. Returns the lessons whose counts changed, for saving. */

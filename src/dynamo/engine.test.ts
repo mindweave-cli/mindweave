@@ -298,34 +298,27 @@ test("the reply-style rules live in the CACHED prefix, not the per-request tail"
   // If sprawling replies come back, the answer is a SHORT reassertion carried on
   // something already in the conversation, never a block on every request.
   const promptSource = readFileSync(fileURLToPath(new URL("./prompt.ts", import.meta.url)), "utf8");
-  assert.match(promptSource, /FOUR LINES OR FEWER/, "the rule belongs in the cached system prompt");
+  assert.match(promptSource, /Write for someone who was not watching/, "the rule belongs in the cached system prompt");
   assert.doesNotMatch(engineSource, /parts\.push\(REPLY_STYLE\)/, "it must not be pushed into the tail");
 });
 
 test("the closing reply still asks what the user could not have seen", () => {
-  // The one part of a turn that is NOT recoverable from the screen. Everything else in
-  // this block describes what to leave out, so a later edit trimming it "for brevity"
-  // would take the only line that adds something — and nothing would look wrong.
+  // The one part of a turn nobody else can tell them. A later edit trimming this block
+  // "for brevity" would take the line that adds most, and nothing would look wrong.
   const promptSource = readFileSync(fileURLToPath(new URL("./prompt.ts", import.meta.url)), "utf8");
   assert.match(promptSource, /unexpected that you did not act on/, "the surprise line is gone");
-  assert.match(promptSource, /cannot see for themselves/, "the reason it outranks brevity is gone");
-  assert.match(promptSource, /an invented next step is worse than none/, "the escape from a forced offer is gone");
-  // And the rule it replaced must not come back alongside it: "just stop" and "offer the
-  // next step" in the same block is a contradiction the model resolves at random.
-  assert.doesNotMatch(promptSource, /After doing work, just stop\./, "the superseded rule is back");
 });
 
-test("the reply gate fires at the turn-end boundary and can only fire once", () => {
-  // Prose asked for this budget in three wordings and was ignored each time; this is
-  // the version that holds, so the wiring is worth pinning.
-  assert.match(engineSource, /const fault = replyFault\(content, mutatedThisTurn\)/, "gated on the turn's own work flag");
-  assert.match(engineSource, /if \(!replyRegated\)/, "one retry per turn — a gate that can fire twice is a loop");
-  assert.match(engineSource, /options\.onEvent\?\.\(\{ type: "replyReset" \}\)/, "the draft must be dropped from the UI buffer");
+test("the length and shape of a reply are not gated", () => {
+  // Rewriting every turn that changed a file down to four lines with "no recap of the changes" is what
+  // left a whole new page reported in one sentence. A rule in the prompt, not a rejected reply.
+  assert.doesNotMatch(engineSource, /replyFault|replyRewrite/);
 });
 
 test("a reply that is only the placeholder for an older message is sent back once", () => {
-  assert.match(engineSource, /const copiedStub = isRecapStub\(content\)/);
-  assert.match(engineSource, /fault \? replyRewrite\(fault\) : RECAP_STUB_NUDGE/);
+  assert.match(engineSource, /if \(!replyRegated && isRecapStub\(content\)\)/, "one retry per turn — a gate that can fire twice is a loop");
+  assert.match(engineSource, /content: RECAP_STUB_NUDGE, synthetic: true/);
+  assert.match(engineSource, /options\.onEvent\?\.\(\{ type: "replyReset" \}\)/, "the draft must be dropped from the UI buffer");
 });
 
 test("a superseded reply is spliced out of history, so what is saved is what was shown", () => {
@@ -345,7 +338,7 @@ test("a turn that is re-opened to verify does not end up saying goodbye twice", 
   // appear in a comment 45,000 characters earlier, and slicing from there swept in the
   // REPLY gate's reset, so this passed with the line it exists to check deleted.
   const start = engineSource.indexOf("if (VERIFY_GATE");
-  const end = engineSource.indexOf("// Reply gate.");
+  const end = engineSource.indexOf("// A reply that is only the placeholder for an older message");
   assert.ok(start > 0 && end > start, "the gates have moved; this test is looking at nothing");
   const gate = engineSource.slice(start, end);
   assert.ok(gate.length < 2000, `the slice is too wide to mean anything: ${gate.length} chars`);

@@ -7,7 +7,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import {
@@ -348,6 +348,52 @@ test("the same import rule applies: an instruction file cannot pull in a secrets
   const notes = await assembleNotes(root, { includeUser: false });
   assert.ok(!notes.text.includes("hunter2-FAKE-agents"));
   assert.equal(notes.refused.length, 1);
+});
+
+test("Cursor's always-on rules are read as notes; rules scoped to files or left to the model are not", async () => {
+  const root = project();
+  put(root, ".cursor/rules/style.mdc", "---\ndescription: style\nalwaysApply: true\n---\nUse tabs, never spaces.");
+  put(root, ".cursor/rules/plain.md", "Prefer named exports.");
+  put(root, ".cursor/rules/react.mdc", "---\nglobs: src/**/*.tsx\nalwaysApply: false\n---\nOnly for components.");
+  put(root, ".cursor/rules/picked.mdc", "---\ndescription: db help\n---\nOnly when the model asks.");
+  put(root, ".cursorrules", "Legacy rule: keep it short.");
+  const notes = await assembleNotes(root, { includeUser: false });
+  assert.match(notes.text, /Use tabs, never spaces\./);
+  assert.ok(!notes.text.includes("alwaysApply"), "front matter is not part of the rule");
+  assert.match(notes.text, /Prefer named exports\./);
+  assert.match(notes.text, /Legacy rule: keep it short\./);
+  assert.ok(!notes.text.includes("Only for components"));
+  assert.ok(!notes.text.includes("Only when the model asks"));
+  assert.match(notes.text, /\.cursor\/rules\/style\.mdc \(written for another coding tool; read it as notes/);
+  assert.ok(notes.sources.every((s) => s.kind === "other"));
+});
+
+test("Cursor's rules come after Mindweave's notes and the first instruction file, and are cut first", async () => {
+  const root = project();
+  put(root, NOTES_FILE, "Mindweave notes: prefer small functions.");
+  put(root, "AGENTS.md", "Agents file.");
+  put(root, ".cursor/rules/big.mdc", "---\nalwaysApply: true\n---\n" + "y".repeat(MAX_NOTES_CHARS * 2));
+  const notes = await assembleNotes(root, { includeUser: false });
+  assert.ok(notes.text.indexOf("prefer small functions") < notes.text.indexOf("Agents file."));
+  assert.ok(notes.text.indexOf("Agents file.") < notes.text.indexOf("big.mdc"));
+  assert.equal(notes.truncated, true);
+  assert.ok(notes.text.includes("Agents file."), "the earlier notes survived the cut");
+});
+
+test("a Cursor rule that is a link out of the project is not read", async () => {
+  const root = project();
+  const outside = project();
+  const secret = put(outside, "elsewhere.md", "SECRET-FAKE-outside-the-project");
+  mkdirSync(join(root, ".cursor", "rules"), { recursive: true });
+  try {
+    symlinkSync(secret, join(root, ".cursor", "rules", "link.md"));
+  } catch {
+    return; // no permission to make links on this machine; nothing to prove
+  }
+  put(root, ".cursor/rules/ok.md", "Fine rule.");
+  const notes = await assembleNotes(root, { includeUser: false });
+  assert.match(notes.text, /Fine rule\./);
+  assert.ok(!notes.text.includes("SECRET-FAKE-outside-the-project"));
 });
 
 test("a folder being worked in uses its own notes, else the instruction file another tool left there", async () => {

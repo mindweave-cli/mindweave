@@ -64,7 +64,7 @@ test("two drafts set aside: the later one is the reply and both instructions go"
 });
 
 import { findUnsettledDrafts } from "../memory/unsettled.js";
-import { VERIFY_NUDGE, replyRewrite } from "./verify.js";
+import { VERIFY_NUDGE } from "./verify.js";
 import type { Entry } from "../memory/types.js";
 
 test("a saved conversation is repaired only where a gate's reply was never replaced", () => {
@@ -74,8 +74,10 @@ test("a saved conversation is repaired only where a gate's reply was never repla
   assert.deepEqual(findUnsettledDrafts(open), [1]);
   const concluded = [...open, { role: "assistant", content: "Really done." }] as unknown as Entry[];
   assert.deepEqual(findUnsettledDrafts(concluded), [], "the model did reply again");
-  const rewrite = { role: "user", content: replyRewrite({ kind: "length", detail: "40 lines" } as never), synthetic: true };
-  assert.deepEqual(findUnsettledDrafts([{ role: "user", content: "go" }, draft, rewrite] as unknown as Entry[]), [1], "the reply gate's rewrite request counts too");
+  const older = { role: "user", content: "You edited files this turn but never ran a check. Before finishing...", synthetic: true };
+  assert.deepEqual(findUnsettledDrafts([{ role: "user", content: "go" }, draft, older] as unknown as Entry[]), [1], "a session saved under the old wording still opens right");
+  const rewrite = { role: "user", content: "That reply ran to 40 lines, where the budget after doing work is 4.", synthetic: true };
+  assert.deepEqual(findUnsettledDrafts([{ role: "user", content: "go" }, draft, rewrite] as unknown as Entry[]), [1], "so does one saved with the old reply gate's request");
   const hook = { role: "user", content: "A hook the user set up says not to finish yet: x", synthetic: true };
   assert.deepEqual(findUnsettledDrafts([{ role: "user", content: "go" }, draft, hook] as unknown as Entry[]), [], "a Stop hook's reply is left as it is");
 });

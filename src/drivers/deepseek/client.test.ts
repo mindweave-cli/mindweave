@@ -298,6 +298,12 @@ test("a thinking call sends NO sampling fields, because they are ignored", () =>
   assert.equal(body.top_p, undefined);
 });
 
+test("a streamed turn asks for far more than the 8,192 tokens that cut a whole page off", () => {
+  // The session's largest reply stopped at exactly 8,192 output tokens, with nothing set here.
+  assert.ok((deepseekProvider.streamMaxTokens ?? 0) >= 64_000);
+  assert.equal(compatBuildBody(deepseekProvider, withMessages, deepseekProvider.streamMaxTokens).max_tokens, deepseekProvider.streamMaxTokens);
+});
+
 test("temperature is never lowered — length is max_tokens' job", () => {
   // Pinned because it is the exact optimisation a later reader tries on the
   // summarizer. DeepSeek warns that a lower temperature collapses the reasoning

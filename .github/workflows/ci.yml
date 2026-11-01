@@ -84,7 +84,12 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          choco install ripgrep -y --no-progress --limit-output
+          # A package mirror having a bad minute is not a failed build.
+          for attempt in 1 2 3; do
+            choco install ripgrep -y --no-progress --limit-output && break
+            if [ "$attempt" = 3 ]; then exit 1; fi
+            sleep 30
+          done
           rg --version
           node --import tsx --test \
             src/tools/tools.test.ts \
@@ -162,7 +167,12 @@ jobs:
       - name: Test the ripgrep search path
         run: |
           set -o pipefail
-          if [ "$RUNNER_OS" = "macOS" ]; then brew install ripgrep; else sudo apt-get install -y ripgrep; fi
+          # A package mirror having a bad minute is not a failed build.
+          for attempt in 1 2 3; do
+            { if [ "$RUNNER_OS" = "macOS" ]; then brew install ripgrep; else sudo apt-get install -y ripgrep; fi; } && break
+            if [ "$attempt" = 3 ]; then exit 1; fi
+            sleep 30
+          done
           rg --version
           node --import tsx --test \
             src/tools/tools.test.ts \

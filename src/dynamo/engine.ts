@@ -21,7 +21,7 @@ import { summarizeTask, taskLimitReason, type TaskLimits } from "./pricing.js";
 import { limitGateReason, noteUsage, refreshUsageLimits, takeLimitWarnings } from "./usageLimits.js";
 import { addTurn, emptySpend } from "./spend.js";
 import { argsProblem, argsRefusal, wireArguments } from "./toolArgs.js";
-import { isServerManagementStep, mutationNeedsVerification, isVerification, reScopeCheck, isBackgroundPollStep, stepFailureSignature, repeatFailureStep, repeatFailureNudge, failedActionLabel, firstErrorLine, sameFileEditCounts, overusedSingleEdits, batchEditNudge, narrationFault, narrationNudge, unknownToolError, replyFault, replyRewrite, VERIFY_NUDGE } from "./verify.js";
+import { isServerManagementStep, mutationNeedsVerification, isVerification, reScopeCheck, isBackgroundPollStep, stepFailureSignature, repeatFailureStep, repeatFailureNudge, failedActionLabel, firstErrorLine, sameFileEditCounts, overusedSingleEdits, batchEditNudge, narrationFault, narrationNudge, unknownToolError, closingAfterCheck, otherRoute, VERIFY_NUDGE } from "./verify.js";
 import { guardOptions, GUARD_NO_ONE_TO_ASK, GUARD_REFUSAL, GUARD_REFUSAL_INPUT, guardRefusalWith, guardQuestion, guardDetail, interpretGuardChoice } from "./guard.js";
 import { readFreeText } from "../tools/approval.js";
 import { withoutInvisible } from "../tools/invisible.js";
@@ -1438,6 +1438,9 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
   let mutatedThisTurn = false;
   let verifiedThisTurn = false;
   let verifyNudged = false;
+  // What the turn had said it did when the verify gate sent it back, and whether a file changed after that.
+  let replyBeforeCheck: string | null = null;
+  let changedSinceCheckNudge = false;
   // Re-scope guard: once the model completes a WHOLE todo list, spinning up a
   // fresh one and pressing on within the same turn is self-assigned scope the user
   // never asked for (the "did the task three times" runaway). This flips true when
@@ -1790,6 +1793,7 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
       if (VERIFY_GATE && !session.toolContext.planMode && mutatedThisTurn && !verifiedThisTurn && !verifyNudged) {
         verifyNudged = true;
         prematureReplyAt = session.transcript.length - 1; // the reply pushed just above
+        replyBeforeCheck = content;
         session.transcript.push({ role: "user", content: VERIFY_NUDGE, synthetic: true });
         // The reply that was about to be shown was written before the work was checked,
         // and the model is about to conclude a second time once it has checked. Drop the
@@ -1802,22 +1806,17 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
         continue;
       }
 
-      // Reply gate. The prompt has asked for this budget in three wordings and a model
-      // mid-flow still answers a finished job with a page, so here it is enforced rather
-      // than requested: the draft is rejected, the model rewrites it, and the rewrite is
-      // what the user sees. ONE retry — a gate that can fire twice is a loop.
-      if (!replyRegated) {
-        const fault = replyFault(content, mutatedThisTurn);
-        const copiedStub = isRecapStub(content);
-        if (fault || copiedStub) {
-          replyRegated = true;
-          overlongReplyAt = session.transcript.length - 1; // the draft pushed just above
-          session.transcript.push({ role: "user", content: fault ? replyRewrite(fault) : RECAP_STUB_NUDGE, synthetic: true });
-          // The draft has been streaming into the UI's buffer, unrendered. Drop it, or
-          // the rewrite would append to it and the user would read both.
-          options.onEvent?.({ type: "replyReset" });
-          continue;
-        }
+      // A reply that is only the placeholder for an older message says nothing at all, so it is sent back
+      // once. Length and shape are NOT gated: a gate here cut every turn that changed a file to four lines
+      // with "no recap of the changes", whatever the work was, and a whole new page was reported in a sentence.
+      if (!replyRegated && isRecapStub(content)) {
+        replyRegated = true;
+        overlongReplyAt = session.transcript.length - 1; // the draft pushed just above
+        session.transcript.push({ role: "user", content: RECAP_STUB_NUDGE, synthetic: true });
+        // The draft has been streaming into the UI's buffer, unrendered. Drop it, or
+        // the rewrite would append to it and the user would read both.
+        options.onEvent?.({ type: "replyReset" });
+        continue;
       }
       // The user's Stop hooks: a command that may say "not yet" (run my tests first). Top-level only,
       // and at most three times a turn, so a hook that never relents cannot trap the turn.
@@ -1843,9 +1842,21 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
           }
         }
       }
-      // The real reply landed. Drop whichever earlier draft was superseded, and the
-      // synthetic instruction that asked for this one, so what is saved — and resumed,
-      // and compacted — is the answer that was actually given.
+      // The real reply landed. A turn sent back to check its work must not lose what it had said it did.
+      let closing = content;
+      if (prematureReplyAt !== null && replyBeforeCheck !== null) {
+        const ranSomething = session.transcript.length - 1 > prematureReplyAt + 2;
+        closing = closingAfterCheck(replyBeforeCheck, content, { ranSomething, changedSince: changedSinceCheckNudge });
+        if (closing !== content) {
+          const last = session.transcript[session.transcript.length - 1];
+          if (last?.role === "assistant") last.content = closing;
+          options.onEvent?.({ type: "replyReset" });
+          options.onEvent?.({ type: "text", delta: closing });
+        }
+      }
+      // Drop whichever earlier draft was superseded, and the synthetic instruction that
+      // asked for this one, so what is saved — and resumed, and compacted — is the answer
+      // that was actually given.
       //
       // Highest index first: splicing the earlier one would shift the later one.
       for (const at of [overlongReplyAt, prematureReplyAt].filter((i): i is number => i !== null).sort((a, b) => b - a)) {
@@ -1856,7 +1867,7 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
         prematureReplyAt = null;
         await options.persist?.();
       }
-      return content;
+      return closing;
     }
 
     // Record the assistant's tool request so the conversation stays well-formed.
@@ -2279,7 +2290,12 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
     // isError) is not verification — it means work remains, so the gate must stay
     // unsatisfied and nudge again rather than let a red build finish.
     for (const r of results) {
-      if (!r.isError && mutationNeedsVerification(r.call.name, parseArgs(r.call.arguments))) mutatedThisTurn = true;
+      // A check says nothing about an edit made after it, so a change puts the turn back to unchecked.
+      if (!r.isError && mutationNeedsVerification(r.call.name, parseArgs(r.call.arguments))) {
+        mutatedThisTurn = true;
+        verifiedThisTurn = false;
+        if (verifyNudged) changedSinceCheckNudge = true;
+      }
       if (!r.isError && isVerification(r.call.name, parseArgs(r.call.arguments))) verifiedThisTurn = true;
       // A write to MINDWEAVE.md means the frozen copy in the cached system prompt is
       // behind the file. Noted, NOT acted on: re-reading it here would rewrite the
@@ -2563,6 +2579,7 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
                 error: firstErrorLine(lastFailOutput),
                 // Only when `cd` has actually moved us — otherwise it's noise.
                 cwd: session.toolContext.cwd !== session.cwd ? session.toolContext.cwd : undefined,
+                route: failed ? otherRoute(failed.call.name, parseArgs(failed.call.arguments), lastFailOutput) : null,
               }),
           synthetic: true,
         });
@@ -2592,8 +2609,10 @@ async function respondTurn(session: Session, options: RespondOptions = {}): Prom
     }
 
     if (!batchEditNudged) {
+      // Edits that applied, and only those: a call a lesson held back never ran, and one that failed to match
+      // changed nothing, so neither is a change made one at a time.
       for (const [path, n] of sameFileEditCounts(
-        results.map((r) => ({ name: r.call.name, args: parseArgs(r.call.arguments) })),
+        results.filter((r) => !r.isError).map((r) => ({ name: r.call.name, args: parseArgs(r.call.arguments) })),
       )) {
         singleEditsByFile.set(path, (singleEditsByFile.get(path) ?? 0) + n);
       }

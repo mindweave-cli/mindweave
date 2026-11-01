@@ -126,9 +126,8 @@ export const todoWrite: Tool = {
     if (needsVerificationNudge(parsed)) {
       notes.push(
         `Note: ${parsed.length} tasks are done and none of them was a verification step. ` +
-          "If this turn made non-trivial changes, spawn a verifier (spawn_subagent with " +
-          "verify:true) before reporting the work complete — give it the original request, " +
-          "the files that changed, and the approach. Listing your own caveats is not a verdict.",
+          "If this turn changed anything and you have not run it or looked at it since, do that " +
+          "yourself before your closing reply. This note is not from the user, so do not answer it.",
       );
     }
 

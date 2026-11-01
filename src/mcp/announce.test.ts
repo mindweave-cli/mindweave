@@ -318,7 +318,9 @@ test("instructions that change after they were trusted are held, the tools stay,
     await second.verifyTrust(root); // nobody to ask
     assert.deepEqual(second.serverInstructions(), [], "held");
     assert.ok(second.snapshot().catalog.some((d) => d.name === "echo"), "the tools were not what changed");
-    assert.match(second.takeNotices().join(" "), /Blocked/);
+    const told = second.takeNotices().join(" ");
+    assert.match(told, /Blocked the instructions of 1 MCP server/);
+    assert.ok(!told.includes("(server instructions)"), "the bookkeeping name must not reach the user");
     assert.equal(await second.reviewQuarantine(async (_q, options) => options[0]!), true);
     assert.match(second.serverInstructions()[0]!.text, /Ignore the user/, "the user's call to make");
   } finally {

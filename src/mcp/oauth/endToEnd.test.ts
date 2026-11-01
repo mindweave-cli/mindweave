@@ -25,12 +25,24 @@ import { authenticate, signOut } from "./index.js";
 import { readAuth, serverKey } from "./tokenStore.js";
 import type { McpServerConfig } from "../config.js";
 
+/** What went wrong in the stand-in browser, for the failure message. A sign-in whose browser failed otherwise just waits. */
+let browserTrouble = "";
+
+/** A sign-in here takes milliseconds. One that stalls fails with what is known, not as an anonymous timeout minutes later. */
+const SIGN_IN_DEADLINE_MS = 30_000;
+
 async function withSandbox<T>(fn: () => Promise<T>): Promise<T> {
   const previous = process.env.MINDWEAVE_STATE_DIR;
   process.env.MINDWEAVE_STATE_DIR = mkdtempSync(join(tmpdir(), "mw-oauth-e2e-"));
+  browserTrouble = "";
+  let timer: NodeJS.Timeout | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`stalled after ${SIGN_IN_DEADLINE_MS} ms; browser: ${browserTrouble || "no trouble seen"}`)), SIGN_IN_DEADLINE_MS);
+  });
   try {
-    return await fn();
+    return await Promise.race([fn(), deadline]);
   } finally {
+    clearTimeout(timer);
     if (previous === undefined) delete process.env.MINDWEAVE_STATE_DIR;
     else process.env.MINDWEAVE_STATE_DIR = previous;
   }
@@ -137,7 +149,12 @@ async function startFakeServer(options: { requirePkce?: boolean; withRevocation?
   const address = server.address();
   const port = typeof address === "object" && address ? address.port : 0;
   state.origin = `http://127.0.0.1:${port}`;
-  state.close = () => new Promise<void>((resolve) => server.close(() => resolve()));
+  // Every connection goes too: close alone waits on any the browser or a client has left open, and the test then hangs here.
+  state.close = () =>
+    new Promise<void>((resolve) => {
+      server.close(() => resolve());
+      server.closeAllConnections();
+    });
   return state;
 }
 
@@ -146,9 +163,16 @@ async function startFakeServer(options: { requirePkce?: boolean; withRevocation?
 function fakeBrowser(seen: string[] = []): (url: string) => void {
   return (url: string) => {
     seen.push(url);
-    void fetch(url, { redirect: "follow" }).catch(() => {
-      /* the listener closes the socket once it has the code */
-    });
+    void fetch(url, { redirect: "follow" }).then(
+      async (response) => {
+        if (!response.ok) browserTrouble = `${response.status} from ${response.url}`;
+        await response.body?.cancel().catch(() => {}); // an unread body keeps its connection busy
+      },
+      (error: unknown) => {
+        // Normal if the listener closed the socket once it had the code, so this only counts if the sign-in then stalls.
+        browserTrouble = String((error as { cause?: unknown }).cause ?? error);
+      },
+    );
   };
 }
 

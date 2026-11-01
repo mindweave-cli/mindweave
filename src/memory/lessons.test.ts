@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   commandMatches,
   editedPath,
@@ -169,6 +170,39 @@ test("a call is held once per lesson, then goes through, and how it went is coun
   assert.deepEqual(noteLessonOutcome(state, "run_command", args, true), [], "only the call right after the hold counts");
   refreshLessonBlock(state);
   assert.ok(lessonHold(state, "run_command", args), "after a compaction it can come up again");
+});
+
+test("a lesson about a kind of file never holds a call back, and one about this file does", async () => {
+  // Seen as nine calls lost in one session: lessons for `*.html | css/*.css` refused the first edits one after another.
+  const state = (await openLessons(fresh(), []))!;
+  state.lessons = [
+    lesson({ id: "kind", commands: [], files: ["*.html", "css/*.css"], rule: "No hover growth." }),
+    lesson({ id: "other", commands: [], files: ["*.html"], rule: "Copy the existing page." }),
+  ];
+  assert.equal(lessonHold(state, "edit", { path: "index.html" }), null, "the edit runs");
+  assert.equal(state.lessons[0]!.applied, 1, "and it still counts as having come up");
+  assert.deepEqual(noteLessonOutcome(state, "edit", { path: "index.html" }, true), [], "an edit failing to match says nothing about the advice");
+
+  const named = (await openLessons(fresh(), []))!;
+  named.lessons = [lesson({ id: "log", commands: [], files: ["CHANGELOG.md"], rule: "The user writes this." }), lesson({ id: "any", commands: [], files: ["*.md"], rule: "Plain words." })];
+  const held = lessonHold(named, "edit", { path: "CHANGELOG.md" });
+  assert.match(held!, /The user writes this/);
+  assert.doesNotMatch(held!, /Plain words/);
+  assert.equal(lessonHold(named, "edit", { path: "CHANGELOG.md" }), null, "made again, it goes through");
+});
+
+test("every lesson due on a command comes at once, so one call is held and not one after another", async () => {
+  const state = (await openLessons(fresh(), []))!;
+  state.lessons = ["a", "b", "c", "d", "e"].map((id) => lesson({ id, commands: ["git commit"], rule: `Rule ${id}.` }));
+  const held = lessonHold(state, "run_command", { command: "git commit -m x" })!;
+  for (const id of ["a", "b", "c", "d", "e"]) assert.match(held, new RegExp(`Rule ${id}\\.`));
+  assert.equal(lessonHold(state, "run_command", { command: "git commit -m x" }), null);
+});
+
+test("the look back keeps what the user said, and drops a memory the work made untrue", () => {
+  const source = readFileSync(fileURLToPath(new URL("./lessonReflect.ts", import.meta.url)), "utf8");
+  assert.match(source, /Never turn it into something else to do or say instead/);
+  assert.match(source, /must not stay behind to mislead a later session/);
 });
 
 test("advice that keeps failing stops coming up and leaves the block, until it is corrected or deleted", () => {

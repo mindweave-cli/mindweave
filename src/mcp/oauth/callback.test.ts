@@ -11,6 +11,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createServer } from "node:http";
 import { findAvailablePort, redirectUri, waitForCallback } from "./callback.js";
 
 /** Hit the listener the way a browser would, ignoring whatever page comes back. */
@@ -52,6 +53,23 @@ test("the listener answers on BOTH loopback families, since the browser resolves
     return;
   }
   assert.deepEqual(await waiting, { code: "v6" });
+});
+
+test("someone else on ::1 stops the sign-in with a reason, rather than the browser handing them the code", async () => {
+  // The redirect says `localhost`, which can resolve to ::1. Treating "in use" there like "no IPv6 here" sent the code to
+  // whoever held the port, and the sign-in then waited for a redirect that was never coming.
+  const port = await findAvailablePort();
+  const other = createServer((_req, res) => res.writeHead(404).end());
+  const bound = await new Promise<boolean>((resolve) => {
+    other.once("error", () => resolve(false));
+    other.listen(port, "::1", () => resolve(true));
+  });
+  if (!bound) return; // a machine with no IPv6 cannot have this happen
+  try {
+    await assert.rejects(waitForCallback({ port, state: "s", timeoutMs: 2000 }), /already in use/);
+  } finally {
+    await new Promise((resolve) => other.close(resolve));
+  }
 });
 
 test("the chosen port is free, and outside the range Windows hands out to everything else", async () => {

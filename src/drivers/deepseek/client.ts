@@ -52,6 +52,13 @@ const ANTHROPIC_BASE_URL = process.env.MINDWEAVE_DEEPSEEK_ANTHROPIC_URL ?? "http
 const SEARCH_MAX_TOKENS = 8_000;
 
 /**
+ * Output ceiling for a streamed turn. Left unset, DeepSeek stopped a reply at 8,192 tokens, and with thinking
+ * counted against that, one new page written in a single call was cut off and lost. The same ceiling as the other
+ * large-output drivers; the model's own limit is far above it.
+ */
+const STREAM_MAX_TOKENS = 64_000;
+
+/**
  * DeepSeek's reasoning fields.
  *
  * The `thinking` field is ALWAYS sent, one way or the other — DeepSeek's own docs
@@ -145,6 +152,7 @@ export const deepseekProvider: CompatProvider = {
   baseUrl: BASE_URL,
   apiKeyEnv: "DEEPSEEK_API_KEY",
   defaultModel: MODEL,
+  streamMaxTokens: STREAM_MAX_TOKENS,
   reasoningFields,
   sampling,
   extraStop,

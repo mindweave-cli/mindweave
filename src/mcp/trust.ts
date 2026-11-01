@@ -30,7 +30,7 @@
  */
 import { createHash } from "node:crypto";
 import type { McpToolDef } from "./catalog.js";
-import { mcpToolName } from "./catalog.js";
+import { mcpToolName, parseMcpToolName } from "./catalog.js";
 
 /** A tool's fingerprint: what it claims to do and what it claims to accept. */
 export function fingerprint(def: McpToolDef): string {
@@ -84,7 +84,34 @@ export function compareTrust(defs: readonly McpToolDef[], known: TrustRecord): T
 }
 
 /**
- * The question put to the user when a tool's description has moved (pure).
+ * A server's own instructions travel through the trust check as if they were one more tool
+ * under this name. No real tool can carry it: it is not a valid tool name.
+ */
+export const SERVER_INSTRUCTIONS = "(server instructions)";
+
+/** Is this entry in the trust record a server's instructions rather than a tool? */
+export function isInstructionsEntry(name: string): boolean {
+  return parseMcpToolName(name)?.tool === SERVER_INSTRUCTIONS;
+}
+
+/** How one held entry reads to a person: a tool by its name, a server's instructions as such. */
+export function changedLabel(name: string): string {
+  const parsed = parseMcpToolName(name);
+  return parsed?.tool === SERVER_INSTRUCTIONS ? `${parsed.server} instructions` : name;
+}
+
+/** What was held, counted: "2 MCP tools", "the instructions of 1 MCP server", or both. */
+export function changedPhrase(names: readonly string[]): string {
+  const instructions = names.filter(isInstructionsEntry).length;
+  const tools = names.length - instructions;
+  const parts: string[] = [];
+  if (tools > 0) parts.push(`${tools} MCP tool${tools === 1 ? "" : "s"}`);
+  if (instructions > 0) parts.push(`the instructions of ${instructions} MCP server${instructions === 1 ? "" : "s"}`);
+  return parts.join(" and ");
+}
+
+/**
+ * The question put to the user when a tool's description, or a server's instructions, has moved (pure).
  *
  * Deliberately concrete about what changed and what the risk is. "Trust this server?"
  * is unanswerable; "this tool's description changed since you last used it, and a
@@ -92,11 +119,26 @@ export function compareTrust(defs: readonly McpToolDef[], known: TrustRecord): T
  * decide.
  */
 export function changedToolsQuestion(changed: readonly string[]): string {
-  const list = changed.length <= 3 ? changed.join(", ") : `${changed.slice(0, 3).join(", ")} and ${changed.length - 3} more`;
+  const shown = changed.map(changedLabel);
+  const list = shown.length <= 3 ? shown.join(", ") : `${shown.slice(0, 3).join(", ")} and ${shown.length - 3} more`;
+  const it = changed.length === 1 ? "it" : "them";
+  const instructions = changed.filter(isInstructionsEntry).length;
+  if (instructions === 0) {
+    return (
+      `An MCP server changed what ${changed.length === 1 ? "a tool claims" : "some tools claim"} to do since you last ` +
+      `used ${it}: ${list}. Tool descriptions are instructions the agent follows, so ` +
+      `a silent change is how a trusted server turns hostile. Allow ${it}?`
+    );
+  }
+  const what =
+    instructions === changed.length
+      ? changed.length === 1
+        ? "what its instructions to the agent say"
+        : "what their instructions to the agent say"
+      : "what its tools or its instructions to the agent say";
   return (
-    `An MCP server changed what ${changed.length === 1 ? "a tool claims" : "some tools claim"} to do since you last ` +
-    `used ${changed.length === 1 ? "it" : "them"}: ${list}. Tool descriptions are instructions the agent follows, so ` +
-    `a silent change is how a trusted server turns hostile. Allow ${changed.length === 1 ? "it" : "them"}?`
+    `An MCP server changed ${what} since you last used ${it}: ${list}. Tool descriptions and server instructions ` +
+    `are both text the agent follows, so a silent change is how a trusted server turns hostile. Allow ${it}?`
   );
 }
 

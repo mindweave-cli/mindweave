@@ -2,6 +2,38 @@
 
 Notable changes to Mindweave. Dates are release dates.
 
+## v3.4.5 (2026-11-01): the agent tells you what it built
+
+When the agent finishes something, it now tells you what you got. Before, a whole new page could end with only "I checked it, nothing to fix", and it could repeat "No build or test suite applies here" after every change. Both came from Mindweave itself, not from the model, and both are gone.
+
+### It tells you what it did
+
+- **A real report when the work is done.** The length of the final message now follows the work. A small fix takes a line or two. A new page or feature gets a proper description: what it contains, how it behaves, the choices made and which files it lives in. The old limit of four lines after any change has been removed.
+- **No more talk about checks.** If a check went fine, the agent does not need to mention it. If it found a problem or could not be run, the agent says so. It no longer tells you that a project has no build or tests.
+- **Looking at the page counts as checking.** Opening a page in the browser or taking a screenshot now counts, and so does running the program or script. A project of plain web pages is no longer told it "never ran a check" right after the agent looked at the result. A check made before the last edit no longer counts for that edit.
+- **Your reply is never thrown away.** If the agent is sent back to check its work, what it had already written is kept. A one-line excuse can no longer replace it.
+- **Fewer questions at the end.** The agent no longer closes every turn by offering more work, and it does what you asked instead of asking whether it should.
+- **A check means it saw it work.** The agent is told that a step that failed checked nothing, and that when you point at something, in words or a screenshot, it should work out exactly which element you mean before changing it.
+
+### It gets stuck less
+
+- **If one way fails, it tries another.** Changing a file with a shell command is fine. When an edit will not apply, the agent is told it can use a command, and when a command fails or is refused, it can use the edit tools. This never applies to something protected or something you declined: there it asks you.
+- **Long files no longer get cut off on DeepSeek.** A reply used to stop at about 8,000 tokens, which could lose a whole page halfway through. The limit is now 64,000.
+- **Fewer false refusals.** A command containing a colon, such as CSS text (`border:0`) or a registry path (`HKLM:\...`), was refused as if it were reading a protected file. It now runs, and `.env` stays protected.
+- **Lessons no longer block ordinary edits.** A lesson about a kind of file (such as `*.html`) used to stop the first edits of a session, one after another. It now only stops a call when it is about that exact command or file, and all such lessons come at once.
+- **No false warning about small edits.** The reminder to group edits now counts only edits that really changed something.
+
+### It remembers better
+
+- **Lessons say what you actually asked for.** "Stop telling me there are no tests" could be saved as "say you checked it". A lesson now keeps your request as you made it.
+- **Old notes get cleared.** When finished work makes a saved note untrue, such as "still to build: the Movies page", the agent now removes it.
+
+### Also new
+
+- **Cursor rules are read.** `.cursorrules` and the rules in `.cursor/rules` that apply to the whole project now load at the start of a session, the same way as `AGENTS.md`. Your own notes come first. Rules for specific files stay on disk, and Cursor's saved chats and settings stay private.
+- **Clearer MCP warnings.** When a server changes its instructions after you trusted them, the message now says so in plain words instead of showing an internal name.
+- **MCP sign-in is more reliable.** If another program was already using the chosen port for IPv6, the browser could send the sign-in code to that program and Mindweave would wait for minutes. It now picks a port that is free for both, and stops with a clear message if one gets taken.
+
 ## v3.4.4 (2026-10-30): the agent learns how to work with you, remembers why, and knows what it has
 
 The agent now gets better the more you work with it. It learns from what goes wrong, remembers what you told it and why a choice was made, and understands what tools it has, so you say things once and it stops repeating the same mistakes. All of this happens in the background: there is nothing to set up and nothing new on screen.

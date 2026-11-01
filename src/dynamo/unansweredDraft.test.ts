@@ -57,6 +57,74 @@ after(() => {
   server.close();
 });
 
+/** One finished turn against the fake provider: what the person read, what was saved, and how many calls the model got. */
+async function run(script: Step[]) {
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "mw-draft-")));
+  mkdirSync(projectDir(root), { recursive: true });
+  const session = await createSession(root);
+  session.modelConfig = { model: "gemini-3.7-flash", thinking: false, effort: "high" };
+  steps = script;
+  seen = 0;
+  session.transcript.push({ role: "user", content: "build it" });
+  const events: Array<{ type: string; delta?: string }> = [];
+  try {
+    const reply = await respond(session, { onEvent: (e) => events.push(e as { type: string; delta?: string }) });
+    // What is on screen is the text since the last reset, the way the front ends draw it.
+    const reset = events.map((e) => e.type).lastIndexOf("replyReset");
+    const shown = events.slice(reset + 1).filter((e) => e.type === "text").map((e) => e.delta).join("");
+    const transcript = session.transcript as Array<{ role: string; content?: string; synthetic?: boolean }>;
+    return { reply, shown, transcript, calls: seen };
+  } finally {
+    await stopChassis(session.toolContext.chassis).catch(() => {});
+  }
+}
+
+const write: Step = { tool: { name: "write_file", args: { path: "out.js", content: "x" } } };
+const check: Step = { tool: { name: "run_command", args: { command: "node --version" } } };
+const REPORT = "movies.html is in place: 74 titles, genre filters, a search box and the same Sort picker as Music CDs.";
+
+test("a check that really ran means no nudge, and a long report reaches the person whole", async () => {
+  const page = Array.from({ length: 30 }, (_, i) => `- Part ${i} of what was built.`).join("\n");
+  const r = await run([write, check, { text: page }]);
+  assert.equal(r.calls, 3, "nothing sent it back, neither for the check nor for the length");
+  assert.equal(r.reply, page);
+  assert.equal(r.shown, page);
+});
+
+test("a check made before the last edit does not cover it", async () => {
+  const r = await run([check, write, { text: REPORT }, check, { text: REPORT }]);
+  assert.equal(r.calls, 5, "sent back once");
+});
+
+test("answering the nudge with an excuse leaves the person with what was built", async () => {
+  const r = await run([write, { text: REPORT }, { text: "No build or test suite applies here." }]);
+  assert.equal(r.calls, 3);
+  assert.equal(r.reply, REPORT);
+  assert.equal(r.shown, REPORT, "on screen");
+  assert.equal(r.transcript[r.transcript.length - 1]!.content, REPORT, "and saved");
+  assert.ok(!r.transcript.some((e) => e.synthetic), "the instruction is not left behind");
+  assert.ok(!r.transcript.some((e) => /No build or test suite/.test(e.content ?? "")), "the excuse is not kept either");
+});
+
+test("a real check after the nudge adds to the report instead of replacing it", async () => {
+  const r = await run([write, { text: REPORT }, check, { text: "It runs." }]);
+  assert.equal(r.reply, `${REPORT}\n\nIt runs.`);
+  assert.equal(r.shown, r.reply);
+});
+
+test("a rewrite written after the nudge is taken as it is", async () => {
+  const rewrite = "The Movies page is at movies.html, with 74 titles, genre filters, search, and the Sort picker.";
+  const r = await run([write, { text: REPORT }, check, { text: rewrite }]);
+  assert.equal(r.reply, rewrite);
+  assert.equal(r.shown, rewrite);
+});
+
+test("edits that failed or never ran are not counted as changes made one at a time", async () => {
+  const miss = (n: number): Step => ({ tool: { name: "edit", args: { path: "out.js", edits: [{ old_string: `missing ${n}`, new_string: "y" }] } } });
+  const r = await run([write, miss(1), miss(2), miss(3), check, { text: REPORT }]);
+  assert.ok(!r.transcript.some((e) => e.synthetic && /separate one-edit calls/.test(e.content ?? "")), "the nudge fired for edits that changed nothing");
+});
+
 test("a reply set aside by the verify gate is shown and kept last when the turn is stopped before the model answers again", async () => {
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "mw-draft-")));
   mkdirSync(projectDir(root), { recursive: true });
