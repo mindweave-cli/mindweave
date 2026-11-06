@@ -250,6 +250,28 @@ function scopeFor(challenge: AuthChallenge, resource: ResourceLike, authServer: 
 type ResourceLike = { scopesSupported?: string[] } | null;
 
 /**
+ * The program and arguments that open `url` in the user's browser, or null when it is not a web address (pure).
+ *
+ * Never through `cmd /c start`: cmd reads `&`, `|`, `^` and `%` in the address, so an ordinary sign-in link
+ * (`?response_type=code&client_id=...`) was cut at the first `&`, and a server's `authorization_endpoint` could
+ * carry a second command. `rundll32 url.dll,FileProtocolHandler` takes the address as one argument and runs nothing
+ * else. Only http and https are handed over: any other scheme is a handler for some other program.
+ */
+export function browserCommand(url: string, platform: string = process.platform): { command: string; args: string[] } | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+  const href = parsed.href;
+  if (platform === "win32") return { command: "rundll32", args: ["url.dll,FileProtocolHandler", href] };
+  if (platform === "darwin") return { command: "open", args: [href] };
+  return { command: "xdg-open", args: [href] };
+}
+
+/**
  * Hand a URL to whatever the user's machine calls a browser.
  *
  * Detached and with its streams discarded, because this must not become a child whose
@@ -260,12 +282,9 @@ type ResourceLike = { scopesSupported?: string[] } | null;
  */
 function openInBrowser(url: string): void {
   try {
-    const child =
-      process.platform === "win32"
-        ? spawn("cmd", ["/c", "start", "", url], { detached: true, stdio: "ignore", windowsHide: true })
-        : process.platform === "darwin"
-          ? spawn("open", [url], { detached: true, stdio: "ignore" })
-          : spawn("xdg-open", [url], { detached: true, stdio: "ignore" });
+    const run = browserCommand(url);
+    if (!run) return; // reported through onUrl already; the user can copy it
+    const child = spawn(run.command, run.args, { detached: true, stdio: "ignore", windowsHide: true });
     child.on("error", () => {});
     child.unref();
   } catch {

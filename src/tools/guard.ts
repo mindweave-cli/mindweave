@@ -24,7 +24,7 @@
 import { realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { stateRoot } from "../memory/store.js";
+import { isOpenProjectKey, stateRoot } from "../memory/store.js";
 
 /**
  * Whether two spellings of a path that differ only in case are the same file. True on Windows and on macOS, whose
@@ -117,6 +117,9 @@ export async function guardedPathReason(absPath: string): Promise<string | null>
   if (textual) return textual;
   let path = absPath;
   if (process.platform === "win32") {
+    // A network path (\\host\share) is never opened, not even to look at it: resolving it, or the browser loading it,
+    // makes Windows connect to that host and hand it the user's NTLM sign-in. (\\?\ and \\.\ are local forms.)
+    if (/^[\\/]{2}(?![?.][\\/])/.test(path)) return "a network (UNC) path";
     path = path.replace(/^\\\\\?\\/, "");
     // A colon anywhere but after the drive letter is an alternate data stream.
     if (path.slice(2).includes(":")) return "a Windows stream spelling of a file";
@@ -171,7 +174,7 @@ export function withinFolder(root: string, path: string): boolean {
 
 /**
  * Mindweave's own state folder (~/.mindweave) is off-limits too, with three exceptions
- * the agent is pointed at by design: a project's `memory/` folder, where it keeps its
+ * the agent is pointed at by design: the OPEN project's `memory/` folder, where it keeps its
  * notes, `mcp-results/`, where a large MCP result is saved for it to read, and
  * `cleared/`, where the originals of cleared tool results are kept for it to read.
  *
@@ -186,7 +189,9 @@ function stateFileReason(posix: string): string | null {
   const path = fold(posix);
   if (path !== root && !path.startsWith(root + "/")) return null;
   const rel = path.slice(root.length + 1);
-  if (/^projects\/[^/]+\/(memory|mcp-results|cleared)(\/|$)/.test(rel)) return null;
+  // Only the folders of projects this session opened: another project's notes and cleared output are not this one's.
+  const open = /^projects\/([^/]+)\/(memory|mcp-results|cleared)(\/|$)/.exec(rel);
+  if (open && isOpenProjectKey(open[1]!)) return null;
   return "Mindweave's own settings, sign-ins and state";
 }
 
@@ -269,6 +274,37 @@ export const SEARCH_EXCLUDE_GLOBS: readonly string[] = [
   "secrets",
   "secret",
   "credentials",
+  // The rest of PROTECTED_PATTERNS. This list used to stop at the first few, so ripgrep printed lines from files the
+  // built-in walker and read_file withhold (.npmrc, prod.env, secrets.yaml, server.key). guard.test.ts compares the two.
+  "*.env",
+  ".envrc",
+  ".npmrc",
+  ".yarnrc.yml",
+  ".netrc",
+  "_netrc",
+  ".git-credentials",
+  ".pypirc",
+  "secrets.*",
+  "secret.*",
+  "credentials.*",
+  "*.key",
+  "*.p12",
+  "*.pfx",
+  "*.jks",
+  "*.keystore",
+  "*.kdbx",
+  "terraform.tfstate",
+  "terraform.tfstate.backup",
+  "*.tfvars",
+  "service-account*.json",
+  ".aws",
+  ".azure",
+  ".gnupg",
+  ".password-store",
+  "**/.docker/config.json",
+  "**/.kube/config",
+  "**/.config/gh/hosts.yml",
+  "**/.config/gcloud",
   ...AGENT_DIRS,
   "CLAUDE.md",
   "AGENTS.md",

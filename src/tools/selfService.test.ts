@@ -158,7 +158,7 @@ test("the report says which settings are the user's, with the command for each",
     const report = await mindweaveStatus.execute({}, ctx);
     // The point of this half: asked to switch model, the agent must answer with the
     // command rather than trying, or saying it cannot and stopping there.
-    for (const command of ["/model", "/think", "/key", "/undo", "/compact", "/analytics", "/update"]) {
+    for (const command of ["/model", "/think", "/key", "/undo", "/compact", "/data", "/update"]) {
       assert.ok(report.output.includes(command), `${command} is not offered as the user's way to do it`);
     }
     assert.match(report.output, /I can change these myself/);

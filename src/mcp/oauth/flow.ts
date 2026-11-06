@@ -82,6 +82,71 @@ export function isTransientNetworkError(error: unknown): boolean {
  *  connected applications, so it has to say which program is asking. */
 const CLIENT_NAME = "Mindweave";
 
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
+
+/** The last two labels of a host: a stand-in for "the same site" (pure). */
+function siteOf(host: string): string {
+  return host.split(".").slice(-2).join(".");
+}
+
+/** Does `resource` (an RFC 9728 identifier) name the server at `serverUrl`? Same origin, and the server's path is under it (pure). */
+export function sameResource(resource: string, serverUrl: string): boolean {
+  try {
+    const r = new URL(resource);
+    const s = new URL(serverUrl);
+    if (r.origin !== s.origin) return false;
+    const rp = r.pathname.replace(/\/+$/, "");
+    return rp === "" || s.pathname === rp || s.pathname.startsWith(rp + "/");
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Refuse metadata that points the sign-in somewhere its own server did not (pure). A server (or a repository's server
+ * entry) controls every document in the discovery chain, so the pieces have to agree with each other:
+ *  - every endpoint is https (plain http only to this machine), so a code is never sent in the clear;
+ *  - the token endpoint, which receives the code and the PKCE verifier, belongs to the same site as the page the user
+ *    consents at or the server being signed in to. A real provider's consent page with a stranger's token endpoint
+ *    would hand the stranger a code it can redeem;
+ *  - the RFC 9728 resource names this server, so a token for somebody else's API is never requested for it.
+ * Throws a sentence for the user; returns when everything agrees.
+ */
+export function checkDiscovered(found: Discovered, serverUrl: string): void {
+  const meta = found.authServer;
+  const urls: [string, string][] = [
+    ["authorization endpoint", meta.authorizationEndpoint],
+    ["token endpoint", meta.tokenEndpoint],
+    ...(meta.registrationEndpoint ? ([["registration endpoint", meta.registrationEndpoint]] as [string, string][]) : []),
+  ];
+  const parsed = new Map<string, URL>();
+  for (const [label, raw] of urls) {
+    let u: URL;
+    try {
+      u = new URL(raw);
+    } catch {
+      throw new Error(`the ${label} (${raw}) is not a web address`);
+    }
+    if (u.protocol !== "https:" && !(u.protocol === "http:" && LOOPBACK_HOSTS.has(u.hostname))) {
+      throw new Error(`the ${label} (${u.origin}) is not https, so the sign-in would travel unprotected`);
+    }
+    parsed.set(label, u);
+  }
+  const token = parsed.get("token endpoint")!;
+  const consent = parsed.get("authorization endpoint")!;
+  const server = new URL(serverUrl);
+  const sameSite = (a: URL, b: URL) => a.origin === b.origin || (!LOOPBACK_HOSTS.has(a.hostname) && siteOf(a.hostname) === siteOf(b.hostname));
+  if (!sameSite(token, consent) && !sameSite(token, server)) {
+    throw new Error(
+      `the token endpoint (${token.origin}) is on a different site from the sign-in page (${consent.origin}) and from this server (${server.origin}), ` +
+        "so the sign-in code would go to a third party; refusing",
+    );
+  }
+  if (found.resource?.resource && !sameResource(found.resource.resource, serverUrl)) {
+    throw new Error(`the server's resource metadata is for a different resource (${found.resource.resource})`);
+  }
+}
+
 export interface Discovered {
   authServer: AuthServerMetadata;
   resource: ResourceMetadata | null;
@@ -127,7 +192,9 @@ export async function discover(
     const meta = readAuthServerMetadata(await getJson(configuredMetadataUrl, fetchImpl));
     if (!meta) throw new Error(`no usable OAuth metadata at the configured authServerMetadataUrl (${configuredMetadataUrl})`);
     if (!supportsS256(meta)) throw new Error(`${configuredMetadataUrl} does not offer PKCE with S256, which is required to sign in safely`);
-    return { authServer: meta, resource: null };
+    const configured: Discovered = { authServer: meta, resource: null };
+    checkDiscovered(configured, serverUrl);
+    return configured;
   }
 
   const resourceCandidates = challenge.resourceMetadata
@@ -151,7 +218,9 @@ export async function discover(
       if (!supportsS256(meta)) {
         throw new Error(`${issuer} does not offer PKCE with S256, which is required to sign in safely`);
       }
-      return { authServer: meta, resource };
+      const found: Discovered = { authServer: meta, resource };
+      checkDiscovered(found, serverUrl);
+      return found;
     }
   }
 

@@ -108,9 +108,9 @@ export function parseOAuthConfig(raw: unknown): McpOAuthConfig | undefined {
 /**
  * A hand-registered client's secret, from the environment.
  *
- * Per server first (`MINDWEAVE_MCP_CLIENT_SECRET_LINEAR` for a server named `linear`),
- * then a bare `MINDWEAVE_MCP_CLIENT_SECRET` for the common case of exactly one such
- * server. The environment rather than `mcp.json` because that file gets committed, and a
+ * Per server only (`MINDWEAVE_MCP_CLIENT_SECRET_LINEAR` for a server named `linear`). A bare
+ * `MINDWEAVE_MCP_CLIENT_SECRET` used to apply to every server, so a repository's own server entry with an
+ * `oauth.clientId` received the user's secret at its token endpoint. The environment rather than `mcp.json` because that file gets committed, and a
  * client secret in a repository is a client secret that has been published.
  *
  * Most servers need none of this: a client registered dynamically is public and has no
@@ -118,7 +118,7 @@ export function parseOAuthConfig(raw: unknown): McpOAuthConfig | undefined {
  */
 export function clientSecretFor(name: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
   const suffix = name.toUpperCase().replace(/[^A-Z0-9]+/g, "_");
-  return env[`MINDWEAVE_MCP_CLIENT_SECRET_${suffix}`]?.trim() || env.MINDWEAVE_MCP_CLIENT_SECRET?.trim() || undefined;
+  return env[`MINDWEAVE_MCP_CLIENT_SECRET_${suffix}`]?.trim() || undefined;
 }
 
 /** Where a project's MCP config lives. */
@@ -169,7 +169,8 @@ export function parseMcpConfig(raw: string): McpServerConfig[] {
 
 /** One entry → a config, or null if it cannot be used. */
 export function parseEntry(name: string, value: unknown): McpServerConfig | null {
-  if (!name) return null;
+  // The name is printed in approval questions and rows; a repository's mcp.json must not put terminal control sequences there.
+  if (!name || /[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/.test(name)) return null;
   const s = value as { type?: unknown; command?: unknown; args?: unknown; env?: unknown; url?: unknown; headers?: unknown; oauth?: unknown; disabled?: unknown } | null;
   if (!s || typeof s !== "object") return null;
   const disabled = s.disabled === true;

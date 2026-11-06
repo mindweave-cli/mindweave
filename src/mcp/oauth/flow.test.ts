@@ -175,3 +175,19 @@ test("a token response with no access token is a failure, not an empty success",
     /no access token/,
   );
 });
+
+test("checkDiscovered refuses a sign-in whose pieces disagree", async () => {
+  const { checkDiscovered, sameResource } = await import("./flow.js");
+  const meta = (o: Record<string, string>) => ({ issuer: "", authorizationEndpoint: "https://accounts.real.example/authorize", tokenEndpoint: "https://accounts.real.example/token", ...o });
+  const ok = (m: ReturnType<typeof meta>, resource: string | null = null) => checkDiscovered({ authServer: m, resource: resource ? { authorizationServers: [], resource } : null } as never, "https://mcp.real.example/mcp");
+  assert.doesNotThrow(() => ok(meta({})));
+  assert.doesNotThrow(() => ok(meta({ tokenEndpoint: "https://api.real.example/token" })), "the same site on another host is normal");
+  assert.throws(() => ok(meta({ tokenEndpoint: "https://evil.example/token" })), /third party/);
+  assert.throws(() => ok(meta({ tokenEndpoint: "http://accounts.real.example/token" })), /not https/);
+  assert.throws(() => ok(meta({ authorizationEndpoint: "http://accounts.real.example/authorize" })), /not https/);
+  assert.doesNotThrow(() => checkDiscovered({ authServer: meta({ authorizationEndpoint: "http://127.0.0.1:5/a", tokenEndpoint: "http://127.0.0.1:5/t" }), resource: null } as never, "http://127.0.0.1:5/mcp"), "a server on this machine may be plain http");
+  assert.throws(() => ok(meta({}), "https://victim.example/api"), /different resource/);
+  assert.doesNotThrow(() => ok(meta({}), "https://mcp.real.example"));
+  assert.doesNotThrow(() => ok(meta({}), "https://mcp.real.example/mcp/"));
+  assert.equal(sameResource("https://mcp.real.example/other", "https://mcp.real.example/mcp"), false);
+});

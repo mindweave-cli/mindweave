@@ -20,9 +20,10 @@
  * anything in here.
  */
 import { stripUserNotes } from "./userNotes.js";
-import { promises as fs } from "node:fs";
+import { promises as fs, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { writeFileAtomic } from "../tools/atomicWrite.js";
 import { collapsePastes } from "./pastedText.js";
 import { sessionTitle } from "./sessionTitle.js";
@@ -40,7 +41,57 @@ export function sanitizeProjectPath(cwd: string): string {
  * project's state is always filed under the same key.
  */
 export function projectDir(projectCwd: string): string {
-  return join(stateRoot(), "projects", sanitizeProjectPath(projectCwd));
+  const root = stateRoot();
+  const cacheKey = root + "\0" + projectCwd;
+  const cached = projectDirCache.get(cacheKey);
+  if (cached) return cached;
+  const dir = ownedProjectDir(root, sanitizeProjectPath(projectCwd), projectCwd);
+  projectDirCache.set(cacheKey, dir);
+  return dir;
+}
+
+const projectDirCache = new Map<string, string>();
+const foldPath = (p: string) => (process.platform === "win32" || process.platform === "darwin" ? p.toLowerCase() : p);
+
+/**
+ * `sanitizeProjectPath` is lossy: `C:\a\b-c` and `C:\a\b\c` both become `C-a-b-c`, and two projects that share a folder
+ * share everything in it, the "trust this folder" answer included. So the folder records the path that claimed it
+ * (`.cwd`), and a different path with the same name gets a folder of its own (`<name>-<hash of the path>`). A folder
+ * from before this existed has no record and goes to whichever project asks first, which is the one that made it.
+ */
+function ownedProjectDir(root: string, key: string, cwd: string): string {
+  const plain = cwd.replace(/[\\/]+$/, "");
+  const mine = foldPath(plain);
+  const claim = (name: string): string | null => {
+    const dir = join(root, "projects", name);
+    const owner = () => foldPath(readFileSync(join(dir, ".cwd"), "utf8").trim());
+    try {
+      return owner() === mine ? dir : null;
+    } catch {
+      try {
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, ".cwd"), plain, { flag: "wx" });
+        return dir;
+      } catch {
+        // Another process claimed it a moment ago, or the folder cannot be written: take it as it stands.
+        try {
+          return owner() === mine ? dir : null;
+        } catch {
+          return dir;
+        }
+      }
+    }
+  };
+  return claim(key) ?? claim(`${key}-${createHash("sha1").update(mine).digest("hex").slice(0, 8)}`) ?? join(root, "projects", key);
+}
+
+/** Project folders this process has opened a session for: the only ones the agent may read the notes of. */
+const openProjects = new Set<string>();
+export function registerOpenProject(projectCwd: string): void {
+  openProjects.add(foldPath(basename(projectDir(projectCwd))));
+}
+export function isOpenProjectKey(key: string): boolean {
+  return openProjects.has(foldPath(key));
 }
 
 /**

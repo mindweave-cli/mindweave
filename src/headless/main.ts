@@ -6,6 +6,7 @@
  * starts faster and cannot be broken by a missing terminal.
  */
 import { loadConfig } from "../cli/bootstrap.js";
+import { confirmManagedStart } from "../cli/launcher.js";
 import { parseHeadlessArgs } from "./args.js";
 import { EXIT_USAGE, EXIT_SIGINT, EXIT_SIGTERM } from "./output.js";
 import { MAX_STDIN_BYTES, runHeadless } from "./run.js";
@@ -69,6 +70,8 @@ export async function runHeadlessMain(argv: string[]): Promise<number> {
   }
   // Keys from ~/.mindweave/.env and the project's .env, as in an interactive start.
   loadConfig();
+  // A copy the launcher handed over to got as far as running a task.
+  confirmManagedStart();
 
   const input = await readPipedInput(process.stdin, Boolean(parsed.options.prompt?.trim()));
 

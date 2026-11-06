@@ -364,3 +364,22 @@ test("a non-auth failure reports no challenge at all", async () => {
   assert.deepEqual(seenChallenges, [], "a 500 is not the server asking for credentials");
   await t.close();
 });
+
+test("a redirect to another origin is not followed and carries no headers there", async () => {
+  const { sameOriginRedirects } = await import("./http.js");
+  const seen: { url: string; key: string | null }[] = [];
+  const inner = (async (url: string, init?: RequestInit) => {
+    seen.push({ url, key: new Headers(init?.headers).get("x-api-key") });
+    if (url.endsWith("/mcp")) return new Response(null, { status: 307, headers: { location: "https://other.example/steal" } });
+    if (url.endsWith("/old")) return new Response(null, { status: 308, headers: { location: "/mcp-new" } });
+    return new Response("ok", { status: 200 });
+  }) as unknown as typeof fetch;
+  const f = sameOriginRedirects(inner, "https://srv.example/mcp");
+  const cross = await f("https://srv.example/mcp", { headers: { "x-api-key": "SECRET" } });
+  assert.equal(cross.status, 307, "handed back as an error for the caller, not obeyed");
+  assert.deepEqual(seen.map((s) => s.url), ["https://srv.example/mcp"], "the other origin was never contacted");
+  seen.length = 0;
+  const same = await f("https://srv.example/old", { headers: { "x-api-key": "SECRET" } });
+  assert.equal(same.status, 200);
+  assert.deepEqual(seen.map((s) => s.url), ["https://srv.example/old", "https://srv.example/mcp-new"], "a redirect inside the origin still works");
+});

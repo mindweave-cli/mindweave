@@ -47,7 +47,7 @@ export const BASE_COMMANDS: CommandInfo[] = [
   { name: "/compact", description: "summarize the conversation to free up context" },
   { name: "/update", description: "update Mindweave and restart into this conversation" },
   { name: "/app", description: "get the Mindweave desktop app, free and open source" },
-  { name: "/analytics", description: "usage counting is off for now, see why" },
+  { name: "/data", description: "your own usage, and the optional daily count: see what it holds, turn it on or off" },
   { name: "/feedback", description: "send the maintainer a message: /feedback <what you want to say>" },
   { name: "/clear", description: "start a fresh conversation in this project" },
   { name: "/continue", description: "pick a past session to resume" },

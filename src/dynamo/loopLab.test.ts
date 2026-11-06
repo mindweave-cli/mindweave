@@ -536,6 +536,26 @@ test("answering 'never ask again' for a command prefix saves an allow rule for t
   assertAllWellFormed("prefix-allow");
 });
 
+test("a saved allow rule for a command prefix does not cover a risky sibling of it", async () => {
+  const { session } = await lab();
+  session.toolContext.guarded = true;
+  const asked: string[] = [];
+  session.toolContext.requestApproval = async (_q, _options, detail) => {
+    asked.push(detail ?? "");
+    return "No";
+  };
+  session.governance.commandRules = parseCommandRules("allow git push\nallow git reset\nallow git clean\nallow git branch");
+  const turn = async (command: string) => {
+    script = [{ tools: [{ name: "run_command", args: { command } }] }, { text: "ok" }];
+    session.transcript.push({ role: "user", content: `run ${command}` });
+    await respond(session, {});
+  };
+  for (const risky of ["git push --force origin main", "git reset --hard HEAD~1", "git clean -fd", "git branch -D x"]) {
+    const before = asked.length;
+    await turn(risky);
+    assert.equal(asked.length, before + 1, `${risky} ran with no question`);
+  }
+});
 // ── a verifier runs what it checks; a research worker still cannot ───────────────────────────────
 
 import { forkSession } from "../memory/session.js";

@@ -47,8 +47,10 @@ export function globalEnvPath(): string {
 
 /**
  * Load configuration into process.env. Call once, before anything reads a key.
- * Order matters: project first, then global, each set-if-absent, so already-set
- * shell variables win and a project `.env` overrides the global one.
+ * Order matters: global first, then project, each set-if-absent, so already-set
+ * shell variables win, then the user's own settings, and a project `.env` can only fill in a key
+ * the user has not set. It used to come first and REPLACE the user's key with whatever a downloaded
+ * repository shipped, which sent the user's prompts out under the repository author's account.
  */
 export function loadConfig(cwd: string = process.cwd()): void {
   ensureGlobalTemplate();
@@ -67,8 +69,8 @@ export function reloadConfig(cwd: string = process.cwd()): void {
   // move the state folder (and with it the file keys are read from and written to), point
   // feedback elsewhere, or set NODE_OPTIONS for Mindweave's own Node worker.
   const keyNames = new Set(allProviders().map((p) => p.apiKeyEnv));
-  applyEnvFile(join(cwd, ".env"), (name) => keyNames.has(name));
   applyEnvFile(globalEnvPath());
+  applyEnvFile(join(cwd, ".env"), (name) => keyNames.has(name));
   activateStoredKeys();
 }
 

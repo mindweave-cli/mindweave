@@ -59,7 +59,10 @@ import { listTargets, pageTargets } from "./cdp.js";
 import { launchBrowser } from "./browser.js";
 import { hideAppWindows, restoreAppWindows, type MovedWindow } from "./uiHide.js";
 import { HIDDEN_MARK } from "./hiddenDesktop.js";
-import { frameExternal } from "./untrusted.js";
+import { defangHarnessMarkers, frameExternal } from "./untrusted.js";
+import { lookup } from "node:dns/promises";
+import { isIP } from "node:net";
+import { isPrivateAddress } from "./webFetch.js";
 import { guardedPathReason } from "./guard.js";
 import { fileURLToPath } from "node:url";
 
@@ -364,6 +367,39 @@ export function findControl(controls: UiControl[], raw: string): { n: number } |
   };
 }
 
+/** Ports of programs this session did not start where the person allowed clicking and typing. */
+const approvedForeignPorts = new Set<number>();
+
+/** Private-network hosts the user said yes to in this process, so a page that reloads is not asked about again. */
+const approvedPrivateHosts = new Set<string>();
+
+/**
+ * Why an address needs the user's word before it is opened, or null (async).
+ *
+ * `web_fetch` refuses private, link-local and unique-local addresses outright; this tool opens pages by their address
+ * too, and a page on the user's router, a NAS or a cloud metadata address (169.254.x) would otherwise be read and
+ * pictured for the model. This machine itself (localhost, 127.x, ::1) is what the tool is for and is not asked about.
+ */
+export async function privateNetworkReason(url: string): Promise<string | null> {
+  let host: string;
+  try {
+    const u = new URL(url);
+    if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+    host = u.hostname.replace(/^\[|\]$/g, "");
+  } catch {
+    return null;
+  }
+  if (host === "localhost" || host.endsWith(".localhost")) return null;
+  let addresses: string[];
+  try {
+    addresses = isIP(host) ? [host] : (await lookup(host, { all: true })).map((a) => a.address);
+  } catch {
+    return null; // the browser will fail to resolve it too
+  }
+  const nonLoopback = addresses.filter((a) => !(a === "::1" || a.startsWith("127.") || a === "0.0.0.0"));
+  const private_ = nonLoopback.find((a) => isPrivateAddress(a));
+  return private_ ? `${host} is on a private network (${private_}): a router, a device on the local network or a cloud metadata address` : null;
+}
 /** Why a file:// address may not be shown (the read_file guard on its path), or null. */
 async function fileUrlReason(url: string): Promise<string | null> {
   if (!/^file:/i.test(url)) return null;
@@ -605,6 +641,16 @@ export const ui: Tool = {
     if (req.url) {
       const blocked = await fileUrlReason(req.url);
       if (blocked) return fail(`Refusing to open ${req.url}: it is ${blocked}.`);
+      // Another machine on the local network is not this machine: the person decides, once per host.
+      const privateHost = await privateNetworkReason(req.url);
+      if (privateHost) {
+        const host = new URL(req.url).hostname;
+        if (!approvedPrivateHosts.has(host)) {
+          const answer = ctx.requestApproval ? await ctx.requestApproval(`Open ${req.url}?`, ["Yes", "No"], privateHost) : "No";
+          if (answer !== "Yes") return fail(`Not opened: ${privateHost}. Only the person can allow a page on a private network.`);
+          approvedPrivateHosts.add(host);
+        }
+      }
     }
     const state = states.get(ctx);
 
@@ -919,6 +965,20 @@ async function runPage(req: UiRequest, ctx: ToolContext, prior: UiState | undefi
       "Nothing is open yet. Pass `url` to open a web page or dev server, or `port` to use an Electron/Tauri app. " + PORT_RECIPES,
     );
   }
+  // Acting in somebody else's app (one on a port this session did not start) is not something advice can hold back: the
+  // person says yes once per port. Looking is not asked about.
+  if (state.foreign) {
+    const acts = req.steps?.length ? req.steps.map((s) => s.action) : [req.action];
+    const acting = acts.some((a) => a !== "look" && a !== "scroll" && a !== "close");
+    const port = req.port ?? (state.route === "page" ? state.page.port : undefined);
+    if (acting && port !== undefined && !approvedForeignPorts.has(port)) {
+      const answer = ctx.requestApproval
+        ? await ctx.requestApproval(`Let the agent click and type in the app on port ${port}?`, ["Yes", "No"], `Port ${port} is held by a program this session did not start${state.title ? ` ("${state.title}")` : ""}: another application's, or one you opened.`)
+        : "No";
+      if (answer !== "Yes") return fail(`Not done: the app on port ${port} is not one this session started, and the person has not allowed acting in it. Looking at it is fine.`);
+      approvedForeignPorts.add(port);
+    }
+  }
   // Acting in somebody else's app, not only looking at it: said again, short, on each such call.
   if (state.foreign && req.action !== "look" && !othersNote.includes("did not start")) {
     othersNote = othersNote ? `${othersNote}\n\n${FOREIGN_REMINDER}` : FOREIGN_REMINDER;
@@ -1108,6 +1168,12 @@ async function runPage(req: UiRequest, ctx: ToolContext, prior: UiState | undefi
   if (fileBlocked) {
     await page().navigate("about:blank").catch(() => {});
     return fail(`Refusing to show ${snap.page?.url}: it is ${fileBlocked}.`);
+  }
+  // A redirect or a link can also lead from a public page to a private one, which was never asked about.
+  const landedPrivate = snap.page?.url ? await privateNetworkReason(snap.page.url) : null;
+  if (landedPrivate && !approvedPrivateHosts.has(new URL(snap.page!.url).hostname)) {
+    await page().navigate("about:blank").catch(() => {});
+    return fail(`Refusing to show ${snap.page?.url}: ${landedPrivate}. Ask the person to open it themselves if it is wanted.`);
   }
   if (acc.errors.length || acc.warnings.length || acc.dialogs.length) {
     snap.errors = [...acc.errors, ...(snap.errors ?? [])].slice(0, 12);
@@ -1364,16 +1430,18 @@ function render(o: {
   const fullList = controlList(o.snap);
   const list = o.listSame ? `The controls are the same as before: ${o.snap.controls.length}, numbered as in the last list.` : fullList;
   const words = screenText(o.snap);
-  const content = [list, words].filter(Boolean).join("\n\n");
-  const body = o.external
-    ? frameExternal({ tag: "web_page", attrs: { url: o.external }, what: "a web page opened with the ui tool" }, content)
-    : content;
+  // Everything a page wrote is data: its title (in the heading), its text, and what it logged or alerted. A page title
+  // or a console line outside the frame read as the tool talking. For a page on another machine all of it goes inside the
+  // frame; for one on this machine (a dev server, a file) the harness's own tags are still defanged.
   const reports = pageReports(o.snap as PageSnapshot);
+  const content = [list, words].filter(Boolean).join("\n\n");
+  const pageText = [o.heading, content, reports].filter(Boolean).join("\n\n");
+  const body = o.external
+    ? frameExternal({ tag: "web_page", attrs: { url: o.external }, what: "a web page opened with the ui tool" }, pageText)
+    : defangHarnessMarkers(pageText);
   const output = [
     o.did,
-    o.heading,
     body,
-    reports,
     unnamedNote(o.snap.controls),
     o.extra ?? "",
     o.shot.image ? "A picture of it follows this result." : o.shot.same ? "The picture is identical to the last one: nothing on screen changed." : "No picture could be taken of it this time.",

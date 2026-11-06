@@ -221,6 +221,8 @@ export class McpManager {
   private trustQueue: Promise<void> = Promise.resolve();
   /** Fingerprints as of the last check, so an unchanged catalog costs nothing. */
   private trustSignature = "";
+  /** True once the stored fingerprints have been read: before that a recheck has nothing to compare against. */
+  private baselineLoaded = false;
 
   /**
    * Told whenever any server's state or catalog moves, so the CLI can repaint.
@@ -305,8 +307,10 @@ export class McpManager {
     // Remember the root even with nothing to check: a server can connect later, and the
     // recheck below is inert until it knows where the record lives.
     this.trustCwd = cwd;
-    if (defs.length === 0) return;
+    // The baseline is read even with nothing connected yet: a server that connects later is checked against it.
     this.trust = await loadTrust(cwd);
+    this.baselineLoaded = true;
+    if (defs.length === 0) return;
     this.trustSignature = JSON.stringify(fingerprintCatalog(defs));
     const verdict = compareTrust(defs, this.trust);
 
@@ -357,7 +361,9 @@ export class McpManager {
   private async recheckTrust(): Promise<void> {
     // Before the startup check has run there is no baseline to compare against, and
     // treating everything as fresh here would record fingerprints we never verified.
-    if (!this.trustCwd) return;
+    // `setProjectRoot` also sets the root, long before the record is read, and a recheck then saw every tool as new,
+    // trusted it and saved over the record: the next real change went unnoticed. The record has to be loaded.
+    if (!this.trustCwd || !this.baselineLoaded) return;
     const defs = this.trustedDefs();
     if (defs.length === 0) return;
     const signature = JSON.stringify(fingerprintCatalog(defs));

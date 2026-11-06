@@ -127,3 +127,12 @@ test("the copy bundled in the desktop app is told apart and not updated through 
     assert.match(refusalReason(install) ?? "", /comes with the mwcode app/);
   }
 });
+
+test("cmdArg keeps an install path one argument and makes cmd's special characters text", async () => {
+  const { cmdArg } = await import("./updateRunner.js");
+  assert.equal(cmdArg("install"), "install");
+  assert.equal(cmdArg("--prefix"), "--prefix");
+  assert.equal(cmdArg("C:\\Users\\Some Name\\AppData\\Roaming\\npm"), '"C:\\Users\\Some Name\\AppData\\Roaming\\npm"');
+  assert.equal(cmdArg("C:\\x&echo INJECTED&\\npm"), '"C:\\x&echo INJECTED&\\npm"', "quoted, so the & is not a second command");
+  assert.equal(cmdArg('C:\\a"b%PATH%'), "C:\\a_b_PATH_", "a quote or percent sign cannot be neutralised, so it is replaced");
+});

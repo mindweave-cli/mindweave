@@ -83,8 +83,14 @@ export function parseCommand(command: string, dialect: Dialect = process.platfor
     const c = command[i]!;
     const next = command[i + 1];
 
+    // ── a comment ──
+    // Shells treat `#` at the start of a word as the start of a comment, and a comment can end up hiding a line break
+    // (`echo # '` then a new line): what this reader sees as text is then a command. Never read as plain.
+    if (c === "#" && !inWord && dialect !== "cmd") fail("a comment");
+
     // ── quotes ──
-    if (c === "'") {
+    // cmd.exe has no single quotes: `echo ' & ver & echo '` runs `ver`.
+    if (c === "'" && dialect !== "cmd") {
       inWord = true;
       let end = command.indexOf("'", i + 1);
       // In PowerShell a doubled quote inside single quotes is one literal quote: 'it''s'.

@@ -261,3 +261,44 @@ test("a prefix is suggested only for a command that can be named safely", async 
     assert.equal(p(c), null, c);
   }
 });
+
+test("a command cannot read, write or delete Mindweave's own authority files", async () => {
+  const { stateRoot } = await import("../memory/store.js");
+  const { stateFileNamedReason } = await import("./commandPolicy.js");
+  const state = stateRoot();
+  const dir = realpathSync.native(mkdtempSync(join(tmpdir(), "mw-state-cmd-")));
+  const named = (command: string) => stateFileNamedReason(parseCommand(command, process.platform === "win32" ? "powershell" : "posix"), dir);
+  for (const command of [
+    `Copy-Item payload.json '${join(state, "hooks.json")}'`,
+    `echo run_command > '${join(state, "sentinel-allow.md")}'`,
+    `Remove-Item '${join(state, "forbidden-commands.md")}'`,
+    `cp payload.json ${join(state, "projects", "x", "mcp-approved.json").replace(/\\/g, "/")}`,
+  ]) assert.match((await named(command)) ?? "", /Mindweave's own/, command);
+  assert.equal(await named("Copy-Item a.txt b.txt"), null, "an ordinary command is untouched");
+  assert.equal(await named(`Get-Content '${join(dir, "notes.md")}'`), null);
+});
+test("Sentinel still asks when the reader and the shell could disagree about a command", () => {
+  const skips = (command: string, dialect: "posix" | "powershell" | "cmd") => needsNoQuestion(parseCommand(command, dialect), [], tmpdir());
+  assert.equal(skips("git status", "posix"), true, "control: a plain read still skips");
+  assert.equal(skips("echo # '\nWrite-Output HIDDEN\n# '", "powershell"), false, "a comment hides a line break");
+  assert.equal(skips("echo # '\ntouch marker\n# '", "posix"), false);
+  assert.equal(skips("echo ' & ver & echo '", "cmd"), false, "cmd has no single quotes");
+  assert.equal(skips(".\\cat.cmd notes.txt", "powershell"), false, "a program named by a path is not the verb it ends in");
+  assert.equal(skips("./ls -la", "posix"), false);
+  assert.equal(skips("sort -oout.txt in.txt", "posix"), false);
+  assert.equal(skips("sort -S 1K --compress-program=./x big", "posix"), false);
+  assert.equal(skips("sort -n big.txt", "posix"), true, "an ordinary sort is untouched");
+  assert.equal(skips("git grep -O./x needle", "posix"), false);
+  assert.equal(skips("git grep needle", "posix"), true);
+  assert.equal(skips("tree -o out.txt", "posix"), false);
+  assert.equal(skips("tree -L 2", "posix"), true);
+});
+
+test("a git config key on the section line counts as one that runs a program", () => {
+  const repo = realpathSync.native(mkdtempSync(join(tmpdir(), "mw-gitcfg-")));
+  mkdirSync(join(repo, ".git"));
+  writeFileSync(join(repo, ".git", "config"), "[core]\n\tbare = false\n");
+  assert.equal(gitConfigRunsPrograms(repo), false);
+  writeFileSync(join(repo, ".git", "config"), "[core] fsmonitor = sh ./fsm.sh\n");
+  assert.equal(gitConfigRunsPrograms(repo), true);
+});

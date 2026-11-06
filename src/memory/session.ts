@@ -13,7 +13,7 @@ import { join } from "node:path";
 import type { ToolContext } from "../tools/types.js";
 import { resolvePath, nextTouch, canonicalRoot } from "../tools/paths.js";
 import type { Session, Entry } from "./types.js";
-import { checkpointDir, latestSession, listSessions, loadEarlier, loadMeta, loadTranscript, loadSessionNotes } from "./store.js";
+import { checkpointDir, latestSession, listSessions, loadEarlier, loadMeta, loadTranscript, loadSessionNotes, registerOpenProject } from "./store.js";
 import { fullReadPaths, writtenPaths } from "./presence.js";
 import { startChassis } from "../alternator/lane.js";
 import { BackgroundShells } from "../tools/backgroundShells.js";
@@ -85,6 +85,7 @@ export async function reloadProjectMemory(session: Session, opts: { force?: bool
  * instead of once per turn — which is cheap enough that the fast start is worth keeping.
  */
 function attachMcp(ctx: ToolContext, cwd: string): void {
+  registerOpenProject(cwd); // the agent may read this project's saved notes and results, and no other project's
   const manager = new McpManager();
   ctx.mcp = manager;
   // Before anything connects: a tool can be dispatched as soon as its server is up, and

@@ -407,3 +407,30 @@ test("a folder being worked in uses its own notes, else the instruction file ano
   assert.equal(byFolder["/src/ui/MINDWEAVE.md"], "UI folder notes.");
   assert.equal(byFolder["/src/ui/AGENTS.md"], undefined, "Mindweave's own file wins in a folder that has both");
 });
+
+test("a folder whose notes sit behind a link out of the project is not read", async () => {
+  const root = mkdtempSync(join(tmpdir(), "mw-notes-link-"));
+  const outside = mkdtempSync(join(tmpdir(), "mw-notes-outside-"));
+  writeFileSync(join(outside, "MINDWEAVE.md"), "PRIVATE-OUTSIDE-TEXT\n");
+  mkdirSync(join(root, "src"));
+  symlinkSync(outside, join(root, "src", "linked"), "junction");
+  const notes = await directoryNotesFor(root, [join(root, "src", "linked", "a.ts")]);
+  assert.deepEqual(notes, [], "the junction leads out of the project");
+});
+
+test("the project's own notes file is not read through a link to a protected file or an outside one", async () => {
+  const { assembleNotes } = await import("./projectNotes.js");
+  const root = mkdtempSync(join(tmpdir(), "mw-notes-root-"));
+  const outside = mkdtempSync(join(tmpdir(), "mw-notes-out-"));
+  writeFileSync(join(outside, "AGENTS.md"), "OUTSIDE-AGENTS-TEXT\n");
+  let linked = true;
+  try {
+    symlinkSync(join(outside, "AGENTS.md"), join(root, "AGENTS.md"), "file");
+  } catch {
+    linked = false; // an account that may not create links: the folder case above covers the same check
+  }
+  if (!linked) return;
+  const assembled = await assembleNotes(root, { includeUser: false });
+  assert.doesNotMatch(assembled.text, /OUTSIDE-AGENTS-TEXT/);
+  assert.ok(assembled.refused.length > 0);
+});

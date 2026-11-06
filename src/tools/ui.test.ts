@@ -278,3 +278,14 @@ test("parseUiArgs: typing without a field says which one is needed", () => {
   const r = parseUiArgs({ action: "type", text: "hello" });
   assert.ok(!r.ok && /say which field/.test(r.error));
 });
+
+test("a page on a private network needs the person's word; this machine and the public web do not", async () => {
+  const { privateNetworkReason } = await import("./ui.js");
+  assert.match((await privateNetworkReason("http://192.168.1.1/admin")) ?? "", /private network/);
+  assert.match((await privateNetworkReason("http://169.254.169.254/latest/meta-data/")) ?? "", /private network/);
+  assert.match((await privateNetworkReason("http://10.0.0.5:8080/")) ?? "", /private network/);
+  assert.equal(await privateNetworkReason("http://localhost:5173/"), null, "a dev server is what the tool is for");
+  assert.equal(await privateNetworkReason("http://127.0.0.1:3000/"), null);
+  assert.equal(await privateNetworkReason("http://[::1]:3000/"), null);
+  assert.equal(await privateNetworkReason("file:///C:/site/index.html"), null);
+});

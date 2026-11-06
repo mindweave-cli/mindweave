@@ -19,6 +19,18 @@ import { existsSync, lstatSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { classifyInstall, updateCommand, type Install, type InstallProbe } from "./selfUpdate.js";
+import { readState } from "./launcher.js";
+import { childEnv } from "../tools/childEnv.js";
+
+/**
+ * One argument as cmd.exe reads it (pure): wrapped in quotes when it has a space or one of cmd's own characters, so it stays
+ * one argument and &, | or ^ in an install path are text, not a second command. A quote or a percent sign cannot be made
+ * safe that way and is replaced, which makes the command fail instead of doing something else.
+ */
+export function cmdArg(arg: string): string {
+  const plain = arg.replace(/["%]/g, "_");
+  return /[\s&|^()<>!,;=]/.test(plain) ? `"${plain}"` : plain;
+}
 
 /** How long npm gets before the update is abandoned. */
 const INSTALL_TIMEOUT_MS = 180_000;
@@ -44,7 +56,11 @@ export function packageRoot(): string {
 
 /** Where this copy of Mindweave is installed, and what may be done about it. */
 export function currentInstall(): Install {
-  return classifyInstall(packageRoot(), realProbe);
+  const own = classifyInstall(packageRoot(), realProbe);
+  if (own.kind !== "managed") return own;
+  // A copy the launcher handed over to: what `/update` changes is the launcher's own install.
+  const launcher = readState().launcherRoot;
+  return launcher ? classifyInstall(launcher, realProbe) : own;
 }
 
 /** What running npm produced. */
@@ -57,9 +73,9 @@ export interface InstallResult {
 /**
  * Run the update, and report only whether it worked.
  *
- * npm is spawned WITHOUT a shell and with its arguments as an array, so a prefix
- * containing a space — `C:\Users\Some Name\AppData\Roaming\npm` is the ordinary case on
- * Windows — is passed as one argument rather than reassembled and re-split by a shell.
+ * On Windows npm is a .cmd and needs a shell, which joins the arguments into one line and splits it again, so an
+ * argument with a space (`C:\Users\Some Name\AppData\Roaming\npm` is the ordinary case) or a cmd special character is
+ * quoted first (`cmdArg`). Elsewhere npm is spawned WITHOUT a shell and the arguments stay an array.
  *
  * A failure here is a no-op, not a half-state: npm either replaced the package or it did
  * not, the old copy is still installed and still running, and nothing else has been
@@ -67,11 +83,32 @@ export interface InstallResult {
  */
 export function runUpdate(prefix: string, version = "latest"): Promise<InstallResult> {
   const { command, args } = updateCommand(prefix, version);
+  // The cleaned environment, not ours: the install runs packages' own scripts, and none of them has any use for the
+  // provider keys this process loaded from the settings files.
+  return runNpm(command, args, INSTALL_TIMEOUT_MS, childEnv());
+}
+
+/**
+ * Run npm with arguments we built, and report only whether it worked. `env` is for the background
+ * installer, which gives npm the same cleaned environment every other child gets.
+ */
+export function runNpm(
+  command: string,
+  args: string[],
+  timeoutMs: number,
+  env?: NodeJS.ProcessEnv,
+): Promise<InstallResult> {
   return new Promise((resolve) => {
     // `npm` on Windows is a .cmd, which cannot be spawned without a shell. `shell: true`
     // is therefore unavoidable HERE — and it is why every value in `args` is one we
     // built, never one a user typed.
-    const child = spawn(command, args, { shell: process.platform === "win32", windowsHide: true });
+    const win = process.platform === "win32";
+    // One command line, already quoted, rather than an argument list handed to a shell: Node warns on stderr about the
+    // second (DEP0190), and a warning written into the terminal while the screen is up would land in the middle of it.
+    const options = { windowsHide: true, ...(env ? { env } : {}) };
+    const child = win
+      ? spawn([command, ...args.map(cmdArg)].join(" "), { ...options, shell: true })
+      : spawn(command, args, options);
     let output = "";
     const collect = (chunk: Buffer) => {
       output += chunk.toString("utf8");
@@ -83,8 +120,8 @@ export function runUpdate(prefix: string, version = "latest"): Promise<InstallRe
 
     const timer = setTimeout(() => {
       child.kill();
-      resolve({ ok: false, message: `npm did not finish within ${Math.round(INSTALL_TIMEOUT_MS / 1000)}s.` });
-    }, INSTALL_TIMEOUT_MS);
+      resolve({ ok: false, message: `npm did not finish within ${Math.round(timeoutMs / 1000)}s.` });
+    }, timeoutMs);
     timer.unref?.();
 
     const settle = (result: InstallResult) => {

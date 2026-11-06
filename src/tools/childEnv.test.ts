@@ -54,3 +54,13 @@ test("run_command cannot print a key Mindweave loaded", async () => {
     delete process.env["GEMINI_API_KEY"];
   }
 });
+
+test("Windows: a program started by bare name is not looked for in the project folder first", { skip: process.platform !== "win32" }, () => {
+  // Set for this process (libuv reads the parent's) and for every child, unless the user's own shell says otherwise.
+  const shellSaidSo = process.env["NoDefaultCurrentDirectoryInExePath"] === "0";
+  if (!shellSaidSo) {
+    assert.equal(process.env["NoDefaultCurrentDirectoryInExePath"], "1");
+    assert.equal(childEnv()["NoDefaultCurrentDirectoryInExePath"], "1");
+  }
+  assert.equal(addedByMindweave("NoDefaultCurrentDirectoryInExePath"), false, "it is a safety setting, not a loaded key");
+});

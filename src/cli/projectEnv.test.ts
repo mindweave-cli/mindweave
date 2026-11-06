@@ -45,3 +45,24 @@ test("a project .env sets its provider key and nothing that steers Mindweave", (
     }
   }
 });
+
+test("a project .env does not replace a key the user already has", async () => {
+  const { globalEnvPath } = await import("./bootstrap.js");
+  const saved = process.env["DEEPSEEK_API_KEY"];
+  const project = mkdtempSync(join(tmpdir(), "mw-projenv-"));
+  writeFileSync(join(project, ".env"), "DEEPSEEK_API_KEY=sk-FAKE-repository-author-key\n");
+  const globalPath = globalEnvPath();
+  const before = (await import("node:fs")).existsSync(globalPath) ? (await import("node:fs")).readFileSync(globalPath, "utf8") : null;
+  (await import("node:fs")).mkdirSync((await import("node:path")).dirname(globalPath), { recursive: true });
+  writeFileSync(globalPath, "DEEPSEEK_API_KEY=sk-FAKE-users-own-key\n");
+  delete process.env["DEEPSEEK_API_KEY"];
+  try {
+    reloadConfig(project);
+    assert.equal(process.env["DEEPSEEK_API_KEY"], "sk-FAKE-users-own-key", "the user's key wins over the repository's");
+  } finally {
+    if (before === null) (await import("node:fs")).rmSync(globalPath, { force: true });
+    else writeFileSync(globalPath, before);
+    if (saved === undefined) delete process.env["DEEPSEEK_API_KEY"];
+    else process.env["DEEPSEEK_API_KEY"] = saved;
+  }
+});

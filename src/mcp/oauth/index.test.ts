@@ -234,3 +234,17 @@ test("a server that sends no expires_in but does send a refresh token is refresh
     assert.ok((stored?.expiresAt ?? 0) > Date.now() + 3_000_000, "an hour was assumed so a refresh happens before a 401 does");
   });
 });
+
+test("the browser is opened without a shell: a sign-in link keeps its & and nothing else can run", async () => {
+  const { browserCommand } = await import("./index.js");
+  const link = "https://auth.example/authorize?response_type=code&client_id=c&redirect_uri=http%3A%2F%2Flocalhost%3A1%2Fcb&state=s";
+  for (const platform of ["win32", "darwin", "linux"]) {
+    const run = browserCommand(link, platform)!;
+    assert.notEqual(run.command, "cmd", platform);
+    assert.equal(run.args[run.args.length - 1], link, `${platform}: the whole address is one argument`);
+  }
+  assert.equal(browserCommand(link, "win32")!.command, "rundll32");
+  // a hostile endpoint cannot add a command, and a non-web scheme is never handed to the system
+  assert.doesNotMatch(browserCommand('https://x.example/a" & calc & "', "win32")!.args[1]!, /["\s]/);
+  for (const bad of ["file:///C:/Windows/System32/calc.exe", "ms-msdt:/id", "javascript:alert(1)", "calc", ""]) assert.equal(browserCommand(bad, "win32"), null, bad);
+});

@@ -31,6 +31,16 @@ const shell = new Map<string, string>(
   Object.entries(process.env).flatMap(([k, v]) => (v === undefined ? [] : [[norm(k), v] as [string, string]])),
 );
 
+/**
+ * Windows looks in the CURRENT folder first for a program started by a bare name (`git`, `npx`, `cmd`...) unless
+ * this variable is set. Mindweave runs with a project folder as its working directory, and a downloaded repository
+ * can ship a `git.exe` or `npx.cmd` of its own. The setting that counts is the PARENT process's (libuv reads it
+ * when it starts a program) and, for a launcher that goes through cmd.exe, the child's. The user may have it off
+ * on purpose (`=0` in their shell), and then it is left alone.
+ */
+const NO_CWD_LOOKUP = "NoDefaultCurrentDirectoryInExePath";
+if (IS_WINDOWS && !shell.has(norm(NO_CWD_LOOKUP))) process.env[NO_CWD_LOOKUP] = "1";
+
 /** A provider key variable, or one of the numbered slots keys are stored in. */
 const PROVIDER_KEY = /_API_KEY(_\d+)?$/i;
 
@@ -46,10 +56,11 @@ export function childEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv 
     if (original === undefined) continue;
     out[name] = PROVIDER_KEY.test(name) ? original : value;
   }
+  if (IS_WINDOWS && !shell.has(norm(NO_CWD_LOOKUP))) out[NO_CWD_LOOKUP] = "1";
   return { ...out, ...extra };
 }
 
 /** True when `name` was set by Mindweave rather than inherited from the shell (for tests and diagnostics). */
 export function addedByMindweave(name: string): boolean {
-  return process.env[name] !== undefined && !shell.has(norm(name));
+  return process.env[name] !== undefined && !shell.has(norm(name)) && norm(name) !== norm(NO_CWD_LOOKUP);
 }

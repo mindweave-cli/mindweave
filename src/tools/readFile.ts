@@ -11,6 +11,9 @@
  * judgment, not the tool's job.
  */
 import { promises as fs } from "node:fs";
+import { isAbsolute, relative } from "node:path";
+import { resultsDir } from "../mcp/resultStore.js";
+import { frameExternal } from "./untrusted.js";
 import type { Tool, ToolContext, ToolResult } from "./types.js";
 import { foreignAgentReason, guardedPathReason } from "./guard.js";
 import { requestAgentDataAccess } from "./approval.js";
@@ -69,6 +72,12 @@ const WHOLE_READ_TOKEN_BUDGET = envInt("MINDWEAVE_WHOLE_READ_TOKENS", 8_000);
 const FILE_UNCHANGED =
   "This file is unchanged since you last read it in this conversation — the " +
   "earlier read is still current, use that instead of re-reading.";
+
+/** Is `path` inside this project's saved MCP results (pure)? */
+function fromMcpResults(path: string, cwd: string): boolean {
+  const rel = relative(resultsDir(cwd), path);
+  return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+}
 
 export const readFile: Tool = {
   name: "read_file",
@@ -170,6 +179,11 @@ export const readFile: Tool = {
       // reads because the fourth was misspelled would cost another whole round trip to
       // recover, which is the exact cost this tool exists to avoid.
       if (one.error) failures++;
+      // A saved MCP result is a server's words, read back from a folder the guard calls Mindweave's own: it gets the same
+      // frame the first part of it had when it was returned.
+      if (!one.error && one.fullPath && fromMcpResults(one.fullPath, ctx.cwd)) {
+        one.body = frameExternal({ tag: "mcp_result", attrs: { saved: "true" }, what: "an external MCP server" }, one.body);
+      }
       parts.push(paths.length > 1 ? `===== ${one.label} =====\n${one.body}` : one.body);
       summaries.push(one.summary);
       if (one.fullPath) fullPaths.push(one.fullPath);

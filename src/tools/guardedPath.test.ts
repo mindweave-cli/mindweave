@@ -113,3 +113,25 @@ test("a forbidden folder cannot be edited through a link to it", async () => {
   const r = await write.execute({ path: "docs/planted.ts", content: "x" }, ctx);
   assert.equal(existsSync(join(root, "src", "legacy", "planted.ts")), false, `written: ${r.output}`);
 });
+
+test("a network (UNC) path is refused before anything resolves it", { skip: process.platform !== "win32" }, async () => {
+  const { guardedPathReason } = await import("./guard.js");
+  assert.match((await guardedPathReason("\\\\mw-test-host.invalid\\share\\a.html")) ?? "", /network/);
+  assert.match((await guardedPathReason("//mw-test-host.invalid/share/a.html")) ?? "", /network/);
+  assert.equal(await guardedPathReason("\\\\?\\C:\\Windows\\win.ini"), null, "the local long-path form is not a network path");
+});
+test("a content search shows nothing read_file's guard refuses, whichever engine runs it", async () => {
+  const root = project();
+  const names = [".npmrc", "prod.env", "secrets.yaml", "server.key", ".env", ".envrc", ".netrc", ".pypirc", "credentials.json", "id_rsa", "cert.pem", "store.pfx", "app.tfvars", "terraform.tfstate", "service-account-prod.json"];
+  for (const name of names) writeFileSync(join(root, name), "SEARCHME-TOKEN\n");
+  writeFileSync(join(root, "notes.txt"), "SEARCHME-TOKEN\n");
+  mkdirSync(join(root, ".aws"));
+  writeFileSync(join(root, ".aws", "credentials"), "SEARCHME-TOKEN\n");
+  const { grepDef: grep } = await import("./grep.js");
+  const { globDef: glob } = await import("./glob.js");
+  const out = (await grep.execute({ pattern: "SEARCHME-TOKEN", output_mode: "content" }, ctxFor(root))).output;
+  for (const name of [...names, ".aws"]) assert.doesNotMatch(out, new RegExp(name.replace(/\./g, "\\.")), `grep printed ${name}`);
+  assert.match(out, /notes\.txt/);
+  const listed = (await glob.execute({ pattern: "**/*" }, ctxFor(root))).output;
+  for (const name of names) assert.doesNotMatch(listed, new RegExp(name.replace(/\./g, "\\.")), `glob listed ${name}`);
+});

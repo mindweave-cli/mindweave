@@ -143,3 +143,14 @@ test("no hook is declared below the first-run gates in App.tsx", () => {
     "a hook below the gates changes the hook count when a gate closes — React crashes the app",
   );
 });
+
+test("the session is not opened until the folder is trusted", () => {
+  // createSession reads the project's notes, rules and git state. Opened on mount, all of that
+  // ran behind the trust question, so a folder you were about to refuse had already been read.
+  const src = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+  const at = src.indexOf("sessionOpened");
+  assert.ok(at > 0, "the session-open effect lost its guard");
+  const effect = src.slice(at, at + 400);
+  assert.match(effect, /if \(trustOpen \|\| sessionOpened\.current\) return;/);
+  assert.match(src, /\}, \[trustOpen\]\);/, "the effect must re-run when the trust answer arrives");
+});

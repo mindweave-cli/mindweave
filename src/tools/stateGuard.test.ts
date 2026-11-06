@@ -9,15 +9,24 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { protectedPathReason } from "./guard.js";
-import { stateRoot } from "../memory/store.js";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { projectDir, registerOpenProject, stateRoot } from "../memory/store.js";
 
 test("Mindweave's state folder is protected, except the memory and MCP result folders", () => {
   const root = stateRoot();
   for (const rel of ["mcp-auth.json", "keys.json", ".env", "MINDWEAVE.md", "bin/rg.exe", "chassis/x/server.js", "projects/p/trusted", "projects/p/forbidden.md", "projects/p/abc.jsonl", "projects/p/checkpoints/s/stack.json"]) {
     assert.ok(protectedPathReason(join(root, rel)), `${rel} is not protected`);
   }
-  for (const rel of ["projects/p/memory/MEMORY.md", "projects/p/memory/note.md", "projects/p/mcp-results/server/result.json"]) {
+  // The folders of the project this session opened stay reachable; no other project's do.
+  const open = join(tmpdir(), "mw-open-project-" + process.pid);
+  registerOpenProject(open);
+  const mine = projectDir(open).slice(root.length + 1).replace(/\\/g, "/");
+  for (const rel of [`${mine}/memory/MEMORY.md`, `${mine}/memory/note.md`, `${mine}/mcp-results/server/result.json`, `${mine}/cleared/x.txt`]) {
     assert.equal(protectedPathReason(join(root, rel)), null, `${rel} should stay reachable`);
+  }
+  for (const rel of ["projects/p/memory/MEMORY.md", "projects/p/cleared/x.txt", "projects/p/mcp-results/server/result.json"]) {
+    assert.ok(protectedPathReason(join(root, rel)), `${rel} belongs to another project`);
   }
   assert.equal(protectedPathReason(join(root + "-elsewhere", "keys.json")), null, "a sibling folder is not the state folder");
 });
@@ -38,4 +47,15 @@ test("on macOS and Windows a different spelling of the state folder's case is th
   } finally {
     Object.defineProperty(process, "platform", real);
   }
+});
+
+test("two projects whose paths flatten to the same name do not share a state folder", () => {
+  const base = mkdtempSync(join(tmpdir(), "mw-collide-"));
+  const a = join(base, "b-c");
+  const b = join(base, "b", "c");
+  const trustedFolder = projectDir(a);
+  const other = projectDir(b);
+  assert.notEqual(other, trustedFolder, "C:\\x\\b-c and C:\\x\\b\\c are different projects");
+  assert.equal(projectDir(a), trustedFolder, "the first keeps its folder");
+  assert.equal(projectDir(b), other, "and the second keeps its own");
 });

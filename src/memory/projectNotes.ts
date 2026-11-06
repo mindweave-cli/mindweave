@@ -202,6 +202,16 @@ function stripCode(text: string): string {
   return blanked.replace(/`[^`\n]*`/g, (span) => span.replace(/[^\n]/g, " "));
 }
 
+/** Does this notes file, links resolved, lie outside the project or is it a protected file? (async) */
+async function leavesProject(path: string, project: string): Promise<boolean> {
+  try {
+    await fs.lstat(path);
+  } catch {
+    return false; // not there: nothing to carry
+  }
+  return !withinFolder(project, await realPathOf(path)) || (await guardedPathReason(path)) !== null;
+}
+
 async function readIfPresent(path: string): Promise<string | null> {
   try {
     const text = await fs.readFile(path, "utf8");
@@ -245,6 +255,13 @@ async function collect(
       refused.push(path);
       return;
     }
+  }
+
+  // The project's own notes files get the same two checks an import gets: a link inside the repository (`MINDWEAVE.md` -> `.env`,
+  // or -> `~/.ssh/id_rsa`) must not carry a protected or outside file into the prompt, which goes to the provider.
+  if ((kind === "project" || kind === "other") && bound !== null && (await leavesProject(path, bound))) {
+    refused.push(path);
+    return;
   }
 
   const body = await readIfPresent(path);
@@ -386,12 +403,14 @@ export async function directoryNotesFor(
   }
 
   const out: { path: string; text: string }[] = [];
+  const project = await realPathOf(root);
   // Shallowest first: a folder's notes should read before the notes of a folder inside
   // it, so the more specific text is the last thing the model sees.
   for (const dir of [...dirs].sort((a, b) => a.length - b.length)) {
     // A folder's own notes, else the instruction file another tool left there.
     for (const name of [NOTES_FILE, ...OTHER_TOOL_NOTES]) {
       const path = join(dir, name);
+      if (await leavesProject(path, project)) continue; // a link out of the project, or to a protected file
       const body = await readIfPresent(path);
       if (body === null) continue;
       out.push({ path, text: body.trim() });

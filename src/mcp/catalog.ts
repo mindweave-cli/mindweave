@@ -108,7 +108,8 @@ export function capDescription(description: string, max = MAX_DESCRIPTION_CHARS)
 export function parseToolDef(server: string, raw: unknown, options: ToolListOptions = {}): McpToolDef | null {
   const t = raw as { name?: unknown; description?: unknown; inputSchema?: unknown; annotations?: { readOnlyHint?: unknown } } | null;
   const name = typeof t?.name === "string" ? t.name.trim() : "";
-  if (!name || name.length > MAX_TOOL_NAME_CHARS) return null;
+  // A name is shown in rows and questions. A control character in one (an ESC or OSC sequence) would reach the terminal.
+  if (!name || name.length > MAX_TOOL_NAME_CHARS || /[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/.test(name)) return null;
   const inputSchema =
     t?.inputSchema && typeof t.inputSchema === "object" && !Array.isArray(t.inputSchema)
       ? (t.inputSchema as Record<string, unknown>)
@@ -132,9 +133,10 @@ export function parseToolDef(server: string, raw: unknown, options: ToolListOpti
     name,
     description: capDescription(typeof t?.description === "string" ? t.description : ""),
     inputSchema,
-    // `readOnlyHint` is a HINT from an untrusted party. We use it only to widen what a
-    // read-only turn may call, never to skip a safety gate.
-    readOnly: t?.annotations?.readOnlyHint === true,
+    // `readOnlyHint` is a HINT from an untrusted party, and it is not used at all: a tool that says it only reads
+    // would skip the Sentinel question, plan mode and the read-only sub-agent refusal, and the server can flip it later
+    // without the trust check noticing (it is not part of the fingerprint). Every MCP tool is treated as one that may write.
+    readOnly: false,
     ...(paramHeaders ? { paramHeaders } : {}),
   };
 }

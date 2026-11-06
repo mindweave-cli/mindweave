@@ -2,6 +2,54 @@
 
 Notable changes to Mindweave. Dates are release dates.
 
+## v3.4.6 (2026-11-06): updates install while you work, a public Data page, and tighter limits
+
+Updates now install in the background while you are not working, `/data` shows your own usage and controls a daily count that feeds a public Data page, and the agent has tighter limits on what a project, a page or a server can make it do.
+
+### New: updates install in the background
+
+- **A newer version installs while you are not working.** After two quiet minutes with nothing running, Mindweave downloads a newer release into a folder of its own, checks that it starts, and leaves the copy you are using alone. Nothing is replaced under you.
+- **A green tag at the right end of the status row says it is ready:** `↑ vX.Y.Z ready · /update, or restart it yourself`. Close and open Mindweave, or type `/update`.
+- **`/update` is quicker.** When the new version is already installed it asks nothing and restarts into the same conversation. When it is not, you get a full-screen wait message with a timer, not a line that sits still for minutes.
+- **The first start on a newer version lists what changed, once.**
+- **A version that cannot start is set aside,** and the one before it is used instead. `MINDWEAVE_NO_MANAGED=1` turns the whole thing off.
+- **Updates run without your keys.** The install no longer gets your provider keys in its environment.
+
+### New: /data, and a daily count you can turn off
+
+- **`/data` shows your own usage** on this computer (tokens in the last 7 days and in all, and your top models), and the state of the optional daily count.
+- **The daily count is on by default, and says so at every start.** Turn it off at any time with `/data`, or set `MINDWEAVE_NO_ANALYTICS=1`. Someone who turned the older count off stays off. Mindweave sends one small message a day, after your first real work of the day: a random id, the version, your system, the day and, for each model, how many tokens went in, came from the cache and went out, with calls, sessions and the cost at list price. It never holds a prompt, a reply, a file, a path, a project name or a key. A model name is sent only when it is built into Mindweave; any other is sent as "other".
+- **Your past usage is never sent unless you ask.** In `/data` you can choose to also share the last 60 days once, so the history on the Data page fills in.
+- **`/data` shows the exact message before anything is sent,** can turn sharing off again, and can start over with a new id.
+- **Every start says whether it is on or off,** with where to see the numbers and how to turn it off. This replaces the line about the desktop app, which is still one `/app` away.
+- **Nothing is counted from tests, scratch runs, CI, a source checkout or a script.** Only an install a person uses counts.
+- **The numbers go to a public Data page on the website.**
+
+### Tighter limits, and what you may notice
+
+- **MCP tools ask in Sentinel, and are hidden in read-only turns.** A server's own claim that a tool only reads is no longer trusted, so every MCP tool is treated as one that may change something.
+- **MCP sign-in is stricter.** It needs https (a local address is still fine), the token address must belong to the same site as the sign-in page or the server, and a server that names a different resource is refused. A provider that splits its sign-in across unrelated domains will be refused. The one shared `MINDWEAVE_MCP_CLIENT_SECRET` variable is gone; use `MINDWEAVE_MCP_CLIENT_SECRET_<NAME>` for each server.
+- **The browser tool asks first** before opening a page on a private network (once per address) and before clicking or typing in an app on a port Mindweave did not start (once per port). Pages can no longer pull protected files into a screenshot.
+- **A few more commands ask in Sentinel:** a `#` at the start of a word, a program named by a path, `sort -o`, `git grep -O` and `tree -o`.
+- **Windows:** a bare name such as `build.bat` is no longer picked up from the current folder under `cmd`; `.\build.bat` still works.
+- **Your own key wins.** A project's `.env` no longer replaces the provider key in your own settings.
+- **The folder is read after you trust it.** Mindweave no longer reads a project's notes, rules or git state before you answer the trust question.
+- **Commands cannot edit Mindweave's own settings files.** Hooks, approvals, the trust marker and your rules can be changed by you, not by a command the agent runs.
+- **Each project's state folder gets a small `.cwd` marker**, and two paths that used to share one folder now get their own.
+
+### Smaller fixes
+
+- The agent can only read the notes and saved results of the project it opened, and UNC paths are refused.
+- Notes reached through a link that leads out of the project are skipped.
+- Search covers the same protected files as reading does.
+- A command saved as allowed no longer lets a riskier command with the same start run without a question.
+- Text from pages, tool results and notes can no longer close the label that wraps it.
+- Quoted tool-call text in a reply is no longer run as a call when it came from a tool result.
+- Pasted and attached text is no longer saved as something you said.
+- The language server uses Mindweave's own TypeScript, not the project's.
+- `/update` works when the install path has a space in it, and a relaunch after it no longer treats stored keys as shell variables.
+- Control characters in page titles and tool names are removed.
+
 ## v3.4.5 (2026-11-01): the agent tells you what it built
 
 When the agent finishes something, it now tells you what you got. Before, a whole new page could end with only "I checked it, nothing to fix", and it could repeat "No build or test suite applies here" after every change. Both came from Mindweave itself, not from the model, and both are gone.

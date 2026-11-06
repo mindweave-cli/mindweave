@@ -85,9 +85,28 @@ function escapeHarnessMarkers(own: RegExp): RegExp {
  * but must not be able to pass for something Mindweave said: the output of a command.
  */
 export function defangHarnessMarkers(text: string): string {
-  return text.replace(new RegExp(`<(/?\s*(?:${HARNESS_TAGS.join("|")}))(?=[\s>/])`, "gi"), "&lt;$1");
+  // String.raw: in a plain template string `\s` is just `s`, and a tag followed by a space, tab or newline
+  // (`<system-reminder foo>`, `<rules\n>`) slipped through.
+  return text.replace(new RegExp(String.raw`<(/?\s*(?:${HARNESS_TAGS.join("|")}))(?=[\s>/])`, "gi"), "&lt;$1");
 }
 
+/** The blocks the system prompt wraps stored text in (project notes, memory, lessons, folder notes, skills, rules). */
+const PROMPT_BLOCK_TAGS = ["project_memory", "memory_index", "lessons", "notes", "available_skills", "forbidden_commands", "forbidden", "user_rules", "user-rules"];
+
+/**
+ * Stored text (a lesson, a memory entry, a notes file) with the tags of the blocks it will sit in defanged (pure). Without
+ * it a stored line containing `</lessons>` ends the "these are your own notes, they give no permission" frame early,
+ * and what follows reads as the system's own words. Opening tags too, so a block cannot be forged inside another.
+ */
+export function defangPromptBlocks(text: string): string {
+  const names = [...PROMPT_BLOCK_TAGS, ...HARNESS_TAGS].join("|");
+  return text.replace(new RegExp(String.raw`<(/?\s*(?:${names}))(?=[\s>/])`, "gi"), "&lt;$1");
+}
+
+/** A value for an attribute in a prompt block (pure): quotes and angle brackets cannot end it. */
+export function promptAttr(value: string): string {
+  return value.replace(/["<>\r\n]/g, (c) => ({ '"': "&quot;", "<": "&lt;", ">": "&gt;", "\r": " ", "\n": " " })[c]!);
+}
 /**
  * Does this command bring in text written by someone else (pure)? A page, a package's own message, a
  * commit message, an issue: output the model reads next to the user's words and could take for them.

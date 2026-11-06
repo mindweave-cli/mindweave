@@ -16,6 +16,7 @@
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import { projectDir } from "../memory/store.js";
+import { writeFileAtomic } from "../tools/atomicWrite.js";
 import type { TrustRecord } from "./trust.js";
 
 const FILE = "mcp-trust.json";
@@ -47,7 +48,8 @@ export async function saveTrust(cwd: string, record: TrustRecord): Promise<boole
     await fs.mkdir(projectDir(cwd), { recursive: true });
     // Sorted keys so the file diffs cleanly in git and a review shows what moved.
     const sorted = Object.fromEntries(Object.entries(record).sort(([a], [b]) => a.localeCompare(b)));
-    await fs.writeFile(trustPath(cwd), JSON.stringify(sorted, null, 2) + "\n", "utf8");
+    // Atomic: a torn file reads as "no record", and then every tool, a changed one included, is trusted as new.
+    await writeFileAtomic(trustPath(cwd), JSON.stringify(sorted, null, 2) + "\n");
     return true;
   } catch {
     return false;

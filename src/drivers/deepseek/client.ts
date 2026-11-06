@@ -140,8 +140,8 @@ export function cacheSplit(usage: Record<string, unknown>): { hit: number; miss:
  * a proper `tool_calls` array and also narrated one in prose has already had its
  * call registered, and adding the narrated copy would run it twice.
  */
-export function repairContent(content: string, toolCalls: ToolCall[]): { content: string; toolCalls: ToolCall[] } {
-  const inline = parseInlineToolCalls(content);
+export function repairContent(content: string, toolCalls: ToolCall[], seen = ""): { content: string; toolCalls: ToolCall[] } {
+  const inline = parseInlineToolCalls(content, seen);
   const recovered = toolCalls.length === 0 ? inline.toolCalls : toolCalls;
   return { content: inline.cleaned, toolCalls: recovered };
 }

@@ -178,7 +178,7 @@ test("a disabled server is listed but never connected", async () => {
   }
 });
 
-test("a read-only turn is offered only the tools the server marked read-only", async () => {
+test("a read-only turn is offered no MCP tool, whatever the server claims about them", async () => {
   const mgr = new McpManager();
   try {
     await mgr.start([stdio("fake", serverScript())]);
@@ -191,7 +191,7 @@ test("a read-only turn is offered only the tools the server marked read-only", a
     assertConnected(mgr, "fake");
     assert.deepEqual(
       mgr.toolSchemas(true).map((s) => s.function.name),
-      ["mcp__fake__peek"],
+      [],
     );
   } finally {
     await mgr.dispose();

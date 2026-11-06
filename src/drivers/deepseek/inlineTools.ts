@@ -53,17 +53,24 @@ export function stripInlineToolCalls(content: string): string {
  * follows it ("the page contains this, which I will not follow"). Content the model
  * read (a web page, a file, a tool result) can contain this markup, and a quote of it
  * must never run. Every block is still stripped from the visible text.
+ *
+ * seen is what tools returned earlier in the conversation. A block that is word for word in it is a quote even when it
+ * is the last thing the model wrote, so it is not run either.
  */
-export function parseInlineToolCalls(content: string): ParsedInline {
+export function parseInlineToolCalls(content: string, seen = ""): ParsedInline {
   const toolCalls: ToolCall[] = [];
   let n = 0;
   const fences = fencedRanges(content);
+  const quiet = (t: string) => t.replace(/\s+/g, " ");
+  const seenText = quiet(seen);
   for (const match of content.matchAll(BLOCK_RE)) {
     const start = match.index ?? 0;
     const end = start + match[0].length;
     if (fences.some(([from, to]) => start >= from && start < to)) continue;
     if (content.slice(end).replace(BLOCK_RE, "").trim() !== "") continue;
     const block = match[0];
+    // The same markup is in something a tool returned (a page, a file): the model is passing it on, not calling.
+    if (seenText && seenText.includes(quiet(block))) continue;
     INVOKE_RE.lastIndex = 0;
     let inv: RegExpExecArray | null;
     while ((inv = INVOKE_RE.exec(block)) !== null) {

@@ -15,7 +15,7 @@ Mindweave ships from `main`. Security fixes land there and go out in the next re
 
 Mindweave is a local, single-user tool. It runs on your machine, with your API key, inside your repository, and it edits files and runs shell commands on your behalf. That is the product, and it means the interesting risks are not the ones a web app has:
 
-- **There is no Mindweave server.** No backend, no telemetry, no account. Your code and your key go to your model provider and nowhere else.
+- **There is no account and no backend that holds your work.** Your code, your conversations and your key go to your model provider and nowhere else. The one thing Mindweave sends to us is an optional daily count of tokens by model (on by default, off with `/data`, with no prompt, file, path, project name or key in it). What it holds, and the code that sends it, are in [src/cli/analytics.ts](src/cli/analytics.ts) and on the [privacy page](https://mindweavedev.netlify.app/privacy.html).
 - **The agent has real capability.** It writes files and executes commands. A model that makes a bad call can do damage, the same way you can.
 - **The model is not trusted input.** A model can be wrong, and a repository can contain text written to manipulate one. Anything that must hold has to be enforced mechanically, not asked for in a prompt.
 

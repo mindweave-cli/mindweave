@@ -70,9 +70,21 @@ import { versionLabel, appVersion } from "./version.js";
 import { checkForUpdate } from "./updateCheck.js";
 import {
   ANALYTICS_EXPLANATION,
-  sendAnalyticsPing,
+  HISTORY_DAYS,
+  analyticsEnabled,
+  analyticsLine,
+  canOfferHistory,
+  blockedReason,
+  previewPayloadFrom,
+  reportActiveDay,
+  resetAnalyticsId,
+  setAnalyticsEnabled,
+  setShareHistory,
 } from "./analytics.js";
-import { APP_EXPLANATION, APP_PAGE_URL, appAnnouncement, openInBrowser } from "./desktopApp.js";
+import { dataSummary, describePayload } from "./dataView.js";
+import { everyMeta } from "../memory/allMetas.js";
+import { spendView } from "../core/spendView.js";
+import { APP_EXPLANATION, APP_PAGE_URL, openInBrowser } from "./desktopApp.js";
 import { PromptInput } from "./components/PromptInput.js";
 import { Picker } from "./components/Picker.js";
 import { ApprovalBox } from "./components/ApprovalBox.js";
@@ -102,7 +114,11 @@ import { describeMarathonEvent, resumeMarathon, startMarathon, type MarathonEven
 import { MarathonBox } from "./components/MarathonBox.js";
 import { isFinished, isLive, marathonBoxHeight, marathonUiReduce, type MarathonUi } from "./marathonUi.js";
 import { manualCommand, refusalReason } from "./selfUpdate.js";
-import { currentInstall, requestRestart, runUpdate } from "./updateRunner.js";
+import { currentInstall, packageRoot, requestRestart, runUpdate } from "./updateRunner.js";
+import { confirmManagedStart, readState as readLauncherState, runningManagedVersion } from "./launcher.js";
+import { mayCheck, realDeps as realStageDeps, stageDecision, stagedAhead, stageVersion } from "./stagedUpdate.js";
+import { UpdateWait } from "./components/UpdateWait.js";
+import { formatWhatsNew, takeWhatsNew } from "./whatsNew.js";
 import { enableMouse, readMouse, readWheel, stripMouse } from "./mouse.js";
 import { wheelLines } from "./wheelStep.js";
 import { applySelection, ctrlCShouldCopy, isEmpty, selectionText, type Selection } from "./selection.js";
@@ -549,6 +565,8 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
   const { exit } = useApp();
   const startCwd = useRef(process.cwd());
   const [trustBreadth] = useState(() => rootBreadth(startCwd.current));
+  // Set while `/update` installs the new version: the whole screen is the wait message (components/UpdateWait.tsx).
+  const [updating, setUpdating] = useState<{ version: string; startedAt: number } | null>(null);
   const [trustOpen, setTrustOpen] = useState(() => !isTrusted(projectDir(startCwd.current), rootBreadth(startCwd.current)));
   // Bumped when a key is saved, so the list re-reads and marks it.
   const [, setSetupTick] = useState(0);
@@ -1113,7 +1131,12 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
   // One session for the whole conversation (a ref so it survives re-renders).
   const session = useRef<Session | null>(null);
 
+  // The session reads the project folder (its notes, its rules, its git state), so it is not opened
+  // until the folder is trusted. Before this waited, all of that ran behind the trust question.
+  const sessionOpened = useRef(false);
   useEffect(() => {
+    if (trustOpen || sessionOpened.current) return;
+    sessionOpened.current = true;
     // A relaunch after `/update` opens on the conversation it left. A resume that does
     // not work out — an id that names nothing, a session file that will not load —
     // falls through to a normal start rather than refusing to open: the point of the
@@ -1126,10 +1149,16 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
       attachApproval(s);
       session.current = s;
       setReady(true);
+      // A copy the launcher handed over to has come up: it is no longer a start to be doubted.
+      confirmManagedStart();
+      // The first start on a newer version says what changed, once.
+      const news = takeWhatsNew(appVersion(), packageRoot());
+      if (news.updated && !(resumeSessionId && s.id === resumeSessionId)) note(`Mindweave updated to v${appVersion()}.`);
+      if (news.notes) note(formatWhatsNew(news.notes));
       if (resumeSessionId && s.id === resumeSessionId) {
         showResumed(withEarlier(s));
         restoreLastTurn(s);
-        note(`— updated to v${appVersion()}, continuing —`);
+        note(`Mindweave is now on v${appVersion()}. You can continue with your work.`);
         void compactIfIdle(s);
       }
       // The project may have a model saved from a different provider than the
@@ -1162,13 +1191,13 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
       void need;
       setSetupOpen(true);
     });
-  }, []);
+  }, [trustOpen]);
 
-  // The usage ping is paused for now (see analytics.ts). What every session starts with instead is
-  // the pointer to the desktop app, shown every launch.
+  // Every launch says whether the daily count is on and where to see it (analytics.ts). Said every time on purpose; whether
+  // something leaves the machine is not a thing to tell once. (The desktop app is still one `/app` away.)
   useEffect(() => {
-    note(appAnnouncement());
-    sendAnalyticsPing(appVersion());
+    const line = analyticsLine(process.env, currentInstall().kind);
+    if (line) note(line);
   }, []);
 
   // A quiet, backgrounded check for a newer release — independent of session startup so a
@@ -1180,6 +1209,66 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
       if (!latest) return;
       note(`update available: v${appVersion()} → v${latest} — /update to take it`);
     });
+  }, []);
+
+  // While nobody is typing and no turn is running, a newer release is installed beside this one (see
+  // stagedUpdate.ts). Nothing running is touched; the next start is the new version. Quiet on every
+  // failure: `/update` is still there for anyone who wants it now.
+  const lastActivity = useRef(Date.now());
+  useInput(() => {
+    lastActivity.current = Date.now();
+  });
+  const busyNow = useRef(busy);
+  busyNow.current = busy;
+  useEffect(() => {
+    // A turn starting or ending is activity: the quiet time is counted from the end of the work.
+    lastActivity.current = Date.now();
+  }, [busy]);
+  const triedStaging = useRef(new Set<string>());
+  const stagingNow = useRef(false);
+  // The version waiting to be restarted into, or null. Shown at the right end of the status line (see StatusLine's row).
+  const [updateReady, setUpdateReady] = useState<string | null>(null);
+  useEffect(() => {
+    const early = stagedAhead(readLauncherState(), appVersion());
+    if (early) setUpdateReady(early);
+    const tick = async () => {
+      if (stagingNow.current) return;
+      const running = appVersion();
+      if (!running) return;
+      const state = readLauncherState();
+      const ahead = stagedAhead(state, running);
+      if (ahead) {
+        setUpdateReady(ahead);
+        return;
+      }
+      const installKind = currentInstall().kind;
+      const disabled = Boolean(process.env.MINDWEAVE_NO_MANAGED === "1" || process.env.MINDWEAVE_NO_UPDATE_CHECK);
+      // Only ask the registry once the moment is right: this runs every half minute.
+      if (mayCheck({ disabled, installKind, busy: busyNow.current, idleMs: Date.now() - lastActivity.current })) return;
+      const latest = await checkForUpdate();
+      const decision = stageDecision({
+        latest,
+        running,
+        state: readLauncherState(),
+        idleMs: Date.now() - lastActivity.current,
+        busy: busyNow.current,
+        installKind,
+        attempted: triedStaging.current,
+        disabled,
+      });
+      if (!decision.stage) return;
+      triedStaging.current.add(decision.version);
+      stagingNow.current = true;
+      try {
+        const result = await stageVersion(decision.version, realStageDeps(runningManagedVersion(packageRoot())));
+        if (result.ok) setUpdateReady(result.version);
+      } finally {
+        stagingNow.current = false;
+      }
+    };
+    const timer = setInterval(() => void tick(), 30_000);
+    timer.unref?.();
+    return () => clearInterval(timer);
   }, []);
 
   // When a background shell finishes and Mindweave is idle, react to it automatically.
@@ -1392,7 +1481,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
     (_input, key) => {
       if (key.tab && key.shift) applyMode(nextMode(modeRef.current));
     },
-    { isActive: ready && overlay === null },
+    { isActive: ready && overlay === null && updating === null },
   );
 
   // Scrolling the transcript. The alternate screen keeps no scrollback of its
@@ -1499,7 +1588,7 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
         }
       }
     },
-    { isActive: ready && overlay === null },
+    { isActive: ready && overlay === null && updating === null },
   );
 
   // Leaving the reading view when it reaches the bottom needs no effect of its own:
@@ -2229,6 +2318,8 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
       const outputTokens = s ? summarizeTask(usageSamples.current, s.modelConfig.model)?.outputTokens : undefined;
       setLastMs(ms);
       setLastTurn({ at, ...(outputTokens ? { outputTokens } : {}) });
+      // Real work was done today: the optional daily count goes out now, if it is on (once a day; see analytics.ts).
+      void reportActiveDay();
       // Written into the session as well, so "Worked for 1m 28s · done 3:06 PM" is still there when the session is opened again.
       if (s) {
         s.lastTurn = { ms, at, ...(outputTokens ? { outputTokens } : {}) };
@@ -3484,14 +3575,38 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
       if (install.kind !== "global") {
         // Never guessed at. Overwriting a working tree or another project's dependency
         // is the one thing this command must not do; see selfUpdate.ts.
-        note(`${refusalReason(install)}\n\nTo do it by hand:\n  ${manualCommand(install)}`, { error: true });
+        note(`${refusalReason(install)}
+
+To do it by hand:
+  ${manualCommand(install)}`, { error: true });
         return;
       }
+      const current = appVersion();
+      // Recorded rather than done here: the terminal can only be handed over once Ink
+      // has unmounted, and unmounting is what ends this render. `index.ts` picks it up.
+      const restartInto = async () => {
+        // On disk before the successor goes looking for it.
+        await saveSession(s);
+        requestRestart({
+          packageRoot: install.packageRoot,
+          sessionId: s.id,
+          previousVersion: current,
+          prefix: install.prefix,
+        });
+        exit();
+      };
+
+      // Already installed in the background: nothing to download and nothing to ask, so this is only the restart.
+      // Typing /update is the answer.
+      if (stagedAhead(readLauncherState(), current)) {
+        await restartInto();
+        return;
+      }
+
       // Past the once-a-day cache deliberately: someone typing this is asking NOW, and
       // answering from a check made this morning would report "up to date" about a
       // release that has happened since.
       const latest = await checkForUpdate({ readCacheImpl: () => null });
-      const current = appVersion();
       if (!latest) {
         note(`Already on the latest${current ? ` (v${current})` : ""}.`);
         return;
@@ -3499,35 +3614,30 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
       const choice = await askApproval.current(
         `Update from v${current} to v${latest}? Mindweave will restart into this same conversation.`,
         ["Yes, update and restart", "No"],
-        manualCommand(install),
-        "This will run",
       );
       if (!choice.startsWith("Yes")) {
         note("Left as it is.");
         return;
       }
-      note(`Updating to v${latest}…`);
-      const result = await runUpdate(install.prefix);
+      // The whole screen becomes the wait message until the new version is installed beside this one and has
+      // started once by itself. This copy is never touched, so a failure here costs nothing.
+      setUpdating({ version: latest, startedAt: Date.now() });
+      const result = await stageVersion(latest, realStageDeps(runningManagedVersion(packageRoot())));
       if (!result.ok) {
-        // A failure here is a no-op rather than a half-state: npm either replaced the
-        // package or it did not, and the copy running is the copy that always was.
+        setUpdating(null);
         note(
-          `The update did not run, and nothing was changed.\n${result.message}\n\nTo do it by hand:\n  ${manualCommand(install)}`,
+          result.message === "another install is running"
+            ? "An update is already being installed in the background. Run /update again in a minute."
+            : `The update did not run, and nothing was changed.
+${result.message}
+
+To do it by hand:
+  ${manualCommand(install)}`,
           { error: true },
         );
         return;
       }
-      // On disk before the successor goes looking for it.
-      await saveSession(s);
-      // Recorded rather than done here: the terminal can only be handed over once Ink
-      // has unmounted, and unmounting is what ends this render. `index.ts` picks it up.
-      requestRestart({
-        packageRoot: install.packageRoot,
-        sessionId: s.id,
-        previousVersion: current,
-        prefix: install.prefix,
-      });
-      exit();
+      await restartInto();
       return;
     }
 
@@ -3574,11 +3684,61 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
       }
     }
 
-    if (name === "/analytics") {
-      // Counting is paused (see analytics.ts), so there is nothing to choose: the command only
-      // explains why. Whatever follows it on the line gets the same answer.
-      note(ANALYTICS_EXPLANATION);
-      return;
+    // /data — your own usage on this computer, and the optional daily count: turn it on or off, see exactly what would be
+    // sent, or start over with a new id. Nothing leaves from here; the count is sent by analytics.ts after real work.
+    if (name === "/data") {
+      // Read from disk ONCE, before the first box. Every box after that is built from what is already in memory: reading the
+      // sessions between two boxes is what made the box close for a moment and then open again.
+      const [spend, metas] = await Promise.all([spendView().catch(() => null), everyMeta().catch(() => [])]);
+      for (;;) {
+        const on = analyticsEnabled();
+        const blocked = blockedReason(process.env, currentInstall().kind);
+        const summary = dataSummary(spend, { on, blocked });
+        const offer = canOfferHistory();
+        const choice = await askApproval.current(summary, [
+          on ? "Turn sharing off" : "Turn sharing on",
+          ...(offer ? [`Also share my past usage (${HISTORY_DAYS} days)`] : []),
+          "What does it send?",
+          "Show what would be sent",
+          "Start over with a new id",
+          "Close",
+        ]);
+        if (choice.startsWith("Also share my past usage")) {
+          setShareHistory(true);
+          note(`Your past usage (the last ${HISTORY_DAYS} days) will go with the next count, once. Same counts, per day and per model.`);
+          continue;
+        }
+        if (choice === "Turn sharing on") {
+          // The past is a separate, explicit choice: it is days of usage that already happened, sent once, so the history fills in.
+          const past = await askApproval.current(
+            `Also share your past usage, the last ${HISTORY_DAYS} days?\nIt is the same counts, per day and per model, sent once so the history on the Data page fills in. Nothing else about it.`,
+            [`Yes, include the last ${HISTORY_DAYS} days`, "No, only from now on"],
+          );
+          setShareHistory(past.startsWith("Yes"));
+          setAnalyticsEnabled(true);
+          note(past.startsWith("Yes") ? "Data is on, with your past usage included once. After that, one small count a day." : "Data is on. One small count a day, after your first real work of the day.");
+          continue;
+        }
+        if (choice === "Turn sharing off") {
+          setAnalyticsEnabled(false);
+          note("Data is off. Nothing is sent.");
+          continue;
+        }
+        if (choice === "What does it send?") {
+          note(ANALYTICS_EXPLANATION);
+          continue;
+        }
+        if (choice === "Show what would be sent") {
+          note(describePayload(previewPayloadFrom(metas)));
+          continue;
+        }
+        if (choice === "Start over with a new id") {
+          resetAnalyticsId();
+          note("A new random id will be made the next time a count is sent. The old one is forgotten here.");
+          continue;
+        }
+        return;
+      }
     }
 
     // /clear — a fresh conversation without leaving the folder, and the one place to start over.
@@ -4316,6 +4476,9 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
   // Asked BEFORE anything else, including the key prompt: agreeing to hand over a key is
   // a smaller decision than agreeing to what the agent may touch, and the second one is
   // the reason the first matters.
+  if (updating) {
+    return <UpdateWait rows={rows} version={updating.version} current={appVersion()} startedAt={updating.startedAt} />;
+  }
   if (trustOpen) {
     return (
       <TrustGate
@@ -5011,8 +5174,16 @@ export function App({ resumeSessionId, initialScreen }: AppProps) {
 
         {/* Persistent status line: spinner + timer while working,
             "● Cooked for 1m 23s · N tokens" once finished. */}
-        <Box flexShrink={0}>
+        <Box flexShrink={0} width={width}>
           <StatusLine busy={busy} userCommand={busy && userTurn.current} startedAt={turnStart.current} lastMs={lastMs} lastTurn={lastTurn} usage={taskUsage} received={liveTokens} advance={advanceTokens} waiting={overlay?.kind === "approval"} waited={() => waitedMs.current + (waitSince.current != null ? Date.now() - waitSince.current : 0)} />
+          {/* A newer version is installed beside this one. Right end of the same row, green text with the version, until Mindweave is restarted
+              (close and open it, or /update). Hidden while a turn runs on a narrow screen, where the working line needs the room. */}
+          {updateReady && (!busy || width >= 100) ? (
+            <>
+              <Box flexGrow={1} />
+              <Text color={ACCENT}>{`↑ v${updateReady} ready · /update, or restart it yourself`}</Text>
+            </>
+          ) : null}
         </Box>
 
         {/* The main agent and the sub-agents it started this turn: one row, only while there are some. */}

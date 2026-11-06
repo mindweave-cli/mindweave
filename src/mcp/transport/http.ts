@@ -149,6 +149,34 @@ export function metadataHeaders(method: string, params?: Record<string, unknown>
   return headers;
 }
 
+/**
+ * `fetch` that follows a redirect only to the origin it was configured for.
+ *
+ * The default follows any redirect and carries the configured headers (an API key, a tenant id) along, so a server
+ * (or an open redirect on it) could send them to any other origin. Here a redirect inside the same origin is followed
+ * (a trailing slash, http to https is a different origin and is not), up to five hops; anything else comes back as
+ * the 3xx response, which the caller reports as an error instead of obeying it.
+ */
+export function sameOriginRedirects(inner: typeof fetch, configuredUrl: string): typeof fetch {
+  const origin = new URL(configuredUrl).origin;
+  return (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+    let url = String(input);
+    for (let hop = 0; hop < 5; hop++) {
+      const response = await inner(url, { ...init, redirect: "manual" });
+      const location = response.status >= 300 && response.status < 400 ? response.headers.get("location") : null;
+      if (!location) return response;
+      let next: URL;
+      try {
+        next = new URL(location, url);
+      } catch {
+        return response;
+      }
+      if (next.origin !== origin) return response;
+      url = next.href;
+    }
+    throw new Error("too many redirects");
+  }) as typeof fetch;
+}
 export class HttpTransport implements Transport {
   private nextId = 1;
   private disposed = false;
@@ -161,7 +189,7 @@ export class HttpTransport implements Transport {
 
   constructor(private readonly options: HttpOptions) {
     this.timeoutMs = options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
-    this.fetchImpl = options.fetchImpl ?? fetch;
+    this.fetchImpl = sameOriginRedirects(options.fetchImpl ?? fetch, options.url);
     this.closed = new Promise<void>((resolve) => {
       this.resolveClosed = resolve;
     });

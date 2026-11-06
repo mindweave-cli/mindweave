@@ -17,6 +17,8 @@
  */
 import { createHash } from "node:crypto";
 import { writeFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+import { guardedPathReason } from "./guard.js";
 import { CdpConnection, listTargets, listTargetsPatiently, pageTargets, type CdpTarget } from "./cdp.js";
 import type { UiSnapshot } from "./uiWin.js";
 
@@ -556,9 +558,35 @@ export class PageSession {
       conn.send("Page.enable"),
       conn.send("Network.enable"),
     ]);
+    if (owned) await session.guardFileRequests();
     return { session, others: pages.filter((p) => p !== target) };
   }
 
+  /**
+   * Refuse a page's requests for protected local files (.env, keys, the state folder, a network share).
+   *
+   * Only the address the model asked to open was checked, so a page in the project (`<iframe src="file:///.env">`,
+   * an `<img>`, a script) could bring a protected file into the screenshot that goes to the model. Every `file:`
+   * request the page makes now goes through the same guard `read_file` uses before it is allowed.
+   */
+  async guardFileRequests(): Promise<void> {
+    this.conn.on("Fetch.requestPaused", (p) => {
+      const requestId = String(p.requestId ?? "");
+      const url = String((p.request as { url?: string } | undefined)?.url ?? "");
+      void (async () => {
+        let reason: string | null = null;
+        try {
+          reason = await guardedPathReason(fileURLToPath(url));
+        } catch {
+          reason = "not a file path that can be checked";
+        }
+        await this.conn
+          .send(reason ? "Fetch.failRequest" : "Fetch.continueRequest", reason ? { requestId, errorReason: "AccessDenied" } : { requestId })
+          .catch(() => {});
+      })();
+    });
+    await this.conn.send("Fetch.enable", { patterns: [{ urlPattern: "file:*", requestStage: "Request" }] }).catch(() => {});
+  }
   get closed(): boolean {
     return this.conn.closed;
   }
@@ -639,17 +667,20 @@ export class PageSession {
         await this.settle(300); // navigating mid-read; wait for the new page
       }
     }
+    // Everything below was written by the page. Control characters (an ESC or OSC sequence in a title) would reach the
+    // user's terminal as commands to it, so they are made plain here, once, where the page's words come in.
+    const title = plainText(raw!.page.title);
     const snap: PageSnapshot = {
-      windows: [{ handle: this.target.id, title: raw!.page.title || shortUrl(raw!.page.url) }],
-      controls: raw!.controls,
-      texts: raw!.texts,
+      windows: [{ handle: this.target.id, title: title || shortUrl(raw!.page.url) }],
+      controls: raw!.controls.map((c) => ({ ...c, name: plainText(c.name), ...(c.value !== undefined ? { value: plainText(c.value) } : {}) })),
+      texts: raw!.texts.map((t) => ({ ...t, text: plainText(t.text) })),
       more: raw!.more,
-      page: raw!.page,
+      page: { ...raw!.page, title },
     };
-    if (this.errors.length) snap.errors = this.errors.splice(0);
-    if (this.warnings.length) snap.warnings = this.warnings.splice(0);
+    if (this.errors.length) snap.errors = this.errors.splice(0).map(plainText);
+    if (this.warnings.length) snap.warnings = this.warnings.splice(0).map(plainText);
     if (this.emulated) snap.emulated = { ...this.emulated };
-    if (this.dialogs.length) snap.dialogs = this.dialogs.splice(0);
+    if (this.dialogs.length) snap.dialogs = this.dialogs.splice(0).map(plainText);
     return snap;
   }
 
@@ -871,6 +902,7 @@ export class PageSession {
     const conn = await CdpConnection.open(target.webSocketDebuggerUrl!);
     const next = new PageSession(conn, this.port, target, owned);
     await Promise.all([conn.send("Runtime.enable"), conn.send("Log.enable"), conn.send("Page.enable"), conn.send("Network.enable")]);
+    if (owned) await next.guardFileRequests();
     return next;
   }
 
@@ -879,6 +911,11 @@ export class PageSession {
     this.conn.close();
     await this.owned?.close();
   }
+}
+
+/** Text a page wrote, with control characters and the bidirectional overrides made into spaces (pure). */
+export function plainText(text: string): string {
+  return text.replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, " ");
 }
 
 /** An address short enough for an error line: host and path, no query. Pure. */

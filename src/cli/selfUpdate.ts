@@ -46,6 +46,8 @@ export type Install =
   | { kind: "source"; packageRoot: string }
   /** The copy that ships inside the mwcode desktop app. It updates when the app does. */
   | { kind: "app"; packageRoot: string }
+  /** A version the launcher handed over to (see launcher.ts). The launcher is what `/update` updates. */
+  | { kind: "managed"; packageRoot: string }
   /** A dependency of some project. `-g` would not touch it, and it is not ours anyway. */
   | { kind: "local"; packageRoot: string }
   /** Somewhere this cannot place. Refused rather than guessed at. */
@@ -98,6 +100,12 @@ export function classifyInstall(packageRoot: string, probe: InstallProbe): Insta
   // update it, and a second global copy would not change which one runs.
   if (/(^|[\\/])resources[\\/]app(\.asar)?[\\/]node_modules[\\/]mindweave$/i.test(packageRoot)) {
     return { kind: "app", packageRoot };
+  }
+
+  // A copy installed by the background updater: `<state>/versions/<version>/node_modules/mindweave`. It is not a
+  // global install and not a project's dependency, and nothing outside Mindweave puts a copy in that shape.
+  if (/[\\/]versions[\\/][0-9][0-9A-Za-z.+-]*[\\/]node_modules[\\/]mindweave$/.test(packageRoot)) {
+    return { kind: "managed", packageRoot };
   }
 
   // Running straight out of a checkout — the dev shim's shape. No `node_modules` above
@@ -156,6 +164,8 @@ export function refusalReason(install: Install): string | null {
       );
     case "app":
       return "This copy comes with the mwcode app, so it updates when the app does.";
+    case "managed":
+      return "This copy was installed by Mindweave's own updater, so the launcher it came from is what gets updated.";
     case "local":
       return "This copy is a dependency of another project, so it is that project's to update.";
     case "unknown":

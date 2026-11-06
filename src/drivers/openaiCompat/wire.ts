@@ -128,7 +128,8 @@ export interface CompatProvider {
    * Applied identically on the buffered and streamed paths, so a turn cannot be
    * clean one way and corrupt the other.
    */
-  repairContent?(content: string, toolCalls: ToolCall[]): { content: string; toolCalls: ToolCall[] };
+  /** seen is the text of what tools returned in this conversation: a repair must not turn a QUOTE of it into a call. */
+  repairContent?(content: string, toolCalls: ToolCall[], seen?: string): { content: string; toolCalls: ToolCall[] };
 
   /** Extra request headers, e.g. a router's app identification. Optional. */
   headers?: Record<string, string>;
@@ -752,13 +753,21 @@ function withRequestHeaders(provider: CompatProvider, req: ModelRequest): Compat
 }
 
 /** Ask the model for one turn. */
+/** The provider with its content repair told what the tools returned, so text a tool returned is never promoted to a call. */
+function withSeen(provider: CompatProvider, req: ModelRequest): CompatProvider {
+  const repairContent = provider.repairContent;
+  if (!repairContent) return provider;
+  const seen = req.messages.filter((m) => m.role === "tool").map((m) => m.content).join("\n");
+  return { ...provider, repairContent: (content, toolCalls) => repairContent(content, toolCalls, seen) };
+}
+
 export async function compatToolTurn(
   provider: CompatProvider,
   req: ModelRequest,
   signal?: AbortSignal,
 ): Promise<Turn> {
   const body = { ...buildBody(provider, req, provider.bufferedMaxTokens), stream: false };
-  return toTurn(provider, await post(withRequestHeaders(provider, req), body, signal));
+  return toTurn(withSeen(provider, req), await post(withRequestHeaders(provider, req), body, signal));
 }
 
 /**
@@ -779,5 +788,5 @@ export async function compatStreamTurn(
     stream: true,
     stream_options: { include_usage: true },
   };
-  return consumeStream(provider, await postStream(withRequestHeaders(provider, req), body, signal), onEvent);
+  return consumeStream(withSeen(provider, req), await postStream(withRequestHeaders(provider, req), body, signal), onEvent);
 }

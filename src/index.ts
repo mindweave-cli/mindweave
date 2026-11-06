@@ -17,18 +17,29 @@
  *
  * The shebang above + the `bin` entry in package.json make this the `mindweave` command.
  */
-import { loadWithProductionEnv } from "./cli/prodEnv.js";
-import { registerInkSpeedups } from "./cli/inkSpeed.js";
-import { parseStartupArgs } from "./cli/startupArgs.js";
+import { handOff } from "./cli/launcher.js";
 
-// `-p` is one task with no screen. It is decided here, before the UI libraries are loaded or their
-// loader hook is installed, so a script never pays for React and Ink and never needs a terminal.
-const startup = parseStartupArgs(process.argv.slice(2));
-if (startup.kind === "headless") {
-  const { runHeadlessMain } = await import("./headless/main.js");
-  process.exit(await runHeadlessMain(startup.argv));
+// A newer copy installed in the background (see cli/launcher.ts) runs instead of this one, in this
+// process. This is the only thing that happens before the program is chosen, and it falls through to
+// the lines below whenever there is nothing to hand over to.
+if (!(await handOff())) {
+  await runThisCopy();
 }
 
-registerInkSpeedups();
-await loadWithProductionEnv();
-await import("./main.js");
+async function runThisCopy(): Promise<void> {
+  const { loadWithProductionEnv } = await import("./cli/prodEnv.js");
+  const { registerInkSpeedups } = await import("./cli/inkSpeed.js");
+  const { parseStartupArgs } = await import("./cli/startupArgs.js");
+
+  // `-p` is one task with no screen. It is decided here, before the UI libraries are loaded or their
+  // loader hook is installed, so a script never pays for React and Ink and never needs a terminal.
+  const startup = parseStartupArgs(process.argv.slice(2));
+  if (startup.kind === "headless") {
+    const { runHeadlessMain } = await import("./headless/main.js");
+    process.exit(await runHeadlessMain(startup.argv));
+  }
+
+  registerInkSpeedups();
+  await loadWithProductionEnv();
+  await import("./main.js");
+}

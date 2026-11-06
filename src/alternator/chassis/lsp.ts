@@ -13,6 +13,7 @@
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { promises as fs } from "node:fs";
+import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 // The JSON-RPC library is loaded when a language server is first started (see launch), not at startup.
 import type { MessageConnection } from "vscode-jsonrpc/node";
@@ -128,6 +129,24 @@ interface Tracked {
   shelled: boolean;
 }
 
+/**
+ * Settings sent with `initialize`, per server.
+ *
+ * typescript-language-server prefers `node_modules/typescript/lib/tsserver.js` of the WORKSPACE over its own copy and
+ * runs it with node. A repository that ships one (or a dependency named `typescript`) ran its code the first time the
+ * agent asked for a definition, with no question and no trace in Sentinel (the tool is read-only). Naming our own
+ * tsserver is the user setting, which wins over the workspace's. Without one on this machine the workspace's copy is
+ * not used either, since that is the same hole.
+ */
+export function initializationOptionsFor(key: string): { initializationOptions?: Record<string, unknown> } {
+  if (key !== "typescript-language-server") return {};
+  try {
+    const path = createRequire(import.meta.url).resolve("typescript/lib/tsserver.js");
+    return { initializationOptions: { tsserver: { path } } };
+  } catch {
+    return {};
+  }
+}
 export class LspManager {
   private sessions = new Map<string, Promise<Session | null>>();
   private languages = new Set<string>();
@@ -483,6 +502,7 @@ export class LspManager {
           rootUri,
           capabilities: CLIENT_CAPABILITIES,
           workspaceFolders: [{ uri: rootUri, name: "root" }],
+          ...initializationOptionsFor(spec.key),
         }),
         INIT_TIMEOUT,
       );

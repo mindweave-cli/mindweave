@@ -111,11 +111,16 @@ test("the oauth override block is read, and bad values cost the override rather 
   assert.equal(none.type === "http" ? none.oauth : null, undefined, "a server that needs no override carries none");
 });
 
-test("a client secret is read from the environment, per server first", () => {
+test("a client secret is read from the environment, for the named server only", () => {
   // Never from mcp.json: that file gets committed, and a secret in a repository is a
   // secret that has been published.
   const env = { MINDWEAVE_MCP_CLIENT_SECRET: "shared", MINDWEAVE_MCP_CLIENT_SECRET_MY_SERVER: "specific" } as NodeJS.ProcessEnv;
   assert.equal(clientSecretFor("my-server", env), "specific", "the per-server name wins");
-  assert.equal(clientSecretFor("other", env), "shared");
+  assert.equal(clientSecretFor("other", env), undefined, "a bare variable is not handed to whichever server asks");
   assert.equal(clientSecretFor("other", {}), undefined);
+});
+
+test("a server or tool name with terminal control characters is dropped", () => {
+  assert.equal(parseEntry("ok\u001b]0;x\u0007", { command: "node" }), null);
+  assert.ok(parseEntry("fine-server", { command: "node" }));
 });

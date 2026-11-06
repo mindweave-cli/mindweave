@@ -44,7 +44,7 @@ import { posixShell, shellMismatchNote } from "./posixShell.js";
 import { killTree, spawnManaged } from "./killTree.js";
 import { childEnv } from "./childEnv.js";
 import { ripgrepShellEnv } from "./ripgrepShell.js";
-import { dialectFor, parseCommand, protectedArgsReason, ruleVerdict } from "./commandPolicy.js";
+import { dialectFor, parseCommand, protectedArgsReason, ruleVerdict, stateFileNamedReason } from "./commandPolicy.js";
 import { withCoauthor } from "./coauthor.js";
 import { captureAfterCommand, looksReadOnly, snapshotBeforeCommand } from "./shellCheckpoint.js";
 import { canonicalRoot, relativize } from "./paths.js";
@@ -312,12 +312,19 @@ export const runCommand: Tool = {
       const why = verdict.forbid.justification ? ` ${verdict.forbid.justification}` : "";
       return fail(`Refusing to run this command: your rule forbids \`${verdict.forbid.words.join(" ")}\`.${why}`);
     }
-    const named = await protectedArgsReason(parsed, ctx.cwd);
+    const named = await protectedArgsReason(parsed, ctx.cwd, command);
     if (named) {
       return fail(
         `Refusing to run this command: ${named}. A command may list it, delete it, or write to it, but not read it, copy it out or send it. ` +
           `Nothing here can read it for you; ask the user for the value you need. ` +
           `If the command only mentions that name in text it is writing to another file, make that change with edit or write_file instead.`,
+      );
+    }
+    const stateNamed = await stateFileNamedReason(parsed, ctx.cwd);
+    if (stateNamed) {
+      return fail(
+        `Refusing to run this command: ${stateNamed}. A command cannot read, write or delete Mindweave's hooks, approvals, trust marker or rules: `+
+          `	he file tools refuse them for the same reason. The user changes these through Mindweave's own commands or by hand.`,
       );
     }
     const shell: Shell = args.shell === "cmd" ? "cmd" : "powershell";

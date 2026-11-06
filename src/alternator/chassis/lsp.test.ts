@@ -224,3 +224,11 @@ test("an edit that breaks a caller is reported as an error in the caller", { tim
     await lsp.dispose();
   }
 });
+
+test("typescript-language-server is told which tsserver to use, so a repository's own copy never runs", async () => {
+  const { initializationOptionsFor } = await import("./lsp.js");
+  const opts = initializationOptionsFor("typescript-language-server").initializationOptions as { tsserver: { path: string } };
+  assert.match(opts.tsserver.path, /typescript[\\/]lib[\\/]tsserver\.js$/);
+  assert.ok(!opts.tsserver.path.includes(process.cwd() + "/.."), "ours, not the workspace's");
+  assert.deepEqual(initializationOptionsFor("pyright"), {}, "other servers are unaffected");
+});

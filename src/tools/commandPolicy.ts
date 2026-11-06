@@ -105,11 +105,11 @@ const READ_ONLY: Record<string, ArgCheck> = {
   // listing and printing
   ls: anyArgs, dir: anyArgs, pwd: anyArgs, echo: anyArgs, printf: anyArgs, cat: anyArgs, type: anyArgs,
   head: anyArgs, tail: anyArgs, wc: anyArgs, nl: anyArgs, cut: anyArgs, tr: anyArgs, stat: anyArgs, file: anyArgs,
-  du: anyArgs, df: anyArgs, tree: anyArgs, which: anyArgs, where: anyArgs, whoami: anyArgs, hostname: anyArgs,
+  du: anyArgs, df: anyArgs, tree: (args) => !args.some((a) => !a.startsWith("--") && /^-[A-Za-z0-9]*o/.test(a)) && without("--output")(args), which: anyArgs, where: anyArgs, whoami: anyArgs, hostname: anyArgs,
   uname: anyArgs, id: anyArgs, ps: anyArgs, basename: anyArgs, dirname: anyArgs, realpath: anyArgs, readlink: anyArgs,
   cmp: anyArgs, diff: anyArgs, jq: anyArgs,
   uniq: positionalsAtMost(1),
-  sort: without("-o", "--output"),
+  sort: (args) => !args.some((a) => /^--(output|compress-program)(=|$)/i.test(a) || (!a.startsWith("--") && /^-[A-Za-z0-9]*o/.test(a))),
   date: without("-s", "--set"),
   grep: anyArgs, egrep: anyArgs, fgrep: anyArgs,
   rg: without("--pre", "--hostname-bin"),
@@ -157,12 +157,16 @@ function gitReadOnly(cmd: SimpleCommand, gitConfigSafe: boolean): boolean {
   const [, sub, ...args] = cmd.words;
   if (sub === "--version" || sub === "version") return args.length === 0;
   const check = sub ? GIT_READ_ONLY[sub] : undefined;
+  // `git grep -O<program>` opens the matches in a program; `-O` may also come attached or in a cluster.
+  if (sub === "grep" && args.some((a) => !a.startsWith("--") && /^-[A-Za-z0-9]*O/.test(a))) return false;
   return !!check && without(...GIT_BAD_OPTIONS)(args) && check(args);
 }
 
 /** Is this one command a known read-only command, given what it is passed? */
 export function isReadOnly(cmd: SimpleCommand, gitConfigSafe: boolean): boolean {
   if (cmd.writes.length > 0 || cmd.expands || cmd.words.length === 0) return false;
+  // A program named by a path (`./cat.cmd`, `C:\tools\ls.exe`) is whatever is at that path, not the verb it ends in.
+  if (/[\\/]/.test(cmd.words[0]!)) return false;
   const verb = verbOf(cmd);
   if (verb === "git") return gitReadOnly(cmd, gitConfigSafe);
   const check = READ_ONLY[verb];
@@ -180,7 +184,8 @@ export function gitConfigRunsPrograms(cwd: string): boolean {
   if (!existsSync(dotGit)) return false; // not a repository: git reads only the user's own config
   try {
     const text = readFileSync(join(dotGit, "config"), "utf8");
-    return /^\s*(fsmonitor|pager|sshcommand|editor|askpass|external|textconv|command|clean|smudge|process|program|hookspath|path)\s*=|^\s*\[(include|includeIf)\b/im.test(text);
+    // The key may sit on the section line itself (`[core] fsmonitor = ...`): git reads that too.
+    return /(^|\])\s*(fsmonitor|pager|sshcommand|editor|askpass|external|textconv|command|clean|smudge|process|program|hookspath|path)\s*=|^\s*\[(include|includeIf)\b/im.test(text);
   } catch {
     return true;
   }
@@ -271,7 +276,23 @@ function pathCandidates(word: string): string[] {
  * ("`.env` is an environment/secrets file"), or null. Judges what the paths lead to (links
  * and stream spellings resolved), not just the text.
  */
-export async function protectedArgsReason(parsed: ParsedCommand, cwd: string): Promise<string | null> {
+export async function protectedArgsReason(parsed: ParsedCommand, cwd: string, raw?: string): Promise<string | null> {
+  // A command this reader could not fully read may be doing something other than what its words say (a quote that a
+  // comment turns into a line break, a here-document). Its words cannot be trusted to be arguments, so every word of the
+  // text is judged as a possible path instead.
+  if (parsed.unreadable && raw) {
+    for (const token of raw.split(/[\s'"`;|&<>(),]+/)) {
+      if (!token) continue;
+      for (const candidate of pathCandidates(token)) {
+        const text = protectedPathReason(candidate.replace(/\\/g, "/"));
+        if (text) return `\`${candidate}\` is ${text}`;
+        const abs = resolveWord(candidate, cwd);
+        if (!abs || !(/[\\/]/.test(candidate) || /^[.~]/.test(candidate) || existsSync(abs))) continue;
+        const real = await guardedPathReason(withoutStream(abs));
+        if (real) return `\`${candidate}\` is ${real}`;
+      }
+    }
+  }
   for (const cmd of parsed.commands) {
     const verb = verbOf(cmd);
     if (NEVER_READS.has(verb)) continue;
@@ -292,6 +313,26 @@ export async function protectedArgsReason(parsed: ParsedCommand, cwd: string): P
   return null;
 }
 
+/**
+ * Mindweave's own state (hooks, MCP approvals, the trust marker, the Sentinel allow list, rule files, sign-ins) named
+ * anywhere in a command, as a reason, or null. Unlike `protectedArgsReason` this covers every word, the destination of a
+ * copy, a redirect target and a delete: the file tools refuse to write these files, and a shell that could would make that
+ * refusal a formality (a copy into `hooks.json` is a command that runs at every session start). The open project's
+ * notes, saved results and cleared output stay reachable, as they are for read_file.
+ */
+export async function stateFileNamedReason(parsed: ParsedCommand, cwd: string): Promise<string | null> {
+  for (const cmd of parsed.commands) {
+    for (const word of [...cmd.words.slice(1), ...cmd.writes, ...cmd.reads]) {
+      for (const candidate of pathCandidates(word)) {
+        const abs = resolveWord(candidate, cwd);
+        if (!abs || !(/[\\/]/.test(candidate) || /^[.~]/.test(candidate))) continue;
+        const reason = await guardedPathReason(withoutStream(abs));
+        if (reason && /^Mindweave's own/.test(reason)) return `\`${candidate}\` is ${reason}`;
+      }
+    }
+  }
+  return null;
+}
 function resolveWord(word: string, cwd: string): string | null {
   const expanded = expandHomeWords(word.startsWith("~") ? word.replace(/^~/, homedir()) : word);
   if (/[$%*?<>|"]/.test(expanded)) return null;

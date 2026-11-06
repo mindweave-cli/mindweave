@@ -27,6 +27,7 @@ import { silenceConsole } from "./cli/quietConsole.js";
 import { nameSession } from "./cli/appIdentity.js";
 import { tuneMemory } from "./cli/memoryTuning.js";
 import { spawn } from "node:child_process";
+import { childEnv } from "./tools/childEnv.js";
 import { relaunch } from "./cli/restart.js";
 import { takePendingRestart } from "./cli/updateRunner.js";
 
@@ -166,7 +167,9 @@ if (restart) {
       },
       spawn: (command, args) =>
         new Promise((resolve) => {
-          const child = spawn(command, args, { stdio: "inherit" });
+          // childEnv(), not the default: the default hands the new process everything this one loaded from the
+          // settings files, and the new process would take those keys for ones the user's shell exported.
+          const child = spawn(command, args, { stdio: "inherit", env: childEnv() });
           child.on("error", () => resolve({ code: 1, signal: null }));
           child.on("close", (code, signal) => resolve({ code, signal }));
         }),

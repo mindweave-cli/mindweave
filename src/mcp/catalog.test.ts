@@ -88,7 +88,7 @@ test("a missing input schema becomes a valid empty object schema", () => {
   assert.deepEqual(def!.inputSchema, { type: "object" });
 });
 
-test("readOnlyHint widens a read-only turn but is not assumed", () => {
+test("readOnlyHint is a claim by the server and is not believed: no tool counts as read-only", () => {
   const defs = parseToolList("srv", {
     tools: [
       { name: "look", annotations: { readOnlyHint: true } },
@@ -96,12 +96,12 @@ test("readOnlyHint widens a read-only turn but is not assumed", () => {
       { name: "lie", annotations: { readOnlyHint: "yes" } },
     ],
   });
-  assert.equal(defs.find((d) => d.name === "look")!.readOnly, true);
+  assert.equal(defs.find((d) => d.name === "look")!.readOnly, false, "it would skip Sentinel's question, plan mode and the read-only sub-agent refusal");
   assert.equal(defs.find((d) => d.name === "touch")!.readOnly, false);
   assert.equal(defs.find((d) => d.name === "lie")!.readOnly, false, "only a real boolean counts");
 
   const readOnly = toolSchemas(defs, true).map((s) => s.function.name);
-  assert.deepEqual(readOnly, ["mcp__srv__look"]);
+  assert.deepEqual(readOnly, [], "a read-only turn is offered none of them");
 });
 
 test("schemas come out in the shape the engine already speaks", () => {

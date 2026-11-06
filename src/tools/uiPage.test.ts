@@ -250,3 +250,10 @@ test("scrolling works in an app whose content scrolls inside a panel, not the pa
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("plainText turns a page's control characters into spaces", async () => {
+  const { plainText } = await import("./uiPage.js");
+  assert.equal(plainText("Shop\u001b]0;pwned\u0007 now\u001b[2J"), "Shop ]0;pwned  now [2J");
+  assert.equal(plainText("a\u202eb\u0085c"), "a b c");
+  assert.equal(plainText("Plain title – ünïcode 日本語"), "Plain title – ünïcode 日本語");
+});

@@ -26,6 +26,8 @@ import { lessonDoubtful, lessonsDir, loadLessons, rankLessons, type Lesson, type
 import { applyLessonOps, applyMemoryOps, parseLessonOps } from "./lessonOps.js";
 import { listMemories, loadMemoryIndex, type MemoryListing } from "./autoMemory.js";
 import { callText, reflectionDue, signalsIn } from "./lessonSignals.js";
+import { stripAttachments } from "../cli/attachments.js";
+import { collapsePastes } from "./pastedText.js";
 import type { Entry, Session } from "./types.js";
 
 /** The most a digest carries, newest kept. About 6K tokens. */
@@ -108,7 +110,9 @@ export function buildLessonDigest(entries: readonly Entry[], maxChars = DIGEST_C
   for (const e of entries) {
     if (e.role === "user") {
       if (e.synthetic) continue;
-      lines.push(`USER: ${clip(e.content, SAID_CLIP)}`);
+      // What the person TYPED. An attached file or a paste is somebody else's text (a README, a web page) and would sit on the
+      // USER line as if they had said it, and a lesson made from it is saved as theirs and can follow them to every project.
+      lines.push(`USER: ${clip(collapsePastes(stripAttachments(e.content)), SAID_CLIP)}`);
     } else if (e.role === "summary") {
       lines.push("(earlier work was summarised away here)");
     } else if (e.role === "assistant") {

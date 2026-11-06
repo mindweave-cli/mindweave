@@ -5,6 +5,7 @@
  * had back without running the call again, and the stub could only say "re-read it".
  */
 import { test } from "node:test";
+import { registerOpenProject } from "./store.js";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -31,6 +32,7 @@ function transcript(n: number): Entry[] {
 
 test("a cleared result is saved, its stub says where and how big, and read_file can open it", async () => {
   const cwd = realpathSync.native(mkdtempSync(join(tmpdir(), "mw-cleared-")));
+  registerOpenProject(cwd); // a session does this when it opens; the guard lets read_file into this project's saved results
   const before = transcript(12);
   const { entries, cleared } = microcompact(before);
   assert.ok(cleared > 0, "the setup should clear something");
