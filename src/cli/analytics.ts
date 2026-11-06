@@ -53,14 +53,14 @@ function endpoint(env: NodeJS.ProcessEnv = process.env): string {
 // ── the setting ──────────────────────────────────────────────────────────────
 
 interface Config {
-  /** The person turned it off. Absent means on, the default. An older version's "off" (`enabled: false`) was a choice too, and is kept. */
+  /** The person turned it off with /data. Absent means on, the default. The `enabled` field an older version wrote is ignored: that was a different count, and this one is on for everyone until they turn it off here. */
   disabled?: boolean;
   /** Made the first time something is about to be sent, never before. */
   id?: string;
   /** The last day (UTC) a count was sent. */
   sentDay?: string;
-  /** The person chose to also share their past usage (the last HISTORY_DAYS days) once, when sharing began. */
-  history?: boolean;
+  /** The person turned the past off: the last HISTORY_DAYS days are not shared. Absent means they go, once, with the first count. */
+  noHistory?: boolean;
   /** That past usage has been sent. */
   historySent?: boolean;
 }
@@ -73,10 +73,10 @@ function readConfig(root = stateRoot()): Config {
   try {
     const raw = JSON.parse(readFileSync(configPath(root), "utf8")) as Record<string, unknown>;
     const cfg: Config = {};
-    if (raw.disabled === true || raw.enabled === false) cfg.disabled = true;
+    if (raw.disabled === true) cfg.disabled = true;
     if (typeof raw.id === "string" && /^[A-Za-z0-9-]{8,64}$/.test(raw.id)) cfg.id = raw.id;
     if (typeof raw.sentDay === "string" && /^\d{4}-\d{2}-\d{2}$/.test(raw.sentDay)) cfg.sentDay = raw.sentDay;
-    if (raw.history === true) cfg.history = true;
+    if (raw.noHistory === true) cfg.noHistory = true;
     if (raw.historySent === true) cfg.historySent = true;
     return cfg;
   } catch {
@@ -120,24 +120,24 @@ export function setAnalyticsEnabled(on: boolean, root = stateRoot(), _now?: numb
   return cfg.disabled !== true;
 }
 
-/** Choose whether the past (the last HISTORY_DAYS days) is shared too, once. Only meaningful before the first count goes out. */
+/** Share the past (the last HISTORY_DAYS days) once, with the first count, or not. It is shared unless the person turns it off. */
 export function setShareHistory(on: boolean, root = stateRoot()): void {
   const cfg = readConfig(root);
-  if (on) cfg.history = true;
-  else delete cfg.history;
+  if (on) delete cfg.noHistory;
+  else cfg.noHistory = true;
   writeConfig(cfg, root);
 }
 
-/** Can the person still be offered to share their past? (sharing is on, and they have neither chosen it nor had it sent) */
-export function canOfferHistory(root = stateRoot()): boolean {
-  const cfg = readConfig(root);
-  return cfg.disabled !== true && cfg.history !== true && cfg.historySent !== true;
-}
-
-/** Is the past still to be sent? (chosen, and not yet gone) */
+/** Will the past go with the next count? Sharing is on, the person has not turned the past off, and it has not gone yet. */
 export function historyPending(root = stateRoot()): boolean {
   const cfg = readConfig(root);
-  return cfg.history === true && cfg.historySent !== true;
+  return cfg.disabled !== true && cfg.noHistory !== true && cfg.historySent !== true;
+}
+
+/** Has the person turned the past off, so it can be offered again? (sharing is on, the past was turned off and never sent) */
+export function canOfferHistory(root = stateRoot()): boolean {
+  const cfg = readConfig(root);
+  return cfg.disabled !== true && cfg.noHistory === true && cfg.historySent !== true;
 }
 
 /** A new random id, and no memory of what was sent under the old one. */
@@ -329,7 +329,7 @@ export async function sendDailyCount(deps: SendDeps = {}): Promise<SendOutcome> 
     if (now - lastFailure < RETRY_AFTER_MS) return "wait";
 
     const id = cfg.id ?? randomUUID();
-    const withHistory = cfg.history === true && cfg.historySent !== true;
+    const withHistory = cfg.noHistory !== true && cfg.historySent !== true;
     const payload = buildPayload({ metas: deps.metas ?? (await everyMeta()), now, id, history: withHistory });
     const doFetch = deps.fetchImpl ?? fetch;
     const res = await doFetch(endpoint(deps.env), {
@@ -376,12 +376,15 @@ export function analyticsLine(env: NodeJS.ProcessEnv, installKind: string | unde
   if (!analyticsEnabled(root)) {
     return `Data is off. /data to turn it on: one small daily count of tokens by model, so everyone can see which models perform best. See it at ${DATA_PAGE_URL}`;
   }
+  const past = historyPending(root);
   return [
-    "Data is on. It shares one small daily count of tokens by model, so everyone can see which models perform best and which gets the best cache hit rate.",
+    past
+      ? `Data is on. It shares one small daily count of tokens by model, and your last ${HISTORY_DAYS} days of usage once, so everyone can see which models perform best and which gets the best cache hit rate.`
+      : "Data is on. It shares one small daily count of tokens by model, so everyone can see which models perform best and which gets the best cache hit rate.",
     "We never see your chats, your files or what your project is. Only the counts.",
     `See the numbers: ${DATA_PAGE_URL}`,
     `See how it is sent: ${SOURCE_URL}`,
-    "Turn it off any time with /data.",
+    past ? "Turn off the past data, or all of it, with /data." : "Turn it off any time with /data.",
   ].join("\n");
 }
 
@@ -396,6 +399,7 @@ export const ANALYTICS_EXPLANATION = [
   "Sent once a day:",
   "  a random id, the version, your system and the day",
   "  for each model: tokens in, from the cache and out, calls, sessions, and the cost at list price",
+  `Sent once, with the first count: the same counts for your last ${HISTORY_DAYS} days. Turn that off, or everything, with /data.`,
   "Never sent: a prompt, a reply, a file, a path, a project name or a key.",
   "A model name is sent only if it is built into Mindweave. Any other is sent as \"other\".",
 ].join("\n");

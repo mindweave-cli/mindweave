@@ -19,7 +19,7 @@ function tokens(n: number): string {
 }
 
 /** The summary shown at the top of `/data`. */
-export function dataSummary(spend: SpendView | null, state: { on: boolean; blocked: string | null }): string {
+export function dataSummary(spend: SpendView | null, state: { on: boolean; blocked: string | null; past?: "pending" | "sent" | "off" }): string {
   // Five lines at most: the box this sits in shows only a few, and the line that says whether anything is sent must not be the one cut off.
   const lines: string[] = [];
   if (!spend || spend.totalBilled === 0) {
@@ -30,7 +30,8 @@ export function dataSummary(spend: SpendView | null, state: { on: boolean; block
     const top = spend.byModel.slice(0, 2).map((m) => `${m.model} ${tokens(m.billed)}`).join(" · ");
     if (top) lines.push(`Top models: ${top}`);
   }
-  lines.push(state.on ? "Daily count: ON. One small message a day, after your first real work." : "Daily count: OFF. Nothing is sent.");
+  const on = state.past === "pending" ? "Daily count: ON. Your last 60 days go once, then one a day." : state.past === "off" ? "Daily count: ON. Your past is not shared." : "Daily count: ON. One small message a day, after your first real work.";
+  lines.push(state.on ? on : "Daily count: OFF. Nothing is sent.");
   if (state.on && state.blocked) lines.push(`Not sent from here: ${state.blocked}.`);
   return lines.join("\n");
 }

@@ -15,6 +15,7 @@ import {
   analyticsLine,
   blockedReason,
   buildPayload,
+  canOfferHistory,
   forgetFailure,
   historyPending,
   previewPayload,
@@ -62,7 +63,7 @@ test("a moved state folder, CI, a test run, a checkout and a switch each stop a 
   for (const kind of ["source", "local", "unknown", undefined]) assert.ok(blockedReason(REAL, kind), String(kind));
 });
 
-test("it is on unless the person turned it off, and an off from an older version is kept", () => {
+test("it is on unless the person turned it off here, whatever an older version saved", () => {
   const dir = root();
   assert.equal(analyticsEnabled(dir), true, "the default");
   assert.equal(setAnalyticsEnabled(false, dir), false);
@@ -71,7 +72,7 @@ test("it is on unless the person turned it off, and an off from an older version
   assert.equal(analyticsEnabled(dir), true);
   const old = root();
   writeFileSync(join(old, "analytics.json"), JSON.stringify({ enabled: false, id: "old-id-that-chose-off" }));
-  assert.equal(analyticsEnabled(old), false, "someone who turned it off in an older version stays off");
+  assert.equal(analyticsEnabled(old), true, "an older version's saved off was about a different count; this one is on until it is turned off with /data");
   const older = root();
   writeFileSync(join(older, "analytics.json"), JSON.stringify({ enabled: true, id: "old-id-on-by-default" }));
   assert.equal(analyticsEnabled(older), true);
@@ -211,11 +212,17 @@ test("resetting gives a new id and forgets what was sent", async () => {
 test("the line shown at every start says whether it is on, and is silent where nothing is counted", () => {
   const dir = root();
   const on = analyticsLine(REAL, "global", dir) ?? "";
-  assert.match(on, /^Data is on\. It shares one small daily count of tokens by model, so everyone can see which models perform best and which gets the best cache hit rate\./);
+  assert.match(on, /^Data is on\. It shares one small daily count of tokens by model, and your last 60 days of usage once, so everyone can see which models perform best and which gets the best cache hit rate\./, "the default says the past goes too");
   assert.match(on, /We never see your chats, your files or what your project is\. Only the counts\./);
   assert.match(on, /See the numbers: https:\/\/mindweavedev\.netlify\.app\/data/);
   assert.match(on, /See how it is sent: https:\/\/github\.com\/mindweave-cli\/Mindweave\/blob\/main\/src\/cli\/analytics\.ts/);
-  assert.match(on, /Turn it off any time with \/data\./);
+  assert.match(on, /Turn off the past data, or all of it, with \/data\./);
+  setShareHistory(false, dir);
+  const noPast = analyticsLine(REAL, "global", dir) ?? "";
+  assert.match(noPast, /^Data is on\. It shares one small daily count of tokens by model, so everyone/, "turned off: no mention of the past");
+  assert.equal(noPast.includes("60 days"), false);
+  assert.match(noPast, /Turn it off any time with \/data\./);
+  setShareHistory(true, dir);
   setAnalyticsEnabled(false, dir);
   assert.match(analyticsLine(REAL, "global", dir) ?? "", /^Data is off\. \/data to turn it on: .*https:\/\/mindweavedev\.netlify\.app\/data$/);
   setAnalyticsEnabled(true, dir);
@@ -244,28 +251,33 @@ function utcOf(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10);
 }
 
-test("the past goes out once, only if chosen, and the preview shows it while it is still to go", async () => {
+test("the past goes out once with the first count, unless the person turned it off", async () => {
   const dir = root();
   const metas = [meta("s", [{ at: NOW - 5 * 86400_000, model: "claude-sonnet-5-5", miss: 5 }])];
   const bodies: string[] = [];
   const fetchImpl = (async (_u: string, init: RequestInit) => (bodies.push(String(init.body)), new Response(null, { status: 204 }))) as unknown as typeof fetch;
   const go = (now: number) => sendDailyCount({ root: dir, now, env: REAL, installKind: "global", fetchImpl, metas });
 
-  setAnalyticsEnabled(true, dir, NOW);
-  setShareHistory(false, dir);
-  assert.equal(historyPending(dir), false, "not chosen: nothing of the past is pending");
+  assert.equal(historyPending(dir), true, "the default: the past is still to go");
+  assert.equal((await previewPayload({ root: dir, now: NOW, metas })).active?.length, 1, "what /data shows includes it");
   await go(NOW);
-  assert.equal(JSON.parse(bodies[0]!).active, undefined);
-
-  forgetFailure();
-  setShareHistory(true, dir);
-  assert.equal(historyPending(dir), true);
-  assert.equal((await previewPayload({ root: dir, now: NOW + 86400_000, metas })).active?.length, 1, "what /data shows includes it");
-  await go(NOW + 86400_000);
-  assert.equal(JSON.parse(bodies[1]!).active.length, 1, "sent with the next count");
+  assert.equal(JSON.parse(bodies[0]!).active.length, 1, "sent with the first count");
   assert.equal(historyPending(dir), false, "and now it is done");
-  await go(NOW + 2 * 86400_000);
-  assert.equal(JSON.parse(bodies[2]!).active, undefined, "never again");
+  await go(NOW + 86400_000);
+  assert.equal(JSON.parse(bodies[1]!).active, undefined, "never again");
+
+  const other = root();
+  setShareHistory(false, other);
+  assert.equal(historyPending(other), false, "turned off: nothing of the past is pending");
+  assert.equal(canOfferHistory(other), true, "and it can be turned back on");
+  await sendDailyCount({ root: other, now: NOW, env: REAL, installKind: "global", fetchImpl, metas });
+  assert.equal(JSON.parse(bodies[2]!).active, undefined, "so the first count carries no past");
+  setShareHistory(true, other);
+  assert.equal(historyPending(other), true);
+
+  const off = root();
+  setAnalyticsEnabled(false, off);
+  assert.equal(historyPending(off), false, "with the whole count off, nothing is pending either");
 });
 
 test("starting over with a new id makes the past owed again, since it was sent under the old id", async () => {

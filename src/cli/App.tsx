@@ -74,6 +74,7 @@ import {
   analyticsEnabled,
   analyticsLine,
   canOfferHistory,
+  historyPending,
   blockedReason,
   previewPayloadFrom,
   reportActiveDay,
@@ -3693,30 +3694,31 @@ To do it by hand:
       for (;;) {
         const on = analyticsEnabled();
         const blocked = blockedReason(process.env, currentInstall().kind);
-        const summary = dataSummary(spend, { on, blocked });
+        const pending = historyPending();
         const offer = canOfferHistory();
+        const summary = dataSummary(spend, { on, blocked, past: pending ? "pending" : offer ? "off" : "sent" });
         const choice = await askApproval.current(summary, [
           on ? "Turn sharing off" : "Turn sharing on",
-          ...(offer ? [`Also share my past usage (${HISTORY_DAYS} days)`] : []),
+          ...(pending ? [`Don't share my past usage (${HISTORY_DAYS} days)`] : []),
+          ...(offer ? [`Share my past usage too (${HISTORY_DAYS} days)`] : []),
           "What does it send?",
           "Show what would be sent",
           "Start over with a new id",
           "Close",
         ]);
-        if (choice.startsWith("Also share my past usage")) {
+        if (choice.startsWith("Don't share my past usage")) {
+          setShareHistory(false);
+          note(`Your past usage will not be shared. The daily count stays on; turn it off with /data.`);
+          continue;
+        }
+        if (choice.startsWith("Share my past usage too")) {
           setShareHistory(true);
-          note(`Your past usage (the last ${HISTORY_DAYS} days) will go with the next count, once. Same counts, per day and per model.`);
+          note(`Your last ${HISTORY_DAYS} days will go once with the next count. Same counts, per day and per model.`);
           continue;
         }
         if (choice === "Turn sharing on") {
-          // The past is a separate, explicit choice: it is days of usage that already happened, sent once, so the history fills in.
-          const past = await askApproval.current(
-            `Also share your past usage, the last ${HISTORY_DAYS} days?\nIt is the same counts, per day and per model, sent once so the history on the Data page fills in. Nothing else about it.`,
-            [`Yes, include the last ${HISTORY_DAYS} days`, "No, only from now on"],
-          );
-          setShareHistory(past.startsWith("Yes"));
           setAnalyticsEnabled(true);
-          note(past.startsWith("Yes") ? "Data is on, with your past usage included once. After that, one small count a day." : "Data is on. One small count a day, after your first real work of the day.");
+          note(historyPending() ? `Data is on. Your last ${HISTORY_DAYS} days go once with the next count, then one small count a day. The next count goes out when your next turn finishes.` : "Data is on. One small count a day, sent when your first turn of the day finishes.");
           continue;
         }
         if (choice === "Turn sharing off") {

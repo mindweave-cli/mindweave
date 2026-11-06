@@ -2,6 +2,21 @@
 
 Notable changes to Mindweave. Dates are release dates.
 
+## v3.4.7 (2026-11-07): the daily count is on for everyone
+
+The daily count behind the Data page is now on by default for every install, so nobody has to find `/data` and turn it on. Everything else works the same as 3.4.6.
+
+### The daily count is on for everyone
+
+- **It is on by default, and says so at every start.** In 3.4.6 an install that had the older count switched off stayed off, and anyone who never opened `/data` never turned it on. Now it is on for everyone, and a leftover "off" from an older version no longer keeps it off. Turn it off at any time with `/data`, or set `MINDWEAVE_NO_ANALYTICS=1`.
+- **Your last 60 days are shared once, with the first count, and the start-up line says so.** It is the same counts per day and per model, so the history on the Data page fills in. `/data` turns the past off, or everything.
+- **`/data` says when the count goes out.** The first count is sent when your next turn finishes, and its note now says so.
+- **Nothing else is sent.** The count is tokens by model, never a prompt, a reply, a file, a path, a project name or a key, and it is never counted from tests, CI, a source checkout or a script.
+
+### What stays the same
+
+- **Everything else works the same as 3.4.6.** Updates still install in the background, and the limits on what a project, a page or a server can make the agent do are unchanged.
+
 ## v3.4.6 (2026-11-06): updates install while you work, a public Data page, and tighter limits
 
 Updates now install in the background while you are not working, `/data` shows your own usage and controls a daily count that feeds a public Data page, and the agent has tighter limits on what a project, a page or a server can make it do.
